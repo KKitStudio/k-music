@@ -205,5 +205,5 @@ CLI 侧同样有逐首明细（`mt-cli import` / `import-netease`）。
 ## 版本控制与多会话协作
 
 - 本地 git 仓库已初始化（分支 `main`，提交信息遵循 Conventional Commits）；`.gitignore` / `.gitattributes` 规定忽略范围与「禁用行尾转换」，二进制、运行时数据与 NCM 工具均不入库。
-- **同一项目目录下有多个会话并行**：`CODEBUDDY.md` 是每轮由 IDE 自动注入所有会话的**共享事实入口**（当前技术栈、命令、版本控制现状、防回归约束、协作规则）；`.workbuddy/memory/MEMORY.md` 为长期约定，`YYYY-MM-DD.md` 为 append-only 当日日志。
+- **同一项目目录下有多个会话并行**：`CODEBUDDY.md` 是每轮由 IDE 自动注入所有会话的**共享事实入口**（当前技术栈、命令、版本控制现状、防回归约束、协作规则）；`.workbuddy/memory/MEMORY.md` 为长期约定，`YYYY-MM-DD.md` 为当日工作日志（新增内容只追加；历史日志可按用户要求压缩蒸馏，2026-11-06 已执行，见提交 `2e8e72a`）。
 - 任何会话改变项目事实（版本 / 配置结构 / 接口 / 构建命令 / git 与合规规则），须同步 `CODEBUDDY.md` + `MEMORY.md` + 当日日志 + 相关 `docs/`（涉及版本再加 `VERSION.md`）；提交时只 `git add` 自己改动的文件，**禁止 `git add -A`** 带走其它会话的中间态。

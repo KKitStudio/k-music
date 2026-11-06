@@ -2,9 +2,9 @@
 
 > 本文件由 IDE 在**每轮、每个会话**自动注入上下文，是同一项目目录下多个会话的**共享信息入口**。
 > 权威细节：`.workbuddy/memory/MEMORY.md`（长期约定与防回归约束）、`VERSION.md`（版本变更全表）、
-> `docs/`（设计文档）、`.workbuddy/memory/YYYY-MM-DD.md`（当日工作日志，append-only）。
+> `docs/`（设计文档）、`.workbuddy/memory/YYYY-MM-DD.md`（当日工作日志：新增只追加；历史日志可按用户要求压缩蒸馏）。
 > **任何会话改变了下列事实，必须同步：本文件 + MEMORY.md + 当日日志 + 相关 docs/（涉及版本再加 VERSION.md）。**
-> 最近更新：2026-11-06 12:30（首帧底色方案**已回退**、GUI 改为**强制单实例**；12:19 播放列表规格定稿；11:45 的首帧底色「已修复」记录已作废）。
+> 最近更新：2026-11-06 13:06（澄清日志规则：新增只追加，**历史日志压缩是用户明确要求**；12:30 首帧底色方案已回退、GUI 强制单实例；12:19 播放列表规格定稿）。
 >
 > ⚠️ **旧版覆盖声明**：若你的上下文里还残留本文件的早期版本（描述为「无 git 仓库」「网易云备份下载工具」
 > 「TypeScript 严格模式」「musiclibrary.exe」「npm run dev」等），那些内容**已作废**；一律以当前这份为准，
@@ -13,7 +13,7 @@
 ## 1. 多会话协作规则（务必遵守）
 1. **开工先看** `git status --short`。若存在其它会话的未提交改动，不要覆盖、不要顺手提交。
 2. **提交只带自己的文件**：`git add <具体文件>`，**禁止 `git add -A`** 把其它会话的中间态带进提交。
-3. **日志 append-only**：`.workbuddy/memory/YYYY-MM-DD.md` 只追加、不覆盖、不删改历史；`MEMORY.md` 就地编辑并保持精简。
+3. **日志规则**：当日新增内容**只追加、不覆盖**；**历史日志允许按用户要求压缩蒸馏**（2026-11-06 用户明确要求并执行，见提交 `2e8e72a`）——细节先归入 `MEMORY.md` / `VERSION.md` / `docs/`，再把旧日志压成极简摘要，这不是违规，勿据此「纠正」或回滚。`MEMORY.md` 就地编辑并保持精简。
 4. **改动流程**（本会话用于持续报 bug / 改 bug）：复现定位根因 → 备份到 `.workbuddy/backups/YYYY-MM-DD-<主题>/`（含 MANIFEST.md5）→ 最小范围改动 → 验证 → 追加日志 + 同步文档 → 提交。已有 git 可用 `diff`/`revert`，**备份仍保留为第二道保险**。
 5. **验证基线**：`cargo test -p mt-core`（当前 **60 passed**）、`cargo test -p mt-gui`（当前 **9 passed**）、`python demo/run_all.py`（**9 用例**）、`node --check app/gui/frontend/app.js`、前端源与 `dist/frontend` 三文件 md5 对齐。
 6. **提交信息**用 Conventional Commits（`feat:` / `fix:` / `docs:` / `chore:` …）。

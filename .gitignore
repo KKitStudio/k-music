@@ -1,7 +1,10 @@
 # ============================================================
 # K曲库 (musicMT) — Git 忽略规则
-# 原则：仓库只放源码 / 文档 / 可重建脚本；构建产物、运行时数据、
-#       本机配置、第三方 NCM 工具一律不入库（见 TODO.md 发布流水线）。
+# 原则：仓库只放源码 / 对外说明（README）/ 可重建脚本；
+#       内部文档(docs)、会话笔记(.workbuddy)、协作说明(CODEBUDDY.md)、
+#       版本全表(VERSION.md)、待办(TODO.md)、历史图标与第三方工具一律不入库；
+#       应用图标仅发布 icon.ico/icon.png/icon.svg，demo 测试目录不入库（见 TODO.md 发布流水线）。
+#       本地仓库保留全量文件（不删除磁盘），仅推送到远程时按本文件裁剪为子集。
 # ============================================================
 
 # --- 构建产物（二进制走 Release，不进仓库） ---
@@ -31,23 +34,30 @@ musiclibrary/
 *.db-wal
 *.log
 
-# --- NCM 外部工具（合规：项目不内置解密，也不公开分享该工具） ---
-# tools/ncm/source 是上游 git 克隆（含嵌套 .git），直接入库会变成悬空 gitlink。
-/tools/ncm/bin/
-/tools/ncm/source/
+# --- 仅本地 / 私有的项目文件（不随 GitHub 发布） ---
+# 根目录这些文件属于内部协作 / 版本全表 / 待办，不公开。
+VERSION.md
+TODO.md
+CODEBUDDY.md
+# 内部设计文档（不公开）
+/docs/
 
-# --- demo 测试运行产物 / 可由脚本重建的夹具 ---
-# 夹具曲库 DB 存绝对路径，不可随仓库分发；make_fixtures.py 可幂等重建。
-/demo/.run/
-**/__pycache__/
-*.py[cod]
-/demo/fixtures/bin/
-/demo/fixtures/library/
-/demo/fixtures/manifest.json
+# --- 应用图标：仅发布 icon.ico / icon.png / icon.svg（备份与候选目录不发布） ---
+/app/gui/icons/*
+!/app/gui/icons/icon.ico
+!/app/gui/icons/icon.png
+!/app/gui/icons/icon.svg
 
-# --- WorkBuddy 会话数据：仅 memory/ 入库（日志与长期约定） ---
-/.workbuddy/backups/
-/.workbuddy/tmp/
+# --- demo 测试目录（含夹具绝对路径，可由脚本重建）不发布 ---
+/demo/
+
+# --- 第三方工具与打包脚本（合规：NCM 解密工具不内置也不公开分享） ---
+# tools/ 整体不发布，仅保留 package_gui.bat 供贡献者本地一键打包。
+/tools/*
+!tools/package_gui.bat
+
+# --- WorkBuddy 会话数据：本地多会话共享用，不发布到远程（含 memory 笔记） ---
+/.workbuddy/
 
 # --- 临时预览 / 验证文件 ---
 _icon_*.png

@@ -55,6 +55,7 @@
 - **版本控制（2026-11-06 起）**：本地 git 仓库已初始化，主分支 `main`，提交身份为**仓库级** `kill33 <kill33@126.com>`（全局身份仍为空）；提交信息用 Conventional Commits。`git status/diff/revert` 现已可用，但**改动前备份保留为第二道保险**。`.gitignore` 排除 `target/` `dist/` 运行时配置/DB/日志 `tools/ncm/{bin,source}` `demo/.run` 可重建夹具 `.workbuddy/{backups,tmp}`；`.gitattributes` 的 `* -text` 禁用行尾转换（保证前端 md5 与 `.bat` CRLF）。改前先对比 md5，改后核对 `dist/frontend` 同步。
 - 防回归强约束即上文各节（详情分视图隔离 / DetailRegion / 配置就地更新 / NCM 规则 / 夹具原地复用），改动前先确认不违反。
 - 收尾清理临时文件与残留服务进程（`demo/.run/` 用 `clean_run.py`，勿留孤儿 mt-cli）；不擅自删除疑似并行会话在用的文件。
+- **多会话共享**：同一项目目录有多个会话并行。`CODEBUDDY.md` 是 IDE 每轮自动注入所有会话的**共享事实入口**；改变项目事实（版本 / 配置结构 / 接口 / 构建命令 / git 与合规规则）必须同步 `CODEBUDDY.md` + 本文件 + 当日日志 + 相关 `docs/`。每轮开工先 `git status --short`；提交时只 `git add <自己改的文件>`，**禁止 `git add -A`** 带走其它会话的中间态。
 
 ## 文档
 docs/：00 总览 / 01 需求 / 02 架构 / 03 数据模型配置 / 04 技术选型 / 05 曲库目录设计 / 06 进展 / 07 真机验证方案。根 `VERSION.md` = 版本变更记录，与 app 严格同步。

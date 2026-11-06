@@ -198,6 +198,12 @@ CLI 侧同样有逐首明细（`mt-cli import` / `import-netease`）。
 
 - 部分端点参数与动态配额字段需真实账号试做核实（Phase 2）。
 - 升级策略 `ask` 的「清单确认」UI、ID3 校正、按专辑虚拟视图等留待 Phase 2。
-- Tauri 2 GUI 构建如需打包（bundle），请替换 `app/gui/icons/` 下的占位图标为正式图标。
+- 应用图标已定稿：`app/gui/icons/icon.{svg,png,ico}` 为 v3（横版字标放大 1.20x），v1 / v2 备份留存于同目录。更换图标后须 `touch app/gui/tauri.conf.json && cargo build -p mt-gui` 重新嵌入 exe。
 - GUI 已用**无头 Edge 截图**完成亮色 / 暗色 / 换肤三态与全部弹框的像素级核对，并在 1280×900 / 900×600 / 760×620 / 640×520 四种窗口尺寸下以几何断言验证控件不越界、动作栏固定可见（见 `docs/07` P10）；仍未经**真机 WebView2** 确认的是：歌词浮层、rfd 原生对话框、`backdrop-filter` 毛玻璃观感。
 - `tools/package_gui.bat` 必须保持 **CRLF + 纯 ASCII**（详见该文件头部「编写规范」）：LF-only 或含非 ASCII 字符时，cmd.exe 会解析错乱把行拆成非法命令；`if (...)` 块内不得出现未加引号的括号。
+
+## 版本控制与多会话协作
+
+- 本地 git 仓库已初始化（分支 `main`，提交信息遵循 Conventional Commits）；`.gitignore` / `.gitattributes` 规定忽略范围与「禁用行尾转换」，二进制、运行时数据与 NCM 工具均不入库。
+- **同一项目目录下有多个会话并行**：`CODEBUDDY.md` 是每轮由 IDE 自动注入所有会话的**共享事实入口**（当前技术栈、命令、版本控制现状、防回归约束、协作规则）；`.workbuddy/memory/MEMORY.md` 为长期约定，`YYYY-MM-DD.md` 为 append-only 当日日志。
+- 任何会话改变项目事实（版本 / 配置结构 / 接口 / 构建命令 / git 与合规规则），须同步 `CODEBUDDY.md` + `MEMORY.md` + 当日日志 + 相关 `docs/`（涉及版本再加 `VERSION.md`）；提交时只 `git add` 自己改动的文件，**禁止 `git add -A`** 带走其它会话的中间态。

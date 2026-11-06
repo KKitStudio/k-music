@@ -1,20 +1,21 @@
 # K music 发布文件夹（dist）
 
-本文件夹是**一键启动的干净发布目录**，直接从这里双击 `mt-gui.exe` 即可使用，无需先开命令行 / CLI。
+本文件夹是**一键启动的干净发布目录**，直接从这里双击 `k_music.exe` 即可使用，无需先开命令行 / CLI。
 
 当前版本：**v0.5.0**（版本号取自项目根 `Cargo.toml` 的 `[workspace.package] version`，窗口标题与「设置 → 关于」同步显示）。
 
-> ⚠️ **若双击 `mt-gui.exe` 后窗口打不开 / 白屏**：多为系统缺少 **Microsoft Edge WebView2 运行时**（GUI 基于 Tauri 2 + 系统 WebView2）。
+> ⚠️ **若双击 `k_music.exe` 后窗口打不开 / 白屏**：多为系统缺少 **Microsoft Edge WebView2 运行时**（GUI 基于 Tauri 2 + 系统 WebView2）。
 > 请访问微软官网下载安装 **WebView2 Evergreen 引导器**：<https://go.microsoft.com/fwlink/p/?LinkId=2124703>
 > （Win11 通常已自带，无需此步；Win10 干净安装 / 离线 / LTSC 版本可能缺失。安装一次后永久可用，无需随包分发。）
 
 ## 目录内容
-- `mt-gui.exe` —— **主入口**：双击即启动（自带后端 HTTP 服务 + 桌面窗口）。
+- `k_music.exe` —— **主入口**：双击即启动（自带后端 HTTP 服务 + 桌面窗口）。
+  > 构建产物原名 `mt-gui.exe`，由 `tools\package_gui.bat` 在拷入发布目录时改名；手动从 `target\release\` 拷贝时也请改成此名，避免与旧入口并存。
 - `mt-cli.exe` —— 命令行工具（可选）：`scan` / `import` / `import-netease` / `ncm-organize` / `library` / `serve` / `--version`。
 - `frontend/` —— 前端静态资源（GUI 后端同源提供，请勿删除或改名）。
 
 ## 使用
-1. 双击 `mt-gui.exe`。
+1. 双击 `k_music.exe`。
 2. 首次启动进入「初始化向导」：选择曲库目录、**填写曲库名称**、文件结构方案（默认 `artist_album`），随后可选指定 NCM 工具与「本地网易云音乐曲库目录」。
 3. 设置完成后即可看到曲库主界面。
 
@@ -55,7 +56,7 @@
 - 歌词文本编码自动识别：UTF-8 / UTF-16 / **GBK-GB18030**（中文 lrc 常见）。
 
 ## 想自己重新打包？
-项目根目录执行 `tools\package_gui.bat`（Windows 双击即可）：编译 release 并把 `mt-gui.exe` / `mt-cli.exe` 汇总到本文件夹。**前端静态资源（`frontend/`）已由 `app/gui/build.rs` 在 `cargo build` 编译期自动同步到本文件夹**，无需手动拷贝。
+项目根目录执行 `tools\package_gui.bat`（Windows 双击即可）：编译 release，把 `target\release\mt-gui.exe` 拷成 `k_music.exe`、`mt-cli.exe` 原样拷入，并清理旧版残留的 `dist\mt-gui.exe`（避免两个入口并存）。**前端静态资源（`frontend/`）已由 `app/gui/build.rs` 在 `cargo build` 编译期自动同步到本文件夹**，无需手动拷贝。
 
 > 打包脚本**不会删除或覆盖**本目录下的运行时配置（`kqk-app.toml` / `.guest\` / `library.db` / `app.log`），你在 `dist\` 里的测试配置会一直保留。
 > 脚本本身必须保持 **CRLF 行尾 + 纯 ASCII**（文件头部有「编写规范」说明）：否则 cmd.exe 解析会错乱，把行拆成非法命令。

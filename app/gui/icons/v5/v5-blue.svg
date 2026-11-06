@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- K music v5 蓝色版（冻结记录）：v4 蓝底基础上文字上移、底部飘带加粗加深；保留低饱和蓝底与「K music」字标+飘带构图 -->
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#D5E1F2"/><stop offset="1" stop-color="#B9CCE8"/>
+  </linearGradient></defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="224" ry="224" fill="url(#bg)"/>
+  <text x="496" y="496" text-anchor="middle"
+        font-family="'Segoe Script', 'Segoe Print', cursive" font-weight="700" fill="#324A6E">
+    <tspan font-size="269">K</tspan><tspan font-size="192" dx="36">music</tspan>
+  </text>
+  <g fill="none" stroke="#324A6E" stroke-linecap="round">
+    <path d="M 150 733 C 300 789, 430 715, 560 747 C 690 779, 800 763, 892 693"
+          stroke-width="14" opacity="0.78"/>
+    <path d="M 892 693 C 900 687, 906 683, 910 675" stroke-width="12" opacity="0.70"/>
+  </g>
+</svg>

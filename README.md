@@ -30,7 +30,7 @@ musicMT/
 │  ├─ cli/             # mt-cli：命令行二进制
 │  └─ gui/             # mt-gui：Tauri 壳 + frontend（index.html/app.js/styles.css）
 ├─ tools/ncm/          # NCM 转换工具（源码 + 二进制，个人本地使用，不随 release 分发）
-├─ dist/               # 发布目录（mt-gui.exe + mt-cli.exe + frontend/ + README.md）
+├─ dist/               # 发布目录（k_music.exe + mt-cli.exe + frontend/ + README.md）
 ├─ VERSION.md          # 版本记录（与 app 版本号严格同步，升级时须同步更新）
 └─ docs/               # 00 方案总览 / 01 需求 / 02 架构 / 03 数据模型与配置 / 04 技术选型 / 05 曲库数据目录 / 07 真机验证
 ```
@@ -66,13 +66,15 @@ cargo run -p mt-cli -- --version                  # 版本号 / 作者联系方�
 cargo run -p mt-cli -- library "D:/Music/MyLib" artist_album "我的曲库"   # 指定曲库 + 名称 + 结构方案
 ```
 
-发布目录 `dist/` 可直接双击 `mt-gui.exe` 使用（自带后端服务 + 桌面窗口，无需先开 CLI）。
+发布目录 `dist/` 可直接双击 `k_music.exe` 使用（自带后端服务 + 桌面窗口，无需先开 CLI）。
+
+> **入口命名**：GUI 的 crate / 构建产物仍为 `mt-gui`（`target/release/mt-gui.exe`），`tools/package_gui.bat` 在拷入 `dist/` 时统一改名为 `k_music.exe`，`mt-cli.exe` 保持不变。因此 `cargo build -p mt-gui`、`.vscode` 调试配置等**均不改**，只有「双击哪个文件」用新名；打包脚本还会清理旧版残留的 `dist/mt-gui.exe`，避免两个入口并存。
 
 ## 运行依赖（Windows GUI 用户）
 
-GUI（`mt-gui.exe`）基于 **Tauri 2 + 系统 Edge WebView2**，需要本机已安装 **Microsoft Edge WebView2 运行时**：
+GUI（`k_music.exe`）基于 **Tauri 2 + 系统 Edge WebView2**，需要本机已安装 **Microsoft Edge WebView2 运行时**：
 
-- **Windows 11**：通常已自带，直接双击 `mt-gui.exe` 即可。
+- **Windows 11**：通常已自带，直接双击 `k_music.exe` 即可。
 - **Windows 10**：多数经 Windows Update 已具备；仅**干净安装 / 离线 / LTSC / 老版本**可能缺失。
 - **若双击后窗口打不开或白屏**：多为缺少 WebView2，请安装 **WebView2 Evergreen 引导器**：
   <https://go.microsoft.com/fwlink/p/?LinkId=2124703>（安装一次后永久可用，无需随包分发）。

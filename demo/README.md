@@ -21,6 +21,7 @@ demo/
 │   ├── test_playlists.py       播放列表 CRUD / 重排 / 孤儿清理 / 错误不吞（真实 E2E）
 │   ├── test_auto_playlist_count.py  自动播放列表上限 n：默认值 / 落盘 / 重启 / 越界钳制
 │   ├── test_playlist_io.py     播放列表导入导出：JSON 备份 + M3U8 投影 + 两级去重
+│   ├── test_track_context_menu.py  歌曲右键菜单后端：删除入回收站 / 重扫不复活 / 越界拒绝
 │   └── test_real_config.py     用用户真实 dist/kqk-app.toml 验证就地更新不破坏内容
 ├── tools/                 ← 辅助工具
 │   ├── gen_preview.py         生成前端 mock 预览页（注入假 fetch）
@@ -142,7 +143,10 @@ python demo/fixtures/make_fixtures.py --status   # 只看状态
 「设置 → 列表」勾选 / 取消「创建时间」后四张表同步显隐且 POST `/api/columns`、
 外观主题方案还原与落盘、
 **E 组 · 播放队列**（n 默认值与「设置 → 播放」保存、无名队列可视段构造与快照语义、
-有名队列全量不受 n 影响、上一首 / 下一首 / 随机 / 循环、队列面板、「下一首播放」插播、清空队列）。
+有名队列全量不受 n 影响、上一首 / 下一首 / 随机 / 循环、队列面板、「下一首播放」插播、清空队列）、
+**F 组 · 歌曲右键菜单**（四页菜单显隐与菜单项、播放列表页额外项、Esc / 切 Tab 关闭、
+列出全部列表、POST `add` / `reveal`、删除二次确认且取消不发请求 / 确认只发一次并带正确 `local_id`、
+**F10 「下一首播放」同步追加到无名列表**：无队列时建立列表、两个快照都含该曲、已有队列时插播不改变当前曲）。
 
 > mock 页会设 `window.__KQK_DISABLE_AUDIO_ERROR_SKIP__ = true`：无头环境里 `/api/audio/:id` 必然 404，
 > 若不禁掉 `audio.error` 的自动跳曲逻辑会打乱队列断言。该钩子只存在于 mock 注入脚本，前端本身仍保留跳曲。
@@ -173,7 +177,7 @@ POST 保存 dark 主题后重新 GET 立即反映、`/index.html` 同样注入�
 
 验证 `GET /api/focus` 存在、返回 `{"ok":true}`、未被 `ServeDir` 静态回退截获，
 且 `mt-cli serve` 未注册 focus sink 时优雅空转（不 500 / 不 panic）。
-命名互斥体、端口文件与真实窗口置前只发生在 `mt-gui.exe` 内，无头环境覆盖不到，
+命名互斥体、端口文件与真实窗口置前只发生在 GUI 二进制内（发布入口 `k_music.exe`，构建产物 `mt-gui.exe`），无头环境覆盖不到，
 真机验证见 `docs/07` P17。
 
 ### `tests/test_time_columns.py` —— 导入 / 创建时间（真实端到端）
@@ -217,3 +221,14 @@ DB 异常不再被 `unwrap_or_default()` 吞成「暂无播放列表」、重启
 **导出列表全量不受 n=1 影响**、`.m3u` / `.m3u8` / `.json` / `.csv` 四种格式导入、
 四级匹配与两级去重（`local_id` 级 + 文件名 / 艺人 / 时长内容级）、未匹配跳过并报告、
 不支持格式 / 不存在列表的错误语义。**34 断言**。
+
+### `tests/test_track_context_menu.py` —— 歌曲右键菜单后端（真实端到端）
+
+零 mock：独立临时曲库 + 真实 `mt-cli serve` + 真实 SQLite。覆盖 `POST /api/tracks/delete`
+把文件移入 `<曲库>/.mt/trash/` 并清掉索引与所有播放列表引用、
+**删除后重扫曲目不复活**（`scan_dir` 跳过 `.mt` 的回归点）、同名文件自动避让 `_1`、
+曲库外路径删除 / 定位被拒绝且无副作用、不存在 id 与 `local_id=0` 的错误语义。**35 断言**。
+
+> ⚠️ 依赖**新编译**的 `target/release/mt-cli.exe`（删除与扫描逻辑在后端）；
+> 改 `serve.rs` / `library.rs` / `db.rs` 后须先 `cargo build --release -p mt-cli`。
+> 「打开文件所在位置」只测越界拒绝，不测成功路径——真机调用会弹出资源管理器窗口。

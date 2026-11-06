@@ -4,7 +4,7 @@ fn main() {
     // ---- 自动同步前端静态资源到发布目录 dist/frontend ----
     //
     // 背景：本项目用 `cargo build` 产出 exe，再由 exe 从磁盘提供前端（前端不嵌入二进制，
-    // 见 core/src/serve.rs 的 resolve_frontend_dir：双击 dist/mt-gui.exe 时首个命中候选即 dist/frontend）。
+    // 见 core/src/serve.rs 的 resolve_frontend_dir：双击 dist/k_music.exe 时首个命中候选即 dist/frontend）。
     // `tauri.conf.json` 的 frontendDist 仅在 `cargo tauri build` 时才会被消费去嵌入前端，而发布走的是
     // `cargo build --release`，并不触发嵌入。因此前端必须作为静态文件物理存在于 exe 旁边。
     //

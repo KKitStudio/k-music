@@ -9,7 +9,7 @@
 
 ## 关键约束（执行前必读，避免返工）
 
-1. **GUI 前端未内嵌**：`mt-gui.exe` 通过 axum 本地服务从磁盘 `frontend/` 目录加载页面
+1. **GUI 前端未内嵌**：GUI 入口 `k_music.exe`（构建产物 `mt-gui.exe`）通过 axum 本地服务从磁盘 `frontend/` 目录加载页面
    （`app/core/src/serve.rs::resolve_frontend_dir` 第一候选 `exe_dir/frontend`；
    `app/gui/src/lib.rs` 用 `WebviewUrl::External(local_server)`）。
    → **只发 exe 必然空白/打不开，必须连同 `frontend/` 目录一起给。**
@@ -28,19 +28,19 @@
 
 ## 发布流水线（单一产物，两种投放方式共用）
 
-核心产物 = 清理后的 `dist` 文件夹压缩包：`mt-gui.exe` + `mt-cli.exe` + `frontend/` + `README`。
+核心产物 = 清理后的 `dist` 文件夹压缩包：`k_music.exe` + `mt-cli.exe` + `frontend/` + `README`。
 
 - [ ] **1. 构建**：`cargo build --release -p mt-gui -p mt-cli`
       （产物在 `target/release/`；`mt-cli.exe` 由 GUI 内部调用，必须一起带。）
 - [ ] **2. 组装暂存目录 `dist_release/`**：
-      - 复制 `target/release/mt-gui.exe`、`target/release/mt-cli.exe`
+      - 复制 `target/release/mt-gui.exe` → `k_music.exe`、`target/release/mt-cli.exe` → `mt-cli.exe`（改名由打包脚本完成）
       - 复制 `app/gui/frontend/`（app.js / index.html / styles.css）→ `dist_release/frontend/`
       - 复制 `tools/dist_readme.md` → `dist_release/README.txt`
 - [ ] **3. 确保无本机残留**：暂存目录**不得含** `.guest/`、`kqk-app.toml`
       （本地构建若跑过 app 需手动删；CI 构建无需此步）。
 - [ ] **4. 处理 WebView2 前置**（用户偏好「解压即用」+ 控制发布体积，**不随包附带任何安装器/bootstrapper**）：
       - 做法：仅在「安装与使用说明」文档中注明——
-        若双击 `mt-gui.exe` 后窗口打不开/白屏，多为缺少 WebView2 运行时，
+        若双击 `k_music.exe` 后窗口打不开/白屏，多为缺少 WebView2 运行时，
         请访问微软官网下载安装：<https://go.microsoft.com/fwlink/p/?LinkId=2124703>（Evergreen 引导器）。
       - 放置位置：① zip 内 `README.txt`（即 `tools/dist_readme.md` 的发布版）醒目处；② 仓库 `README.md` 的安装/使用章节。
       - 现状：Win11 默认已带 WebView2，多数直接双击即可；Win10 多数经 Windows Update 已具备，
@@ -69,8 +69,8 @@
       - 提交范围：`app/`、`docs/`、`demo/`（源码与脚本）、`tools/`（脚本 + `ncm/README.md`）、`Cargo.toml`、`Cargo.lock`、
         `README.md`、`VERSION.md`、`TODO.md`、`CODEBUDDY.md`、`.gitignore`、`.gitattributes`、`.vscode/`、`.workbuddy/memory/`。
       - 写/补 `README.md`：项目简介、依赖（Rust stable + WebView2）、编译命令、
-        运行方式（`mt-gui.exe` 双击 或 `mt-cli.exe serve`）、`frontend/` 须与 exe 同级、ncm 可选说明。（现状已基本覆盖，发布前复核即可。）
-- [ ] **A3. 发布/GitHub 前将入口可执行文件重命名为 `k_music.exe`**：GUI 入口当前 bin 名为 `mt-gui`（产物 `mt-gui.exe`，来自 `app/gui/Cargo.toml` 的 `name = "mt-gui"`），发布包入口文件名应统一为 `k_music.exe`（对应项目名 `K music`，文件名用下划线更文件系统友好）。影响面（已核查）：① 改名方式二选一——**推荐在打包步骤重命名**（`tools/package_gui.bat` 拷贝时 `ren`/`cp` 改目标名，及规划中的 CI `release.yml`），避免改 crate 名牵连 Tauri 配置与构建；若改 `Cargo.toml name`，须同步 `tauri.conf.json` 与所有 `mt-gui` 引用；② `tools/package_gui.bat` 第 50 行拷贝目标与第 57 行提示文案；③ `app/gui/src/single_instance.rs` 注释（逻辑未硬引用文件名，安全）；④ 文档中所有 `mt-gui.exe`：`README.md`、`tools/dist_readme.md`、`docs/02`、`docs/07`、`VERSION.md`、`CODEBUDDY.md`、本 TODO；⑤ 规划中的 CI `release.yml` 拷贝/打包目标名。注意：CLI 入口 `mt-cli.exe` 由 GUI 内部调用，本次**不动**；显示名 `productName = "K music"` 保持不变。优先级：**发布前必做**。
+        运行方式（`k_music.exe` 双击 或 `mt-cli.exe serve`）、`frontend/` 须与 exe 同级、ncm 可选说明。（现状已基本覆盖，发布前复核即可。）
+- [x] **A3. 发布入口重命名为 `k_music.exe`（2026-11-06 已实施）**：采用推荐方案「**打包时改名、crate 名不动**」——`app/gui/Cargo.toml` 的 `name = "mt-gui"`、`target/release/mt-gui.exe`、`tauri.conf.json`、`productName = "K music"` 全部不变；`tools/package_gui.bat` 把 `mt-gui.exe` 拷成 `dist/k_music.exe`，`mt-cli.exe` 原样拷入，并删除旧版残留的 `dist/mt-gui.exe`（避免两个入口并存），脚本仍保持 CRLF + 纯 ASCII。核查确认运行时无文件名硬引用：`lib.rs` / `config.rs` 用 `current_exe()` 取目录，`single_instance.rs` 用命名互斥体（与文件名无关），`serve.rs::resolve_frontend_dir` 按 exe 目录级联找 `frontend/`，故改名安全。已同步：`tools/package_gui.bat`、`dist/` 实际入口、`README.md`、`tools/dist_readme.md` + `dist/README.md`、`docs/07`（§0 说明 + P1/P15/P16/P17）、`VERSION.md`（v0.5.0 补记；历史条目中的 `mt-gui.exe` 是当时史实，保留）、`CODEBUDDY.md`、`MEMORY.md`、`demo/README.md`、`demo/tests/test_single_instance.py`、`app/gui/src/single_instance.rs` 与 `build.rs` 注释。`docs/02` 仅含模块名 `mt-gui::native_titlebar`，无需改；规划中的 CI `release.yml`（B 项）须沿用 `k_music.exe` 目标名。CLI 入口 `mt-cli.exe` **不动**。
 - [ ] **B. 新增 `.github/workflows/release.yml` 自动出包**（标准可行）：
       - Runner：`windows-latest`（预装 MSVC 工具链 + Windows SDK，可编译 Tauri）。
       - 步骤：装 Rust → `cargo build --release -p mt-gui -p mt-cli`
@@ -78,7 +78,7 @@
         → `softprops/action-gh-release` 上传为 Release asset。
       - 触发：打 tag（`v*`）时自动跑；产物即上面的 zip。
       - 优势：CI 不运行 app，**天然无 `.guest/`/`kqk-app.toml` 残留**，比本地手工更干净。
-      - 注意：WebView2 是用户运行时依赖，CI 无需也不处理。
+      - 注意：WebView2 是用户运行时依赖，CI 无需也不处理；拷贝 GUI 产物时须改名为 `k_music.exe`（见 A3），`mt-cli.exe` 原样。
 
 ---
 
@@ -97,7 +97,15 @@
     风险：回到用户曾否决的蓝高对比调性，需二次确认。
   - **C. 折中协调**：保留 v3 的「K music 字标 + 飘带」构图，仅把暖灰底色换成与全新主色一致的
     **低饱和蓝系**（非高对比），让 logo 与界面主色统一，改动最小、风险最低。
-- **入口可执行文件名**：已在 A3 记录（发布前重命名为 `k_music.exe`），与图标方案无关。
+    - **状态（2026-11-06）**：已生成预览候选 `app/gui/icons/v3-candidates/C-blue-soft.svg/.png/.ico`
+      （底色 `#D5E1F2→#B9CCE8`、字 / 飘带 `#324A6E`）。注意：管线 `chroma_key` 原按中性色假设会把蓝底误判为品红污染、
+      洗成青绿，预览改用修正版抠图（按 `(R+B)/2 - G` 判定品红占比）；**正式图标 `icon.svg/icon.png/icon.ico` 未替换**。
+      待用户确认是否采纳；采纳则覆盖 `icon.svg` 并重跑 `tools/icon_pipeline.py` + `cargo build -p mt-gui`。
+  - **v4 笑脸候选（2026-11-06 新增，基于 v4 蓝版）**：将 v4 蓝底 + 底部微笑曲线（作嘴）与上方 `K music` 拆为左右两只眼睛
+    （浅色眼白椭圆 `#EAF0FF` + 深蓝描边/文字 `#324A6E`，左眼 `K`、右眼 `music`），构成笑脸造型；蓝调配色与视觉风格沿用 v4。
+    产物 `app/gui/icons/v3-candidates/v4-smiley.svg/.png/.ico`；**正式图标未替换**。
+    生成沿用修正版抠图（蓝底不被洗色）。适用于「想要更有亲和力的笑脸 logo」场景；若采纳则覆盖 `icon.svg` 并重跑管线 + `cargo build -p mt-gui`。
+- **入口可执行文件名**：A3 已于 2026-11-06 实施（发布名 `k_music.exe`），与图标方案无关。
 
 ---
 

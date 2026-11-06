@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- K music 笑脸候选 v4-smiley（终版）：基于 v4 蓝版；眼加大居中、music 收缩留足内边距，嘴为对称上扬微笑弧 -->
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#D5E1F2"/><stop offset="1" stop-color="#B9CCE8"/>
+  </linearGradient></defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="224" ry="224" fill="url(#bg)"/>
+  <g>
+    <ellipse cx="374" cy="408" rx="126" ry="98" fill="#EAF0FF" stroke="#324A6E" stroke-width="7"/>
+    <ellipse cx="666" cy="408" rx="202" ry="98" fill="#EAF0FF" stroke="#324A6E" stroke-width="7"/>
+    <text x="374" y="494" text-anchor="middle" font-family="'Segoe Script','Segoe Print',cursive" font-weight="700" font-size="200" fill="#324A6E">K</text>
+    <text x="660" y="470" text-anchor="middle" font-family="'Segoe Script','Segoe Print',cursive" font-weight="700" font-size="84" fill="#324A6E">music</text>
+  </g>
+  <path d="M 280 632 C 420 712, 624 712, 764 632" fill="none" stroke="#324A6E" stroke-width="13" stroke-linecap="round" opacity="0.78"/>
+</svg>

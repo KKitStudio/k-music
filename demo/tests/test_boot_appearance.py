@@ -11,8 +11,7 @@
   2. 注入值与 /api/ui-prefs 的 appearance 一致（权威源 = kqk-app.toml [ui]）；
   3. 新配置 saved=false（前端保留旧偏好迁移语义）；
   4. 保存 dark 主题后重新 GET / 立即反映新值（不被浏览器缓存挡住）；
-  5. 首帧兜底底色随 light / dark / system 变化（防「先整体黑一下」）；
-  6. 旧版前端（无占位符）原样返回，优雅降级不报错。
+  5. 旧版前端（无占位符）原样返回，优雅降级不报错。
 
 注意：运行前需先 `cargo build --release -p mt-cli`，否则测到的是旧 exe。
 """
@@ -131,22 +130,6 @@ def main():
         ok(boot2 is not None and boot2.get('saved') is True,
            'saved=true 表示首屏以配置为准')
         ok('no-store' in cc2.lower(), '改主题后仍为 no-store，不会命中旧 HTML 缓存')
-
-        # ---------- 3b) 首帧兜底底色随主题变化（防「先整体黑一下」） ----------
-        ok('<style>html{background:#121830}</style>' in html2,
-           'dark 主题注入深色兜底底色，WebView 首次绘制前的空窗不再是纯黑')
-        want = dict(want, theme='light')
-        res = http_json(base, '/api/ui-prefs', 'POST', {'appearance': want})
-        ok(res.get('ok') is True, 'POST /api/ui-prefs 保存 light 主题成功')
-        _, html_light = http_html(base, '/')
-        ok('<style>html{background:#f6f8fc}</style>' in html_light,
-           'light 主题注入浅色兜底底色')
-        want = dict(want, theme='system')
-        res = http_json(base, '/api/ui-prefs', 'POST', {'appearance': want})
-        ok(res.get('ok') is True, 'POST /api/ui-prefs 保存 system 主题成功')
-        _, html_system = http_html(base, '/')
-        ok('<style>html{background:#f6f8fc}@media (prefers-color-scheme:dark)' in html_system,
-           'system 模式用媒体查询按系统偏好裁决首帧底色')
 
         # ---------- 4) /index.html 同样注入 ----------
         _, html3 = http_html(base, '/index.html')

@@ -18,6 +18,8 @@
 kqk-app.toml
 kqk-window.state
 kqk-window.state.tmp
+kqk-instance.port
+kqk-instance.port.tmp
 musicmt-launcher.toml
 musicmt-guest.toml
 .guest/

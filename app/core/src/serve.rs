@@ -333,6 +333,7 @@ fn build_router(
         .route("/api/artists", get(artists_handler))
         .route("/api/artists/tracks", get(artist_tracks_handler))
         .route("/api/status", get(status_handler))
+        .route("/api/focus", get(focus_handler))
         .route("/api/about", get(about_handler))
         .route("/api/appearance/titlebar", post(titlebar_color_handler))
         .route("/api/downloads", get(downloads_handler))
@@ -368,10 +369,7 @@ async fn index_handler(State(st): State<AppState>) -> Response {
         let json = escape_for_inline_script(&json);
         html.replace(
             MARKER,
-            &format!(
-                "<style>{}</style><script>window.__KQK_BOOT_APPEARANCE__={json};</script>",
-                boot_background_css(&ui.theme),
-            ),
+            &format!("<script>window.__KQK_BOOT_APPEARANCE__={json};</script>"),
         )
     } else {
         html
@@ -393,26 +391,9 @@ fn escape_for_inline_script(json: &str) -> String {
         .replace('&', "\\u0026")
 }
 
-/// 入口 HTML 的「首帧兜底底色」。
-///
-/// 窗口 `visible(false)` 恢复几何后再 show，WebView2 从显示到首次绘制之间会露出
-/// 未着色表面（系统深色模式下接近纯黑），用户会看到「先整体黑一下」。此样式位于
-/// `<head>` 最前、早于 `styles.css` 的 `<link>`：在 CSS 尚未解析时先铺上主题底色，
-/// 而 `styles.css` 加载后其 `html,body{background:var(--bg-grad)}` 以同等优先级
-/// 后到覆盖，最终外观（渐变 / 皮肤）完全不受影响。颜色取 `--bg-grad` 顶端色。
-/// `system` 交给 CSS 媒体查询按系统偏好裁决，与前端 `resolveTheme()` 一致。
-/// 返回值只由白名单分支产生，不拼接任何用户可编辑的 TOML 字符串。
-fn boot_background_css(theme: &str) -> &'static str {
-    match theme {
-        "dark" => "html{background:#121830}",
-        "light" => "html{background:#f6f8fc}",
-        _ => "html{background:#f6f8fc}@media (prefers-color-scheme:dark){html{background:#121830}}",
-    }
-}
-
 #[cfg(test)]
 mod boot_appearance_tests {
-    use super::{boot_background_css, escape_for_inline_script};
+    use super::escape_for_inline_script;
 
     #[test]
     fn script_terminator_is_escaped() {
@@ -427,16 +408,17 @@ mod boot_appearance_tests {
         let s = r##"{"theme":"dark","accent":"#7e57c2","saved":true}"##;
         assert_eq!(escape_for_inline_script(s), s);
     }
+}
 
-    #[test]
-    fn boot_background_matches_theme() {
-        assert_eq!(boot_background_css("dark"), "html{background:#121830}");
-        assert_eq!(boot_background_css("light"), "html{background:#f6f8fc}");
-        let system = boot_background_css("system");
-        assert!(system.contains("prefers-color-scheme:dark"), "system 需按系统偏好裁决");
-        assert!(system.contains("#121830") && system.contains("#f6f8fc"));
-        assert_eq!(boot_background_css("不在白名单内"), system);
-    }
+/// 单实例：第二个 GUI 进程请求「已有实例」把主窗口带回前台。
+///
+/// 复用 `restore_focus_after_dialog()`（原生对话框焦点恢复的 sink）——两者动作相同：
+/// 由 GUI 壳调 `native_titlebar::refocus()` 执行 `SetForegroundWindow` / `SetFocus`。
+/// CLI `serve` 未注册 sink 时为空操作，端点仍返回 ok，便于端到端冒烟。
+/// 只监听 127.0.0.1 且无状态变更，GET 无副作用风险。
+async fn focus_handler() -> Response {
+    restore_focus_after_dialog();
+    axum::Json(serde_json::json!({ "ok": true })).into_response()
 }
 
 async fn status_handler(State(st): State<AppState>) -> Response {

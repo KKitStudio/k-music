@@ -32,6 +32,9 @@
 - **列宽基准与拖拽写回**：`tableAvailWidth()` 必须用 `table.parentElement` 容器宽度（用已撑宽的表格宽度会形成正反馈，末尾列被挤出可视区）；拖拽 `onUp` **只按像素增量改被拖动的两列占比**，不可按渲染宽度整体重算（窄窗口浏览器最小列宽会把误差永久写进配置）。
 - **测试代码统一在 `demo/`**（勿放 .workbuddy/tmp）：`common.py`/`run_all.py`/`tests/`/`tools/`/`fixtures/library`(持久化，DB 存绝对路径→必须原地复用，勿复制)。服务进程纪律：失败即回收、按 ExecutablePath 精准清理孤儿。`clean_run.py` 用 `onerror` 重试，不可谎报成功。
 
+- **首屏外观注入（防启动主题闪烁，强约束）**：GUI 端口动态 → `localStorage` 按 origin 隔离、缓存不可靠；`serve.rs::index_handler` 在返回 `/` 与 `/index.html` 时把 `[ui]` 外观内联注入 `index.html` 的 `<!--KQK_BOOT_APPEARANCE-->`（`no-store`，JSON 转义 `<>&`），首屏脚本预设 `data-theme`/`--primary` **并回写 localStorage**，否则 body 末尾 `app.js::applyAppearance()` 会拿陈旧缓存把首帧覆盖回去。旧前端无占位符时原样返回降级。新增外观字段必须同步「注入 + 首屏脚本 + applyAppearance」三处。
+- **窗口位置持久化（GUI 侧，强约束）**：`app/gui/src/window_state.rs` 独占读写 `<exe目录>/kqk-window.state`（物理像素 `key=value`，临时文件 + rename 原子替换）；**刻意不写 `kqk-app.toml`**，因 `/api/ui-prefs` 从服务线程内存副本整段就地写 `[ui]`，混写会互相覆盖。`WebviewWindowBuilder::position/inner_size` 只吃逻辑像素，必须 build 后用 `set_position(Position::Physical)`/`set_size(Size::Physical)` 恢复（`visible(false)`→恢复→`show()`）；最大化期间跳过几何；恢复前用 `available_monitors()` 校验可见性，外接屏拔掉时回退默认居中。
+
 ## 应用图标（v3 横版放大定稿 / v1、v2 备份）
 - **当前正式图标 = v3**（2026-11-06 用户反馈「不如 v1 的横版，但 v1 字有些小」→ 回到横版并把字标等比放大 1.20x）：`app/gui/icons/icon.{svg,png,ico}`。构图完全沿用 v1：低对比圆角方块(`#EEEBE7`→`#DBD6D0`, rx=224)+深灰褐 `#4C4741` Segoe Script Bold 手写单行「K music」(K269/music192, dx=36)+下方细旋律飘带；四角透明。字标 bbox x[91,933] y[407,617]，占幅 82%、边距 L91/R90、包围盒中心精确 (512,512)；飘带 x[146,912] y[638,731]，「字底→飘带顶」间距 21px 与 v1 一致。品红残留 0、四角 alpha=0。
 - **三档放大候选留存** `app/gui/icons/v3-candidates/`：H1-mild(1.12x, K251/music179, 占幅77%, 边距120)、**H2-medium(1.20x, 已采用)**、H3-large(1.28x, K287/music205, 占幅88%, 边距62)。对比图 `docs/screenshots/icon-v3-horizontal.png`（v1 基准 + 三档 + 64/48/32/16px）。**想要更保守/更饱满只需** 复制对应 SVG 为 `icon.svg` → `python tools/icon_pipeline.py` → `touch app/gui/tauri.conf.json && cargo build -p mt-gui`。曾试 1.45x 实测右边距 0（贴边裁切）已废弃；飘带水平范围固定 146~912 不随字放大（否则超画布），故 H3 飘带短于字标、略显托不住。
@@ -43,10 +46,12 @@
 - 歌词浮层、rfd 原生对话框、backdrop-filter 观感、`:has()` 已用 `.is-checked` 兜底。
 - Windows 原生标题栏染色需真机目视（DWM 任意色仅 Win11 21H2+，Win10 仅明暗跟随）。
 - 切换曲库目录后旧曲目仍在 DB（仅文件缺失才孤儿清理）。
+- **启动首帧主题**（2026-11-06）：设置深色 / 换主题色后重启，从第 1 帧起不得出现默认浅色；需连续重启 3 次覆盖端口回退场景。自动化只验 HTML/DOM，真机目视见 `docs/07` P15。
+- **窗口位置恢复**（2026-11-06）：拖动 / 缩放 / 最大化后关闭再打开，应直接出现在上次位置；重点验证多显示器、拔外接屏、125%/150% DPI 缩放。见 `docs/07` P16。
 
 ## 构建与运行
 - 工具链：rustup stable / x86_64-pc-windows-msvc + VS。`export PATH="/c/Users/kill3/.cargo/bin:$PATH"`
-- build：`cargo build --release -p mt-gui -p mt-cli`；test：`cargo test -p mt-core`。产物：`target/release/mt-{cli,gui}.exe` → `dist/`。
+- build：`cargo build --release -p mt-gui -p mt-cli`；test：`cargo test -p mt-core -p mt-gui`（当前 60 + 5 passed）、`python demo/run_all.py`（当前 8 用例）。产物：`target/release/mt-{cli,gui}.exe` → `dist/`。**改后端后必须先重新 build release，demo 端到端用例才会测到新 exe**。
 - 发布流程：改版本号(3 处)→`cargo build --release`→拷 exe 到 `dist/`、README 用 `tools/dist_readme.md`、前端由 build.rs 自动同步；保留 `dist/kqk-app.toml`/`.guest` 运行时配置。**改图标后必须重编 mt-gui**（已验证：旧/新 exe 的 RT_ICON 哈希不同）。
 - 验证：CLI `library <目录> [方案] [名称]`；`/api/about`、`/api/status`(含 app_version)、`/api/lyrics/:id`、`/api/import-progress` 可冒烟。
 

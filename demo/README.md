@@ -15,6 +15,7 @@ demo/
 │   ├── test_detail_region.py   详情区公共组件（三页一致的隐藏契约 + 跨页详情隔离）
 │   ├── test_ui_prefs.py        后端 /api/ui-prefs 读写 + [ui] 段保留式就地更新
 │   ├── test_appearance_config.py  外观主题方案落盘 + 重启读回 + 非法值回退
+│   ├── test_boot_appearance.py    入口 HTML 首屏注入外观（消除启动主题闪烁）
 │   ├── test_time_columns.py    导入/创建时间字段 + 创建时间默认隐藏/设置面板开关（真实 E2E）
 │   └── test_real_config.py     用用户真实 dist/kqk-app.toml 验证就地更新不破坏内容
 ├── tools/                 ← 辅助工具
@@ -146,6 +147,17 @@ python demo/fixtures/make_fixtures.py --status   # 只看状态
 验证「设置 → 外观」的方案确实写进 app 级 `kqk-app.toml` 的 `[ui]` 段：
 落盘内容、保留式就地更新、`/api/status` 读回、**重启服务后仍读回**、非法值回退、
 清除皮肤时旧值能被空串覆盖、自定义皮肤图片（大 data URL）不写进 TOML。
+
+### `tests/test_boot_appearance.py` —— 首屏外观注入（防启动主题闪烁）
+
+用**前端源码**作为服务目录（`from_dir=C.FRONTEND_SRC`），验证 `/` 与 `/index.html`：
+`window.__KQK_BOOT_APPEARANCE__` 已注入且占位符被替换、`Cache-Control: no-store`、
+注入值与 `/api/ui-prefs` 的 `appearance` 逐字段一致、新配置 `saved=false`、
+POST 保存 dark 主题后重新 GET 立即反映、`/index.html` 同样注入、
+**无占位符的旧版前端原样返回**（优雅降级，不会因 build.rs 未同步而报错）。
+
+> ⚠️ 该用例依赖**新编译**的 `target/release/mt-cli.exe`（注入逻辑在后端）。
+> 改动 `serve.rs` 后须先 `cargo build --release -p mt-cli`，否则会测到旧 exe。
 
 ### `tests/test_time_columns.py` —— 导入 / 创建时间（真实端到端）
 

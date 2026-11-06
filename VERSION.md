@@ -57,6 +57,17 @@
   - 修复列宽拖拽写回：只按像素增量改被拖动的两列占比，不再用受浏览器最小列宽影响的渲染宽度整体重算
     （窄窗口下一次「拖不动」的拖拽曾污染全部列比例）。
   - 修复 `tableAvailWidth()`：以**容器**宽度而非已被表头撑宽的表格宽度为基准，避免末尾列被挤出可视区。
+- **修复「启动时先闪一下默认主题」（2026-11-06）**
+  - 根因：`styles.css` 的 `:root` 为浅色默认，外观由 body 末尾 `app.js` 与异步 `/api/status` 应用；且 GUI 服务端口动态（占用时回退随机端口），`localStorage` 按 origin 隔离，端口一变缓存失效，只能等接口返回才切回 TOML 里保存的深色。
+  - `app/core/src/serve.rs`：新增 `/` 与 `/index.html` 的 `index_handler`，读磁盘 `index.html` 并把 `kqk-app.toml [ui]` 外观内联注入 `<!--KQK_BOOT_APPEARANCE-->` 占位符（`Cache-Control: no-store`；JSON 转义 `<` `>` `&` 防脚本提前闭合）；旧前端无占位符时原样返回，优雅降级。
+  - `app/gui/frontend/index.html`：head 内（CSS 之前）新增首屏内联脚本，按权威源预设 `data-theme` / `data-theme-mode` / `--primary` / `--primary-dark`，并把权威外观回写 `localStorage`（保留自定义皮肤图片本体），使 `app.js::applyAppearance()` 不会用陈旧缓存覆盖首帧。`saved=false` 时沿用本地旧偏好，保持旧配置迁移语义；`app.js` 零改动。
+  - 新增 Rust 单测 2 条（注入转义）、端到端用例 `demo/tests/test_boot_appearance.py`（注入 / no-store / 与 `/api/ui-prefs` 一致 / 改主题即时生效 / 旧前端降级）。
+- **修复「窗口位置不记忆」（2026-11-06）**
+  - 根因：`WebviewWindowBuilder` 只硬编码 `inner_size(1100,720)`，未读取也未保存位置 / 尺寸 / 最大化态；Tauri 2 不自动持久化。
+  - 新增 `app/gui/src/window_state.rs`：独占读写 `<exe目录>/kqk-window.state`（物理像素、原子替换）。**不写进 `kqk-app.toml`**——`/api/ui-prefs` 从服务线程内存副本整段就地写 `[ui]`，混写会互相覆盖。
+  - 监听 `Moved` / `Resized` / `CloseRequested` / `Destroyed`；最大化期间跳过几何；从未移动过窗口且无历史状态时不写盘（保持系统默认居中）。恢复前用 `available_monitors()` 校验窗口仍与当前显示器有交集，外接屏拔掉 / 改分辨率时回退默认居中。
+  - **高 DPI 处理**：Tauri 2.12.5 的 builder `position/inner_size` 只接受逻辑像素，故在窗口创建后以 `visible(false)` → `set_position(Position::Physical)` / `set_size(Size::Physical)` → `show()` 恢复物理像素坐标，避免 125%/150% 缩放下位置偏移，也不会让用户看到位置跳变。
+  - 新增 Rust 单测 4 条（状态解析 / 越界回退 / 负坐标 / 空显示器列表）。真机目视验证见 `docs/07` P16。
 
 #### 说明
 

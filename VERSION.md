@@ -68,13 +68,24 @@
   - 监听 `Moved` / `Resized` / `CloseRequested` / `Destroyed`；最大化期间跳过几何；从未移动过窗口且无历史状态时不写盘（保持系统默认居中）。恢复前用 `available_monitors()` 校验窗口仍与当前显示器有交集，外接屏拔掉 / 改分辨率时回退默认居中。
   - **高 DPI 处理**：Tauri 2.12.5 的 builder `position/inner_size` 只接受逻辑像素，故在窗口创建后以 `visible(false)` → `set_position(Position::Physical)` / `set_size(Size::Physical)` → `show()` 恢复物理像素坐标，避免 125%/150% 缩放下位置偏移，也不会让用户看到位置跳变。
   - 新增 Rust 单测 4 条（状态解析 / 越界回退 / 负坐标 / 空显示器列表）。真机目视验证见 `docs/07` P16。
-- **修复「启动首帧先整体黑一下」（2026-11-06，用户反馈）**
+- **「启动首帧先整体黑一下」：方案经真机验证无效，已整体回退（2026-11-06）**
   - 根因：上一轮为避免位置跳变，窗口以 `visible(false)` 创建、恢复几何后再 `show()`；隐藏窗口里的 WebView2 不绘制，从窗口显示到首次绘制之间露出**未着色表面**，系统深色模式下是纯黑（用户配置恰为显式浅色主题 + 系统深色，对比最明显）。首屏外观注入只消掉了「浅色主题闪」，这块空窗仍在，反而更突出。
   - `serve.rs::index_handler` 在占位符处同时注入 `<style>html{background:...}</style>`：`dark` → `#121830`、`light` → `#f6f8fc`、`system` → 浅色 + `@media (prefers-color-scheme:dark)` 深色。位置早于 `styles.css` 的 `<link>`，后者以同等优先级后到覆盖，最终渐变 / 皮肤外观完全不变；CSS 只由白名单分支生成，不拼接用户可编辑的 TOML 字符串。
   - `app/gui/src/lib.rs`：builder 增加 `.background_color(Color)`（同时设 HWND 背景与 WebView2 `DefaultBackgroundColor`），颜色取 `cfg.ui.theme`；`system` 在窗口创建后读 `win.theme()` 精确校正。**必须在 `show()` 之前调用**——两者都是事件循环消息且 FIFO，先改色再显示；显式 light/dark 不受系统主题影响。
   - **刻意不采用**「等 `DOMContentLoaded` 再 show 窗口」：那会把窗口出现推迟几十～几百毫秒。本次是纯属性设置，无 I/O、无等待，`show()` 时机不变。
   - 启动耗时实测（keep-alive 300 次；同一份 `index.html`，有注入 vs 去掉占位符原样返回）：中位数 **0.303 ms vs 0.295 ms（+0.008 ms）**，均值 +0.020 ms；56KB 静态 `styles.css` 反而更慢（0.403 ms），说明首页耗时由文件读取 / 传输主导，注入可忽略。
   - 新增 Rust 单测 4 条（兜底底色 CSS 1 + 颜色裁决 3）、端到端断言 4 条（dark / light / system 三种首帧底色）。真机目视见 `docs/07` P15 ⑦。
+  - **回退结论（用户真机反馈「还是会黑一下」）**：该三层兜底未解决问题，已按用户决定精确回退到 `3ccc7d9` 的三个代码文件——删除注入的 `<style>` 兜底底色与 `boot_background_css()`、builder `.background_color()`、`system` 主题校正，以及对应 Rust 单测 1+3 条与端到端断言 4 条；**保留**首屏外观注入（主题闪烁确已修好）与窗口位置持久化。
+  - 回退依据：① 自动化只能验 HTML/DOM 与属性设置，无法证明 WebView2 实际首帧，此前将其写成「已修复」属过度结论；② 方案**未增加系统消耗**（+0.008 ms/次请求，无常驻线程 / 定时器 / 额外进程），所以「消耗大」不是回退理由，「无效 + 增加维护面」才是；③ 黑窗来自窗口位置持久化的 `visible(false)`，回退不会让它消失，故登记为已知问题。
+  - 待办写入 `TODO.md` C-4：**启动 Logo，优先级极低，仅在日后出现启动过慢时才提高优先级以增加用户体验**。技术约束：HTML/CSS 里的 Logo 遮不住这段空窗（页面尚未绘制），必须原生层 splash（纯 GDI 小窗口为佳）；延后 `show()` 能遮住但会推迟窗口出现。
+- **强制单实例：同一时刻只运行一个 GUI（2026-11-06）**
+  - 用户反馈「每次双击 exe 都会启动一个新界面」。核查发现不止是视觉重复：每个进程都会 `db::open` 同一个 `library.db`，`build_router` 无条件 `spawn_boot_scan`（全库扫描 + 孤儿清理，写 DB）；两份 `cfg` 内存副本经 `/api/ui-prefs` 整段就地写 `[ui]` 互相覆盖；`kqk-window.state` 后退出者覆盖；日志交错、各占端口。
+  - **不用 `tauri-plugin-single-instance`**：该插件在 `Builder::build()` 才判定，而本项目在 Builder 之前就已开 DB / 起 axum / 跑全库扫描，拦得太晚——第二个窗口虽不出现，DB 副作用已发生。
+  - 新增 `app/gui/src/single_instance.rs`：`run()` 最开头（WebView2 预检之后、配置加载之前）用命名互斥体 `Local\KQK_SINGLE_INSTANCE_com.musicmt.app` 判定；第二个进程 `AllowSetForegroundWindow(ASFW_ANY)` → 读 `<exe目录>/kqk-instance.port` → 本机 `GET /api/focus` → 已有实例复用 `set_post_dialog_focus_sink` 把主窗口置前 → `exit(0)`，**此时尚未加载配置 / 开 DB / 起服务 / 触发扫描**。
+  - 端口文件在服务确认可响应后以「临时文件 + rename」发布，正常退出由 `InstanceGuard::drop` 删除；崩溃残留由下次连接探测判定为陈旧，不影响正确性。互斥体 `bInitialOwner=FALSE` 且从不 wait，第一个进程崩溃后内核自动销毁对象，不会永久挡住后续启动；创建失败时保守放行且不碰端口文件（不能因锁故障导致起不来，也不能删掉别人的端口）。
+  - `app/core/src/serve.rs` 新增 `GET /api/focus`（复用 `restore_focus_after_dialog()`；CLI `serve` 未注册 sink 时优雅空转）；`.gitignore` 增 `kqk-instance.port` / `.tmp`。
+  - **无设置开关**（用户决定）：锁在进程启动时建立，运行期开关无法同步到已启动进程，只会引入状态不一致。只约束 `mt-gui.exe`；`mt-cli.exe serve` 不获取该锁，demo 用例不受影响。
+  - 新增 Rust 单测 4 条（端口解析 / 请求文本 / 端口文件往返与清理 / 命名互斥体二次创建）、端到端用例 `demo/tests/test_single_instance.py`。真机目视见 `docs/07` P17。
 
 #### 说明
 

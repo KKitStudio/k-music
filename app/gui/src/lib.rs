@@ -114,6 +114,47 @@ mod native_titlebar {
     }
 }
 
+/// 首帧底色（与前端 `styles.css` 的 `--bg-grad` 顶端色一致：浅 `#f6f8fc` / 深 `#121830`）。
+///
+/// `system` 是窗口创建后读到的系统主题；`None` 出现在 builder 阶段（此时还没有窗口），
+/// 按浅色保守取值，随后在 setup 里用真实系统主题覆盖一次。窗口仍隐藏时才校正，
+/// 因此不会让用户看到一次颜色切换。显式 light/dark 一律以配置为准。
+fn boot_background_color(theme: &str, system: Option<tauri::Theme>) -> tauri::window::Color {
+    let dark = match theme {
+        "dark" => true,
+        "light" => false,
+        _ => matches!(system, Some(tauri::Theme::Dark)),
+    };
+    if dark {
+        tauri::window::Color(0x12, 0x18, 0x30, 255)
+    } else {
+        tauri::window::Color(0xf6, 0xf8, 0xfc, 255)
+    }
+}
+
+#[cfg(test)]
+mod boot_background_tests {
+    use super::boot_background_color;
+
+    #[test]
+    fn explicit_theme_overrides_system() {
+        assert_eq!(boot_background_color("dark", Some(tauri::Theme::Light)).0, 0x12);
+        assert_eq!(boot_background_color("light", Some(tauri::Theme::Dark)).0, 0xf6);
+    }
+
+    #[test]
+    fn system_follows_os_theme() {
+        assert_eq!(boot_background_color("system", Some(tauri::Theme::Dark)).0, 0x12);
+        assert_eq!(boot_background_color("system", Some(tauri::Theme::Light)).0, 0xf6);
+        assert_eq!(boot_background_color("system", None).0, 0xf6, "builder 阶段保守取浅色");
+    }
+
+    #[test]
+    fn unknown_theme_falls_back_to_system() {
+        assert_eq!(boot_background_color("bogus", Some(tauri::Theme::Dark)).0, 0x12);
+    }
+}
+
 pub fn run() {
     // 创建 Tauri 窗口前预检 WebView2 运行时：缺失时原生弹窗提示并打开下载页后退出，
     // 避免 WebView 创建失败导致的白屏/崩溃（此时 WebView 自身还不可用，必须用原生 MessageBox）。
@@ -135,6 +176,9 @@ pub fn run() {
         }
     };
     let cfg = loaded.cfg.clone();
+    // 首帧底色所需的主题模式（app 级 [ui]）。显式 light/dark 直接采用；
+    // system 待窗口创建后用 win.theme() 读系统偏好再校正，见 setup。
+    let boot_theme = cfg.ui.theme.clone();
     let library_configured = loaded.library_configured;
     let cfg_path = loaded.library_path.clone();
     let app_cfg_path = loaded.app_path.clone();
@@ -208,9 +252,22 @@ pub fn run() {
                 .title(mt_core::app::title())
                 .inner_size(1100.0, 720.0)
                 .min_inner_size(900.0, 600.0)
+                // 首帧底色：隐藏窗口里的 WebView2 不会绘制，show() 到首次绘制之间
+                // 会露出未着色表面（深色系统下是一整块黑）。同时给 HWND 与 WebView2
+                // DefaultBackgroundColor 设成主题底色，空窗期即与最终界面连续。
+                // 这是纯属性设置，不等待页面加载，不增加启动延迟。
+                .background_color(boot_background_color(&boot_theme, None))
                 // 先隐藏：定位 / 恢复尺寸 / 最大化完成后再显示，避免位置跳变被看见。
                 .visible(false)
                 .build()?;
+            // system 模式：窗口创建后才能读到系统主题。此刻窗口仍隐藏、首帧未绘制，
+            // 补一次精确着色（显式主题不受系统主题影响，无需调用）。
+            if boot_theme != "dark" && boot_theme != "light" {
+                let _ = win.set_background_color(Some(boot_background_color(
+                    &boot_theme,
+                    win.theme().ok(),
+                )));
+            }
             if let Some(g) = geom {
                 window_state::restore(&win, &g);
             }

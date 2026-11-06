@@ -33,6 +33,7 @@
 - **测试代码统一在 `demo/`**（勿放 .workbuddy/tmp）：`common.py`/`run_all.py`/`tests/`/`tools/`/`fixtures/library`(持久化，DB 存绝对路径→必须原地复用，勿复制)。服务进程纪律：失败即回收、按 ExecutablePath 精准清理孤儿。`clean_run.py` 用 `onerror` 重试，不可谎报成功。
 
 - **首屏外观注入（防启动主题闪烁，强约束）**：GUI 端口动态 → `localStorage` 按 origin 隔离、缓存不可靠；`serve.rs::index_handler` 在返回 `/` 与 `/index.html` 时把 `[ui]` 外观内联注入 `index.html` 的 `<!--KQK_BOOT_APPEARANCE-->`（`no-store`，JSON 转义 `<>&`），首屏脚本预设 `data-theme`/`--primary` **并回写 localStorage**，否则 body 末尾 `app.js::applyAppearance()` 会拿陈旧缓存把首帧覆盖回去。旧前端无占位符时原样返回降级。新增外观字段必须同步「注入 + 首屏脚本 + applyAppearance」三处。
+- **首帧空窗底色（防「先整体黑一下」，强约束）**：`visible(false)` 恢复几何后 `show()`，WebView2 从显示到首次绘制之间露出未着色表面（系统深色下纯黑）。三层兜底：① `serve.rs` 注入占位符时同时给 `<style>html{background:...}</style>`（light `#f6f8fc` / dark `#121830` / system 用 `@media (prefers-color-scheme:dark)`），位置必须**早于** `styles.css` 的 `<link>`，后者同等优先级后到覆盖，不影响最终渐变 / 皮肤；② builder `.background_color(tauri::window::Color)` 同时设 HWND 与 WebView2 `DefaultBackgroundColor`；③ `system` 在窗口创建后读 `win.theme()` 校正，`set_background_color` **必须在 `show()` 之前**（两者都是事件循环消息且 FIFO，先改色再显示）。**禁止用「等 DOMContentLoaded 再 show」消黑屏**：会把窗口出现推迟几十～几百 ms；实测注入本身仅 +0.008 ms（中位数 0.303 vs 0.295 ms，keep-alive 300 次）。
 - **窗口位置持久化（GUI 侧，强约束）**：`app/gui/src/window_state.rs` 独占读写 `<exe目录>/kqk-window.state`（物理像素 `key=value`，临时文件 + rename 原子替换）；**刻意不写 `kqk-app.toml`**，因 `/api/ui-prefs` 从服务线程内存副本整段就地写 `[ui]`，混写会互相覆盖。`WebviewWindowBuilder::position/inner_size` 只吃逻辑像素，必须 build 后用 `set_position(Position::Physical)`/`set_size(Size::Physical)` 恢复（`visible(false)`→恢复→`show()`）；最大化期间跳过几何；恢复前用 `available_monitors()` 校验可见性，外接屏拔掉时回退默认居中。
 
 ## 应用图标（v3 横版放大定稿 / v1、v2 备份）
@@ -47,11 +48,12 @@
 - Windows 原生标题栏染色需真机目视（DWM 任意色仅 Win11 21H2+，Win10 仅明暗跟随）。
 - 切换曲库目录后旧曲目仍在 DB（仅文件缺失才孤儿清理）。
 - **启动首帧主题**（2026-11-06）：设置深色 / 换主题色后重启，从第 1 帧起不得出现默认浅色；需连续重启 3 次覆盖端口回退场景。自动化只验 HTML/DOM，真机目视见 `docs/07` P15。
+- **启动首帧空窗底色**（2026-11-06）：从第 1 帧起不得出现整块纯黑 / 纯白空窗；重点验证「系统深色 + 应用显式浅色」组合，以及 `system` 主题在切换系统明暗后重启。见 `docs/07` P15 ⑦。
 - **窗口位置恢复**（2026-11-06）：拖动 / 缩放 / 最大化后关闭再打开，应直接出现在上次位置；重点验证多显示器、拔外接屏、125%/150% DPI 缩放。见 `docs/07` P16。
 
 ## 构建与运行
 - 工具链：rustup stable / x86_64-pc-windows-msvc + VS。`export PATH="/c/Users/kill3/.cargo/bin:$PATH"`
-- build：`cargo build --release -p mt-gui -p mt-cli`；test：`cargo test -p mt-core -p mt-gui`（当前 60 + 5 passed）、`python demo/run_all.py`（当前 8 用例）。产物：`target/release/mt-{cli,gui}.exe` → `dist/`。**改后端后必须先重新 build release，demo 端到端用例才会测到新 exe**。
+- build：`cargo build --release -p mt-gui -p mt-cli`；test：`cargo test -p mt-core -p mt-gui`（当前 61 + 8 passed）、`python demo/run_all.py`（当前 8 用例）。产物：`target/release/mt-{cli,gui}.exe` → `dist/`。**改后端后必须先重新 build release，demo 端到端用例才会测到新 exe**。
 - 发布流程：改版本号(3 处)→`cargo build --release`→拷 exe 到 `dist/`、README 用 `tools/dist_readme.md`、前端由 build.rs 自动同步；保留 `dist/kqk-app.toml`/`.guest` 运行时配置。**改图标后必须重编 mt-gui**（已验证：旧/新 exe 的 RT_ICON 哈希不同）。
 - 验证：CLI `library <目录> [方案] [名称]`；`/api/about`、`/api/status`(含 app_version)、`/api/lyrics/:id`、`/api/import-progress` 可冒烟。
 

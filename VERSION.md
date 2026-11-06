@@ -68,6 +68,13 @@
   - 监听 `Moved` / `Resized` / `CloseRequested` / `Destroyed`；最大化期间跳过几何；从未移动过窗口且无历史状态时不写盘（保持系统默认居中）。恢复前用 `available_monitors()` 校验窗口仍与当前显示器有交集，外接屏拔掉 / 改分辨率时回退默认居中。
   - **高 DPI 处理**：Tauri 2.12.5 的 builder `position/inner_size` 只接受逻辑像素，故在窗口创建后以 `visible(false)` → `set_position(Position::Physical)` / `set_size(Size::Physical)` → `show()` 恢复物理像素坐标，避免 125%/150% 缩放下位置偏移，也不会让用户看到位置跳变。
   - 新增 Rust 单测 4 条（状态解析 / 越界回退 / 负坐标 / 空显示器列表）。真机目视验证见 `docs/07` P16。
+- **修复「启动首帧先整体黑一下」（2026-11-06，用户反馈）**
+  - 根因：上一轮为避免位置跳变，窗口以 `visible(false)` 创建、恢复几何后再 `show()`；隐藏窗口里的 WebView2 不绘制，从窗口显示到首次绘制之间露出**未着色表面**，系统深色模式下是纯黑（用户配置恰为显式浅色主题 + 系统深色，对比最明显）。首屏外观注入只消掉了「浅色主题闪」，这块空窗仍在，反而更突出。
+  - `serve.rs::index_handler` 在占位符处同时注入 `<style>html{background:...}</style>`：`dark` → `#121830`、`light` → `#f6f8fc`、`system` → 浅色 + `@media (prefers-color-scheme:dark)` 深色。位置早于 `styles.css` 的 `<link>`，后者以同等优先级后到覆盖，最终渐变 / 皮肤外观完全不变；CSS 只由白名单分支生成，不拼接用户可编辑的 TOML 字符串。
+  - `app/gui/src/lib.rs`：builder 增加 `.background_color(Color)`（同时设 HWND 背景与 WebView2 `DefaultBackgroundColor`），颜色取 `cfg.ui.theme`；`system` 在窗口创建后读 `win.theme()` 精确校正。**必须在 `show()` 之前调用**——两者都是事件循环消息且 FIFO，先改色再显示；显式 light/dark 不受系统主题影响。
+  - **刻意不采用**「等 `DOMContentLoaded` 再 show 窗口」：那会把窗口出现推迟几十～几百毫秒。本次是纯属性设置，无 I/O、无等待，`show()` 时机不变。
+  - 启动耗时实测（keep-alive 300 次；同一份 `index.html`，有注入 vs 去掉占位符原样返回）：中位数 **0.303 ms vs 0.295 ms（+0.008 ms）**，均值 +0.020 ms；56KB 静态 `styles.css` 反而更慢（0.403 ms），说明首页耗时由文件读取 / 传输主导，注入可忽略。
+  - 新增 Rust 单测 4 条（兜底底色 CSS 1 + 颜色裁决 3）、端到端断言 4 条（dark / light / system 三种首帧底色）。真机目视见 `docs/07` P15 ⑦。
 
 #### 说明
 

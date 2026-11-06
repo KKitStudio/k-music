@@ -4,7 +4,7 @@
 > 权威细节：`.workbuddy/memory/MEMORY.md`（长期约定与防回归约束）、`VERSION.md`（版本变更全表）、
 > `docs/`（设计文档）、`.workbuddy/memory/YYYY-MM-DD.md`（当日工作日志，append-only）。
 > **任何会话改变了下列事实，必须同步：本文件 + MEMORY.md + 当日日志 + 相关 docs/（涉及版本再加 VERSION.md）。**
-> 最近更新：2026-11-06 11:12（同步「启动主题闪烁」「窗口位置持久化」两项修复后的项目事实）。
+> 最近更新：2026-11-06 11:45（补齐「启动首帧空窗底色」优化后的共享事实与验证基线）。
 >
 > ⚠️ **旧版覆盖声明**：若你的上下文里还残留本文件的早期版本（描述为「无 git 仓库」「网易云备份下载工具」
 > 「TypeScript 严格模式」「musiclibrary.exe」「npm run dev」等），那些内容**已作废**；一律以当前这份为准，
@@ -15,7 +15,7 @@
 2. **提交只带自己的文件**：`git add <具体文件>`，**禁止 `git add -A`** 把其它会话的中间态带进提交。
 3. **日志 append-only**：`.workbuddy/memory/YYYY-MM-DD.md` 只追加、不覆盖、不删改历史；`MEMORY.md` 就地编辑并保持精简。
 4. **改动流程**（本会话用于持续报 bug / 改 bug）：复现定位根因 → 备份到 `.workbuddy/backups/YYYY-MM-DD-<主题>/`（含 MANIFEST.md5）→ 最小范围改动 → 验证 → 追加日志 + 同步文档 → 提交。已有 git 可用 `diff`/`revert`，**备份仍保留为第二道保险**。
-5. **验证基线**：`cargo test -p mt-core`（当前 **60 passed**）、`cargo test -p mt-gui`（当前 **5 passed**）、`python demo/run_all.py`（**8 用例**）、`node --check app/gui/frontend/app.js`、前端源与 `dist/frontend` 三文件 md5 对齐。
+5. **验证基线**：`cargo test -p mt-core`（当前 **61 passed**）、`cargo test -p mt-gui`（当前 **8 passed**）、`python demo/run_all.py`（**8 用例**）、`node --check app/gui/frontend/app.js`、前端源与 `dist/frontend` 三文件 md5 对齐。
 6. **提交信息**用 Conventional Commits（`feat:` / `fix:` / `docs:` / `chore:` …）。
 
 ## 2. 版本控制现状（2026-11-06 起）
@@ -33,7 +33,7 @@
 - Rust workspace：`app/core`(mt-core) / `app/cli`(mt-cli) / `app/gui`(mt-gui, Tauri 2 + 系统 WebView2)；SQLite(rusqlite bundled)、axum 本地 HTTP 服务（手写 Range/206）、lofty 元数据。
 - 前端为**原生 HTML/JS**（`app/gui/frontend/{index.html,app.js,styles.css}`），**无 npm / TypeScript / 前端构建**；GUI 经 WebView2 加载本地 axum 服务，前端不嵌入 exe。
 - **`dist/frontend/` 是 GUI 实际前端源**；`app/gui/build.rs` 编译期从 `app/gui/frontend` 同步 → 改前端后必须核对两者 md5。
-- **首屏外观注入**：GUI 服务端口动态（冲突时回退随机端口），`localStorage` 按 origin 隔离故缓存不可靠；`serve.rs::index_handler` 在返回 `/` 与 `/index.html` 时，把 `kqk-app.toml [ui]` 外观内联注入 `index.html` 的 `<!--KQK_BOOT_APPEARANCE-->` 占位符（`no-store`），首屏内联脚本据此预设明暗/强调色并回写 `localStorage`，`app.js` 的 `applyAppearance()` 仍是运行期唯一入口。无占位符的旧前端原样返回、优雅降级。
+- **首屏外观注入 + 首帧底色**：GUI 服务端口动态（冲突时回退随机端口），`localStorage` 按 origin 隔离故缓存不可靠；`serve.rs::index_handler` 在返回 `/` 与 `/index.html` 时，把 `kqk-app.toml [ui]` 外观内联注入 `index.html` 的 `<!--KQK_BOOT_APPEARANCE-->` 占位符（`no-store`），首屏内联脚本据此预设明暗/强调色并回写 `localStorage`，`app.js` 的 `applyAppearance()` 仍是运行期唯一入口。无占位符的旧前端原样返回、优雅降级。注入同时给一段 `<head>` 早期的 `<style>html{background:...}</style>` 兜底底色（早于 `styles.css` 的 `<link>`，后者后到覆盖），GUI builder 再设 `background_color` 同色，消除 WebView2 首次绘制前的纯黑/纯白空窗。
 - **窗口几何状态**：`<exe目录>/kqk-window.state`（物理像素，GUI 进程独占读写）由 `app/gui/src/window_state.rs` 维护；**刻意不写进 `kqk-app.toml`**，避免与 `/api/ui-prefs` 从服务线程内存副本整段就地写 `[ui]` 互相覆盖。恢复前校验坐标仍落在当前显示器上。
 - 配置双文件：app 级 `<exe目录>/kqk-app.toml` + 曲库级 `<曲库>/.mt/config.toml`，运行期由 `Config::merge/split` 转换。
 - `app/data/`、`dist/`、`.workbuddy/{backups,tmp}`、`demo/.run/` 均为本机运行/临时数据，不入库。
@@ -56,10 +56,11 @@ mt-cli.exe --version | library <目录> | scan | serve | import | import-netease
 - 配置写入必须**就地更新**（`save_ui_in_place()`），不可用 `save_app()` 整份重写（会抹掉用户注释与未知键）。
 - `default_track_columns()` 只有 7 列（**创建时间默认不显示**，由「设置 → 列表」勾选开启）；列宽拖拽只按像素增量改被拖动的两列占比。
 - **主题首帧不得只依赖 `localStorage`**：端口动态 → origin 变 → 缓存失效。新增外观字段须同时维护 `serve.rs` 注入、`index.html` 首屏脚本与 `app.js::applyAppearance()` 三处，任缺其一都会重现启动闪烁；注入的 JSON 必须转义 `<` `>` `&`。
+- **首帧空窗底色不得靠延迟 `show()` 解决**：`visible(false)` → 恢复几何 → `show()` 之间 WebView2 不绘制，空窗由「注入的 head 早期 `<style>` + builder `background_color(Color)`」填主题底色；`system` 主题须在窗口创建后读 `win.theme()` 校正，且 `set_background_color` **必须在 `show()` 之前**（两者都是事件循环消息、FIFO，先改色再显示）。**禁止改成等 `DOMContentLoaded` 再 show**：窗口出现会晚几十～几百 ms；实测首屏注入本身仅 +0.008 ms（中位数 0.303 vs 0.295 ms）。
 - **窗口几何用物理像素**：`WebviewWindowBuilder::position()/inner_size()` 只接受逻辑像素，直接塞物理值会在高 DPI 下偏移；必须在窗口创建后用 `set_position(Position::Physical)` / `set_size(Size::Physical)` 恢复（`visible(false)` → 恢复 → `show()`）。最大化期间不可写入几何。
 - 改版本号须同步 `Cargo.toml` + `VERSION.md` + `app/gui/tauri.conf.json` 三处。
 
 ## 7. 当前进度 / 待办
-- v0.4.0 已发布：扫描与增量索引、导入、NCM 外挂、播放与歌词、专辑/歌手分组、播放列表、外观三态主题与换肤、原生标题栏染色、布局风格与列宽、导入/创建时间列、WebView2 启动预检、首屏外观注入、窗口位置持久化。
-- **待真机验证**：歌词浮层、rfd 原生对话框焦点、backdrop-filter 观感、Windows 原生标题栏染色、1280 宽 + 8 列时时间单元格省略号（见 `docs/07` P9/P10/P14）、**启动是否仍有主题闪烁 / 窗口位置是否按上次关闭位置恢复**（P15/P16，含多显示器与高 DPI）。
+- v0.4.0 已发布：扫描与增量索引、导入、NCM 外挂、播放与歌词、专辑/歌手分组、播放列表、外观三态主题与换肤、原生标题栏染色、布局风格与列宽、导入/创建时间列、WebView2 启动预检、首屏外观注入 + 首帧底色、窗口位置持久化。
+- **待真机验证**：歌词浮层、rfd 原生对话框焦点、backdrop-filter 观感、Windows 原生标题栏染色、1280 宽 + 8 列时时间单元格省略号（见 `docs/07` P9/P10/P14）、**启动首帧是否仍有主题闪烁 / 整块纯黑或纯白空窗 / 窗口位置是否按上次关闭位置恢复**（P15 含 ⑦ 首帧底色、P16，含多显示器与高 DPI）。
 - 发布流水线与 GitHub 开源待办见 `TODO.md`。

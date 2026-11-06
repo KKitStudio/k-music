@@ -6,6 +6,8 @@ use mt_core::{config, db, log, serve};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
+mod window_state;
+
 /// Windows 原生标题栏着色。
 ///
 /// WebView 里的 `.topbar` 由 CSS `--primary` 渐变着色，窗口标题栏却由 DWM 按系统主题绘制，
@@ -121,6 +123,9 @@ pub fn run() {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    // 主窗口几何状态（独立于配置双文件，理由见 window_state 模块头注释）。
+    let window_state_path = window_state::state_path(exe_dir.as_deref());
+    let saved_geometry = window_state::load(&window_state_path);
     // 加载两份配置：app 级（exe 目录 kqk-app.toml，含当前曲库路径）+ 曲库级（<曲库>/.mt/config.toml）。
     let loaded = match config::load_startup() {
         Ok(l) => l,
@@ -195,18 +200,30 @@ pub fn run() {
             #[cfg(windows)]
             serve::set_post_dialog_focus_sink(native_titlebar::refocus);
             let uri = tauri::Url::parse(&url).expect("无效的服务地址");
-            let _win = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(uri))
+            // 恢复上次窗口位置：先校验坐标仍落在当前某台显示器上（外接屏拔掉 /
+            // 改分辨率后旧坐标会跑到屏幕外），不通过则回退系统默认居中。
+            let monitors = app.available_monitors().unwrap_or_default();
+            let geom = saved_geometry.filter(|g| window_state::visible_on_any_monitor(g, &monitors));
+            let win = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(uri))
                 .title(mt_core::app::title())
                 .inner_size(1100.0, 720.0)
                 .min_inner_size(900.0, 600.0)
+                // 先隐藏：定位 / 恢复尺寸 / 最大化完成后再显示，避免位置跳变被看见。
+                .visible(false)
                 .build()?;
+            if let Some(g) = geom {
+                window_state::restore(&win, &g);
+            }
+            window_state::track(&win, window_state_path.clone());
             #[cfg(windows)]
             {
                 // HWND 是 `windows` crate 的 newtype `HWND(pub *mut c_void)`，需取 .0 再转地址值。
-                if let Ok(hwnd) = _win.hwnd() {
+                if let Ok(hwnd) = win.hwnd() {
                     native_titlebar::bind(hwnd.0 as usize);
                 }
             }
+            // 无条件显示：即使几何恢复失败，也不能把窗口留在隐藏态。
+            let _ = win.show();
             Ok(())
         })
         .run(tauri::generate_context!())

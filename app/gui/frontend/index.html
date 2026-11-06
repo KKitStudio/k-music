@@ -4,6 +4,68 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>K曲库</title>
+  <!--KQK_BOOT_APPEARANCE-->
+  <script>
+  // 首屏外观预置：styles.css 的 :root 是浅色，若等 body 末尾的 app.js 或异步 /api/status
+  // 才应用外观，浏览器会先画出一帧默认浅色再切换（可见闪烁）。
+  // 权威源是后端注入的 kqk-app.toml [ui] 段（见 serve.rs::index_handler）；GUI 本地服务
+  // 端口是动态的，而 localStorage 按 origin 隔离（含端口），端口回退时缓存必然失效，
+  // 因此不能只依赖本地缓存。此处仅做「明暗 + 强调色」最小预置，完整外观仍由
+  // app.js 的 applyAppearance() 应用（同一套值，覆盖时不会产生可见变化）。
+  (function () {
+    var boot = window.__KQK_BOOT_APPEARANCE__, local = null;
+    try { local = JSON.parse(localStorage.getItem('kqk_appearance') || 'null'); } catch (e) {}
+    // saved=false 表示旧配置尚未迁移：此时沿用本地旧偏好，避免首屏与迁移结果不一致。
+    var src = (boot && boot.saved) ? boot : (local || {});
+    var theme = ['light', 'system', 'dark'].indexOf(src.theme) >= 0 ? src.theme : 'system';
+    var dark = theme === 'dark' || (theme === 'system' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-color-scheme: dark)').matches);
+    var root = document.documentElement;
+    root.setAttribute('data-theme', dark ? 'dark' : 'light');
+    root.setAttribute('data-theme-mode', theme);
+    var accent = src.skin_accent ||
+      (local && local.skin && local.skin.enabled && local.skin.accent) ||
+      src.accent || (dark ? '#4f9bff' : '#1976d2');
+    try {
+      var hex = String(accent).replace('#', '');
+      if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+      if (!/^[0-9a-fA-F]{6}$/.test(hex)) return;
+      var n = parseInt(hex, 16);
+      var f = dark ? 0.72 : 0.78;
+      var hx = function (v) {
+        return ('0' + Math.round(Math.max(0, Math.min(255, v))).toString(16)).slice(-2);
+      };
+      root.style.setProperty('--primary', '#' + hex);
+      root.style.setProperty('--primary-dark',
+        '#' + hx(((n >> 16) & 255) * f) + hx(((n >> 8) & 255) * f) + hx((n & 255) * f));
+    } catch (e) { /* 非法颜色交给 applyAppearance() 兜底 */ }
+
+    // 让 body 末尾 app.js 的 applyAppearance() 读到同一份权威值：否则它会拿
+    // 陈旧的 localStorage 缓存把刚设好的主题覆盖回去，仍会闪一下。
+    // 只覆盖轻量字段；自定义皮肤图片本体（skin.src）只存在 localStorage，必须原样保留。
+    // 预设皮肤的 gradient / name 随后由 syncAppearanceFromStatus() 用 SKIN_PRESETS 补全。
+    if (boot && boot.saved) {
+      var prevSkin = (local && local.skin) || {};
+      var type = boot.skin_type || '';
+      var enabled = type === 'preset' || type === 'custom';
+      try {
+        localStorage.setItem('kqk_appearance', JSON.stringify({
+          theme: theme,
+          accent: boot.accent || null,
+          skin: {
+            enabled: enabled,
+            type: type || null,
+            src: enabled ? (prevSkin.src || null) : null,
+            gradient: enabled ? (prevSkin.gradient || null) : null,
+            accent: enabled ? (boot.skin_accent || null) : null,
+            name: enabled ? (prevSkin.name || null) : null
+          }
+        }));
+      } catch (e) { /* 存储不可用时首屏属性已生效，交由 applyAppearance() 兜底 */ }
+    }
+  })();
+  </script>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>

@@ -31,6 +31,8 @@ CASES = [
      '用用户真实 dist/kqk-app.toml 验证就地更新不破坏内容', False),
     ('appearance_config', os.path.join('tests', 'test_appearance_config.py'),
      '外观主题方案落盘 + 重启读回 + 非法值回退', False),
+    ('boot_appearance', os.path.join('tests', 'test_boot_appearance.py'),
+     '入口 HTML 首屏注入外观（消除启动主题闪烁）', False),
     ('detail_region', os.path.join('tests', 'test_detail_region.py'),
      '详情区公共组件：三页一致的隐藏契约 + 跨页详情隔离', False),
     ('time_columns', os.path.join('tests', 'test_time_columns.py'),

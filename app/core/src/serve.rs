@@ -13,7 +13,7 @@ use axum::extract::{Path as AxumPath, Query, State};
 use tower_http::services::fs::ServeDir;
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, header, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::Router;
 use rusqlite::Connection;
@@ -25,6 +25,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 struct AppState {
     cfg: Arc<Mutex<Config>>,
     conn: Arc<Mutex<Connection>>,
+    /// 前端磁盘目录：入口 HTML 需按当前 `[ui]` 外观内联注入首屏主题（见 index_handler）。
+    frontend_dir: PathBuf,
     /// 当前曲库是否已初始化（.mt 已建）。驱动前端「初始化向导 / 主界面」两态。
     library_configured: Arc<Mutex<bool>>,
     /// 当前曲库配置路径（.mt/config.toml）。换库时更新，故用 Arc<Mutex> 包裹果。
@@ -291,6 +293,7 @@ fn build_router(
     let state = AppState {
         cfg: Arc::new(Mutex::new(cfg)),
         conn,
+        frontend_dir: frontend_dir.clone(),
         library_configured: Arc::new(Mutex::new(library_configured)),
         config_path: Arc::new(Mutex::new(config_path)),
         app_config_path: Arc::new(Mutex::new(app_config_path)),
@@ -337,8 +340,73 @@ fn build_router(
         .route("/api/downloads/pause", post(downloads_pause_handler))
         .route("/api/downloads/clear-completed", post(downloads_clear_completed_handler))
         .route("/api/downloads/clear", post(downloads_clear_handler))
+        // 入口 HTML 由服务端注入首屏外观（权威源 = kqk-app.toml [ui]），
+        // 其余静态资源仍交给 ServeDir。放在 with_state 之前以便读取 AppState。
+        .route("/", get(index_handler))
+        .route("/index.html", get(index_handler))
         .with_state(state)
         .fallback_service(ServeDir::new(frontend_dir))
+}
+
+/// 入口 HTML：把 app 级 `[ui]` 段的已保存外观内联进 `<head>`，让首帧就按用户主题渲染。
+///
+/// 背景：GUI 服务端口是动态的（端口占用时回退随机端口），而 `localStorage` 按 origin
+/// 隔离（含端口），端口一变前端缓存就失效；若等 body 末尾的 `app.js` 或异步
+/// `/api/status` 再应用外观，会先画出一帧 `styles.css` 的默认浅色（可见闪烁）。
+///
+/// 兼容：旧版 `dist/frontend/index.html` 没有占位符时原样返回，前端自然回退到
+/// `localStorage` 缓存，不会因 build.rs 未同步而报错。
+/// 注入值只做 JSON 序列化并把 `<` / `>` / `&` 转成 Unicode 转义，配置字符串无法提前闭合脚本块。
+async fn index_handler(State(st): State<AppState>) -> Response {
+    let Ok(html) = std::fs::read_to_string(st.frontend_dir.join("index.html")) else {
+        return (StatusCode::NOT_FOUND, "index.html not found").into_response();
+    };
+    const MARKER: &str = "<!--KQK_BOOT_APPEARANCE-->";
+    let html = if html.contains(MARKER) {
+        let ui = st.cfg.lock().unwrap().ui.clone();
+        let json = serde_json::to_string(&appearance_json(&ui)).unwrap_or_else(|_| "{}".to_string());
+        let json = escape_for_inline_script(&json);
+        html.replace(
+            MARKER,
+            &format!("<script>window.__KQK_BOOT_APPEARANCE__={json};</script>"),
+        )
+    } else {
+        html
+    };
+    let mut headers = HeaderMap::new();
+    // 主题变更后刷新不能拿到浏览器缓存的旧 HTML。
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    (headers, Html(html)).into_response()
+}
+
+/// 把 JSON 字面量中可能提前闭合 `<script>` 的字符转成 Unicode 转义。
+/// 配置值来自用户可编辑的 TOML，不能假设它不含 HTML 元字符。
+fn escape_for_inline_script(json: &str) -> String {
+    json.replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026")
+}
+
+#[cfg(test)]
+mod boot_appearance_tests {
+    use super::escape_for_inline_script;
+
+    #[test]
+    fn script_terminator_is_escaped() {
+        let s = escape_for_inline_script(r#"{"accent":"</script><script>alert(1)</script>&"}"#);
+        assert!(!s.contains("</script>"), "不得出现可提前闭合脚本块的字面量");
+        assert!(!s.contains("<script>"));
+        assert!(s.contains("\\u0026"), "& 也应转义");
+    }
+
+    #[test]
+    fn normal_json_is_unchanged() {
+        let s = r##"{"theme":"dark","accent":"#7e57c2","saved":true}"##;
+        assert_eq!(escape_for_inline_script(s), s);
+    }
 }
 
 async fn status_handler(State(st): State<AppState>) -> Response {

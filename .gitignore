@@ -16,6 +16,8 @@
 
 # --- 运行时数据 / 本机配置（含曲库绝对路径、凭证、日志） ---
 kqk-app.toml
+kqk-window.state
+kqk-window.state.tmp
 musicmt-launcher.toml
 musicmt-guest.toml
 .guest/

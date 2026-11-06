@@ -45,6 +45,8 @@ CASES = [
      '自动播放列表上限 n：默认值 / 落盘 / 重启 / 越界钳制', False),
     ('playlist_io', os.path.join('tests', 'test_playlist_io.py'),
      '播放列表导入导出：JSON 备份 + M3U8 投影 + 两级去重', False),
+    ('track_context_menu', os.path.join('tests', 'test_track_context_menu.py'),
+     '歌曲右键菜单后端：删除入回收站 / 重扫不复活 / 越界拒绝', False),
     ('frontend_ui', os.path.join('tools', 'gen_preview.py'),
      '（准备）生成前端 mock 预览页', False),
     ('frontend_assert', os.path.join('tools', 'run_preview.py'),

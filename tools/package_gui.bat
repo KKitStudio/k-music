@@ -1,12 +1,13 @@
 @echo off
 REM ============================================================================
-REM  musicMT / K-Quku one-click packaging script  (dist builder)
+REM  K music (musicMT) one-click packaging script  (dist builder)
 REM
 REM  Usage: double-click this file, or run  tools\package_gui.bat
 REM
 REM  WHAT IT DOES
 REM    [1/2] cargo build --release -p mt-gui -p mt-cli
-REM    [2/2] copy target\release\mt-{gui,cli}.exe + tools\dist_readme.md -> dist\
+REM    [2/2] copy target\release\mt-gui.exe -> dist\k_music.exe (GUI entry)
+REM          copy target\release\mt-cli.exe -> dist\ + README
 REM
 REM  The frontend static assets (index.html / styles.css / app.js) are copied
 REM    automatically by app/gui/build.rs at compile time into dist\frontend,
@@ -18,7 +19,8 @@ REM    dist\kqk-app.toml, dist\.guest\, dist\library.db, dist\app.log ...
 REM    These hold the user's test config (current library path, NCM tool path,
 REM    import source, UI preferences). They MUST survive every rebuild so the
 REM    user does not have to re-select the library each time.
-REM    This script only overwrites the two .exe files and README.md.
+REM    This script overwrites k_music.exe / mt-cli.exe / README.md, and removes
+REM    the obsolete dist\mt-gui.exe left by older builds. Runtime config stays.
 REM
 REM  *** WRITING RULES FOR THIS FILE (learned the hard way - do not remove) ***
 REM    1) CRLF line endings. With LF-only, cmd.exe mis-parses the file and
@@ -47,14 +49,23 @@ if errorlevel 1 (
 
 echo [2/2] Copying exe / README into dist\ ...
 if not exist dist mkdir dist
-copy /Y target\release\mt-gui.exe dist\ >nul
+copy /Y target\release\mt-gui.exe dist\k_music.exe >nul
+if errorlevel 1 (
+  echo [ERR] Cannot update dist\k_music.exe - close K music and retry.
+  exit /b 1
+)
 copy /Y target\release\mt-cli.exe dist\ >nul
+if errorlevel 1 (
+  echo [ERR] Cannot update dist\mt-cli.exe - close K music and retry.
+  exit /b 1
+)
+if exist dist\mt-gui.exe del /f /q dist\mt-gui.exe >nul 2>&1
 if exist tools\dist_readme.md copy /Y tools\dist_readme.md dist\README.md >nul
 
 echo Done.
 echo.
 echo  Publish folder: dist\
-echo     mt-gui.exe   GUI entry - double-click it, no CLI needed
+echo     k_music.exe   GUI entry - double-click it, no CLI needed
 echo     mt-cli.exe    CLI tool (scan / import / serve / import-netease / ncm-organize)
 echo     frontend\     Frontend assets - synced automatically by build.rs
 echo     README.md    Full Chinese documentation

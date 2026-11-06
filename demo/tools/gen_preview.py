@@ -90,6 +90,7 @@ const MOCK_STATUS = {
   config_compat: 'compatible',
 };
 window.__POSTS = [];
+window.__GETS = [];
 // 无头环境里 <audio src="/api/audio/..."> 必然 404；禁用「失效自动跳曲」，否则队列断言会被连跳打乱。
 window.__KQK_DISABLE_AUDIO_ERROR_SKIP__ = true;
 window.fetch = function (url, opts) {
@@ -107,6 +108,7 @@ window.fetch = function (url, opts) {
     }
     return Promise.resolve({ ok: true, json: () => Promise.resolve(reply) });
   }
+  window.__GETS.push(u);
   const qname = (u.indexOf('name=') >= 0)
     ? decodeURIComponent(u.split('name=')[1].split('&')[0]) : '';
   let data = {};
@@ -625,6 +627,151 @@ ASSERT = r"""
   ok(state.autoPlaylistCount === 7, 'E10 保存后 state 同步为 7');
   ok(state.playback.queue.length === 2, 'E10 改 n 不影响正在播放的队列（下次生成才生效）');
   document.getElementById('settings-close').click();
+
+  // ---------- F. 歌曲右键菜单（FR-21） ----------
+  document.getElementById('tab-library').click(); await wait(250);
+  const fMenu = $('track-context-menu');
+  let fRows = document.querySelectorAll('#track-body tr[data-id]');
+  ok(!!fMenu && fMenu.hidden, 'F1 菜单容器存在且初始隐藏');
+  ok(fRows.length >= 2, 'F1 曲库表有可右键的歌曲行');
+  const ctx = (row, x, y) => row.dispatchEvent(new MouseEvent('contextmenu',
+    { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  ctx(fRows[0], 60, 90); await wait(320);   // 等 /api/playlists 异步补齐
+  ok(!fMenu.hidden, 'F2 右键打开菜单');
+  ok(txt('ctx-track-name').indexOf(MOCK_TRACKS[0].name) === 0,
+     'F2 菜单头显示被右键的曲名（实际 ' + txt('ctx-track-name').slice(0, 24) + '）');
+  const acts = Array.from($('ctx-menu-items').querySelectorAll('[data-ctx-act]'))
+                    .map((b) => b.dataset.ctxAct);
+  for (const a of ['play', 'enqueue', 'add', 'new', 'reveal', 'copy', 'delete']) {
+    ok(acts.indexOf(a) >= 0, 'F3 菜单含动作 ' + a);
+  }
+  ok(!!$('ctx-menu-items').querySelector('[data-ctx-act="delete"][data-ctx-danger="1"]'),
+     'F3 删除项被标记为危险项');
+  ok(acts.indexOf('remove') < 0, 'F3 曲库页不显示「从本播放列表移除」');
+  ok($('ctx-menu-items').querySelectorAll('[data-ctx-act="add"]').length === MOCK_PLAYLISTS.length,
+     'F4 菜单列出全部已有播放列表');
+
+  document.getElementById('tab-playlists').click(); await wait(320);
+  ok(fMenu.hidden, 'F5 切换 Tab 自动关闭菜单');
+  const plRow = document.querySelector('#pl-content tr[data-id]');
+  if (plRow) {
+    ctx(plRow, 80, 100); await wait(320);
+    ok(!fMenu.hidden, 'F5 播放列表页右键可打开菜单');
+    ok(!!$('ctx-menu-items').querySelector('[data-ctx-act="remove"]'),
+       'F5 播放列表页多出「从本播放列表移除」');
+  }
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  ok(fMenu.hidden, 'F6 Esc 关闭菜单');
+
+  document.getElementById('tab-library').click(); await wait(250);
+  fRows = document.querySelectorAll('#track-body tr[data-id]');
+  ctx(fRows[0], 70, 100); await wait(320);
+  const pMarkF = window.__POSTS.length;
+  const addBtn = $('ctx-menu-items').querySelector('[data-ctx-act="add"]');
+  if (addBtn) addBtn.click();
+  await wait(320);
+  const addPosts = window.__POSTS.slice(pMarkF).filter(
+    (p) => p.url.indexOf('/api/playlists/') === 0 && p.url.indexOf('/add') > 0);
+  ok(addPosts.length >= 1, 'F7 点击列表项会 POST /api/playlists/:id/add');
+  ok(fMenu.hidden, 'F7 动作执行后菜单关闭');
+
+  fRows = document.querySelectorAll('#track-body tr[data-id]');
+  const fId = Number(fRows[0].dataset.id);
+  ctx(fRows[0], 70, 100); await wait(320);
+  const rvBtn = $('ctx-menu-items').querySelector('[data-ctx-act="reveal"]');
+  if (rvBtn) rvBtn.click();
+  await wait(160);
+  ok(window.__POSTS.slice(pMarkF).some((p) => p.url === '/api/tracks/reveal'),
+     'F7 「打开文件所在位置」POST /api/tracks/reveal');
+
+  // 删除必须二次确认：取消不发请求，确认才发一次且带正确的 local_id。
+  ctx(fRows[0], 70, 100); await wait(320);
+  const markD = window.__POSTS.length;
+  $('ctx-menu-items').querySelector('[data-ctx-act="delete"]').click(); await wait(180);
+  ok(!$('pl-dialog-modal').hidden, 'F8 删除弹出统一确认对话框');
+  ok(txt('pl-dialog-text').indexOf('.mt/trash/') >= 0, 'F8 确认文本说明文件进回收站可恢复');
+  $('pl-dialog-cancel').click(); await wait(150);
+  ok(window.__POSTS.slice(markD).filter((p) => p.url === '/api/tracks/delete').length === 0,
+     'F8 取消删除不调用删除接口');
+  ctx(fRows[0], 70, 100); await wait(320);
+  $('ctx-menu-items').querySelector('[data-ctx-act="delete"]').click(); await wait(150);
+  $('pl-dialog-ok').click(); await wait(420);
+  const delPosts = window.__POSTS.slice(markD).filter((p) => p.url === '/api/tracks/delete');
+  ok(delPosts.length === 1, 'F9 确认后只调用一次 /api/tracks/delete（实际 ' + delPosts.length + '）');
+  ok(delPosts.length === 1 && Number(delPosts[0].body.local_id) === fId,
+     'F9 删除请求携带被右键曲目的 local_id');
+
+  // F10 · 用户 15:04 追加要求：「下一首播放」必须同步追加到当前无名播放列表。
+  $('queue-clear').click(); await wait(100);
+  ok(state.playback.queue.length === 0, 'F10 先清空播放队列');
+  document.getElementById('tab-library').click(); await wait(200);
+  const fRows3 = document.querySelectorAll('#track-body tr[data-id]');
+  const enqId = Number(fRows3[1].dataset.id);
+  ctx(fRows3[1], 70, 100); await wait(320);
+  const enqBtn = $('ctx-menu-items').querySelector('[data-ctx-act="enqueue"]');
+  if (enqBtn) enqBtn.click();
+  await wait(260);
+  ok(state.playback.queue.length > 0, 'F10 无队列时「下一首播放」会建立无名播放列表');
+  ok(state.playback.named === false, 'F10 新建队列标记为无名（n 生效）');
+  ok(state.playback.queue.indexOf(enqId) >= 0, 'F10 被点歌曲成为队列成员');
+  ok(state.playback.originalQueue.indexOf(enqId) >= 0,
+     'F10 被点歌曲同步写入原始顺序快照（关闭随机 / 重启后仍在）');
+
+  const curBefore = state.playback.queue[state.playback.index];
+  const thirdId = Number(fRows3[2].dataset.id);
+  ctx(fRows3[2], 70, 100); await wait(320);
+  $('ctx-menu-items').querySelector('[data-ctx-act="enqueue"]').click(); await wait(220);
+  ok(state.playback.queue.indexOf(thirdId) >= 0 && state.playback.originalQueue.indexOf(thirdId) >= 0,
+     'F10 已有队列时插播项同步进入 queue 与 originalQueue');
+  ok(state.playback.queue[state.playback.index + 1] === thirdId,
+     'F10 插播位置紧跟当前曲');
+  ok(state.playback.queue[state.playback.index] === curBefore,
+     'F10 插播不改变当前正在播放的曲目');
+
+  // G 组 · 15:41 / 15:51 用户追加：歌曲列表内不再有 ▶ 播放按钮；
+  // 从其它视图把歌曲加入已有播放列表后，播放列表页必须重新拉取曲目。
+  const noPlayBtn = (sel) => document.querySelectorAll(
+    sel + ' [data-act="play"], ' + sel + ' .pl-play').length;
+  ok(noPlayBtn('#track-body') === 0, 'G1 全部曲库表无 ▶ 播放按钮');
+
+  document.getElementById('tab-playlists').click(); await wait(300);
+  const gPlLi = document.querySelector('#pl-list li[data-id]');
+  ok(!!gPlLi, 'G2 播放列表二级列表有可点选项');
+  const gPlId = gPlLi ? Number(gPlLi.dataset.id) : 0;
+  if (gPlLi) gPlLi.click();
+  await wait(300);
+  ok(!!state.currentPlaylist && Number(state.currentPlaylist.id) === gPlId,
+     'G2 选中播放列表后 state.currentPlaylist 生效');
+  ok(noPlayBtn('#pl-content') === 0, 'G1 播放列表表无 ▶ 播放按钮');
+  const gHead = document.querySelectorAll('#pl-content thead th');
+  const gDataHead = document.querySelectorAll('#pl-content thead th[data-col-key]');
+  ok(gHead.length === gDataHead.length + 2,
+     'G1 表头 = # + 业务列 + 移除列，无空的播放按钮列');
+
+  document.getElementById('tab-albums').click(); await wait(250);
+  ok(noPlayBtn('#al-content') === 0, 'G1 专辑表无 ▶ 播放按钮');
+  document.getElementById('tab-artists').click(); await wait(250);
+  ok(noPlayBtn('#ar-content') === 0, 'G1 歌手表无 ▶ 播放按钮');
+
+  document.getElementById('tab-library').click(); await wait(250);
+  const gRows = document.querySelectorAll('#track-body tr[data-id]');
+  ok(gRows.length >= 1, 'G3 曲库表仍有可右键的行');
+  ctx(gRows[0], 70, 100); await wait(320);
+  const gAdd = $('ctx-menu-items').querySelector('[data-ctx-act="add"][data-pl-id="' + gPlId + '"]')
+            || $('ctx-menu-items').querySelector('[data-ctx-act="add"]');
+  const gMark = window.__GETS.length;
+  if (gAdd) gAdd.click();
+  await wait(320);
+  const gTracksGets = window.__GETS.slice(gMark).filter(
+    (u) => u.indexOf('/api/playlists/') === 0 && u.indexOf('/tracks') > 0);
+  ok(gTracksGets.length >= 1,
+     'G3 从曲库页加入后立即重拉当前列表曲目（切过去不再显示旧数据）');
+
+  const gMark2 = window.__GETS.length;
+  document.getElementById('tab-playlists').click(); await wait(320);
+  ok(window.__GETS.slice(gMark2).some(
+       (u) => u.indexOf('/api/playlists/') === 0 && u.indexOf('/tracks') > 0),
+     'G4 切回播放列表页再次重拉当前列表曲目（兜底）');
 
   const pre = document.createElement('pre');
   pre.id = 'ASSERT';

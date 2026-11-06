@@ -331,8 +331,8 @@ body, .topbar, .toolbar, .sidebar, .detail-pane, .player, .modal,
 .pl-content { flex: 1; overflow: auto; padding: 16px; }
 
 .md-btn.sm { height: 28px; padding: 0 10px; font-size: 13px; }
-.pl-table th:nth-child(2), .pl-table td.pl-play { width: 46px; text-align: center; padding-left: 4px; padding-right: 4px; }
-.pl-table td.pl-play .md-btn.round { width: 30px; height: 30px; font-size: 13px; }
+/* 列表内已移除 ▶ 播放按钮列（用户要求），故不再保留 th:nth-child(2) 的 46px 规则：
+   表格现在只有 # 序号列 + 业务列（+ 播放列表页的移除列），若留着该规则会把曲名列压成 46px。 */
 /* 移除列是固定宽度列（不参与列宽比例调整）：th 也要给宽度，
    否则 table-layout:fixed 下首行（thead）宽度不定，列宽分配会失准。 */
 .pl-table th.pl-remove-col, .pl-table td.pl-remove { width: 72px; text-align: center; padding-left: 4px; padding-right: 4px; }
@@ -492,6 +492,38 @@ body.col-resizing * { cursor: col-resize !important; }
 .queue-list .q-artist { width: 100px; flex: none; color: var(--text-soft);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .queue-list .q-next { flex: none; }
+
+/* ---------- 歌曲列表右键菜单 ---------- */
+.ctx-menu {
+  position: fixed; z-index: 70; min-width: 224px;
+  max-width: min(300px, calc(100vw - 16px)); max-height: min(70vh, 520px);
+  overflow-y: auto; padding: 6px 0; box-sizing: border-box;
+  background: var(--surface); border: 1px solid var(--divider);
+  border-radius: var(--radius); box-shadow: var(--shadow-lg);
+}
+.ctx-menu[hidden] { display: none; }
+.ctx-menu-head {
+  padding: 7px 14px 9px; margin: 0 0 4px; font-size: 12px; font-weight: 600;
+  color: var(--text-soft); border-bottom: 1px solid var(--divider);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ctx-menu-items { display: flex; flex-direction: column; }
+.ctx-item {
+  display: flex; align-items: center; gap: 9px; width: 100%; box-sizing: border-box;
+  padding: 8px 14px; border: 0; background: transparent; color: var(--text);
+  font: inherit; font-size: 13px; line-height: 1.3; text-align: left; cursor: pointer;
+}
+.ctx-item:hover { background: color-mix(in srgb, var(--primary) 10%, transparent); }
+.ctx-item .ctx-icon { width: 18px; flex: none; text-align: center; opacity: .85; }
+.ctx-item .ctx-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ctx-item.ctx-danger { color: var(--danger, #d33a3a); }
+.ctx-item.ctx-danger:hover { background: color-mix(in srgb, var(--danger, #d33a3a) 12%, transparent); }
+.ctx-sep { height: 1px; background: var(--divider); margin: 5px 8px; }
+.ctx-group-title { padding: 6px 14px 3px; font-size: 11px; color: var(--text-soft); }
+.ctx-empty { padding: 4px 14px 7px; font-size: 12px; color: var(--text-soft); }
+
+/* 删除确认等对话框的说明文字包含换行，需要保留换行（其它对话框无换行，不受影响） */
+#pl-dialog-text { white-space: pre-line; }
 
 /* ---------- 播放列表通用对话框 ---------- */
 .pl-dialog { width: min(520px, calc(100vw - 36px)); }

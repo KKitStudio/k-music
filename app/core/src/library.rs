@@ -8,8 +8,10 @@ use crate::config::Config;
 use crate::db;
 use crate::Result;
 use crate::is_playable_audio;
-use rusqlite::Connection;
-use std::path::{Path, PathBuf};
+use anyhow::{anyhow, bail};
+use rusqlite::{Connection, OptionalExtension};
+use std::ffi::OsStr;
+use std::path::{Component, Path, PathBuf};
 
 /// 递归扫描曲库目录，写入 download_records，并清理磁盘上已不存在的孤儿记录。
 pub fn scan_library(cfg: &Config, conn: &Connection) -> Result<db::ScanStats> {
@@ -26,17 +28,153 @@ pub fn scan_library(cfg: &Config, conn: &Connection) -> Result<db::ScanStats> {
     Ok(stats)
 }
 
+/// 「删除歌曲」的结果摘要（对应 docs/01 FR-21）。
+#[derive(Debug, Clone)]
+pub struct TrashOutcome {
+    pub name: String,
+    /// 文件已移入回收站时的目标路径；源文件本就不存在时为 None（仅清理索引）。
+    pub trashed_path: Option<String>,
+    /// 被一并清掉的播放列表引用条数。
+    pub playlists_affected: u32,
+}
+
+/// 把一首曲目移入曲库回收站 `<曲库>/.mt/trash/`，并从索引与所有播放列表移除。
+///
+/// - **不做不可逆删除**：`std::fs::rename` 到回收站，用户可手动取回；同名自动加 `_1/_2` 后缀。
+/// - **先移文件、后删索引**；索引删除失败时把文件移回，保证「文件在回收站 ⟺ 曲库里没有它」。
+/// - 只删索引是无效的（文件还在磁盘，下次扫描会重新入库），故两者必须同时发生，
+///   且扫描端必须跳过 `.mt`（见 `is_excluded_dir`）。
+/// - 路径必须落在当前曲库根内，防止 DB 里的 file_path 被篡改成指向任意位置的文件。
+pub fn trash_track(cfg: &Config, conn: &Connection, local_id: i64) -> Result<TrashOutcome> {
+    let row: Option<(Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT name, file_path FROM download_records WHERE local_id=?1",
+            [local_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let (name, file_path) = row.ok_or_else(|| anyhow!("曲目不存在或已被删除"))?;
+    let name = name.unwrap_or_default();
+
+    // 无路径的历史占位记录：没有文件可移，只清索引。
+    let Some(file_path) = file_path.filter(|s| !s.trim().is_empty()) else {
+        let affected = db::delete_track(conn, local_id)?;
+        return Ok(TrashOutcome {
+            name,
+            trashed_path: None,
+            playlists_affected: affected,
+        });
+    };
+
+    let src = ensure_within_library(cfg, Path::new(&file_path))?;
+    let trash_dir = cfg.paths.app_data.join("trash");
+    std::fs::create_dir_all(&trash_dir)?;
+
+    let mut moved: Option<PathBuf> = None;
+    if src.exists() {
+        let dest = unique_destination(&trash_dir, src.file_name().unwrap_or_else(|| OsStr::new("track")));
+        std::fs::rename(&src, &dest).map_err(|e| {
+            anyhow!("无法把文件移入回收站：{e}（文件可能被播放器占用，曲目索引保持不变）")
+        })?;
+        moved = Some(dest);
+    }
+
+    match db::delete_track(conn, local_id) {
+        Ok(affected) => Ok(TrashOutcome {
+            name,
+            trashed_path: moved.map(|p| p.to_string_lossy().to_string()),
+            playlists_affected: affected,
+        }),
+        Err(e) => {
+            // 索引没删掉 → 把文件放回原位，避免「磁盘上没了但曲库还列着」。
+            if let Some(dest) = &moved {
+                let _ = std::fs::rename(dest, &src);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// 校验并规范化曲目路径：必须是绝对（或相对曲库根）且词法上落在当前曲库根内。
+/// 供 `trash_track` 与 `/api/tracks/reveal` 共用，避免越界操作曲库外文件。
+pub fn ensure_within_library(cfg: &Config, path: &Path) -> Result<PathBuf> {
+    let root = lexical_clean(&cfg.paths.download_root);
+    let abs = if path.is_absolute() {
+        lexical_clean(path)
+    } else {
+        lexical_clean(&root.join(path))
+    };
+    if !abs.starts_with(&root) {
+        bail!("文件不在当前曲库目录内，拒绝操作：{}", abs.display());
+    }
+    Ok(abs)
+}
+
+/// 词法消除 `.` / `..`（不访问磁盘，对已不存在的文件同样有效）。
+fn lexical_clean(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// 回收站里同名文件自动避让：`<stem>_1.<ext>`、`<stem>_2.<ext>`……
+fn unique_destination(dir: &Path, name: &OsStr) -> PathBuf {
+    let base = Path::new(name);
+    let stem = base.file_stem().and_then(|s| s.to_str()).unwrap_or("track");
+    let ext = base.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let direct = dir.join(name);
+    if !direct.exists() {
+        return direct;
+    }
+    for i in 1..1000 {
+        let candidate = if ext.is_empty() {
+            dir.join(format!("{stem}_{i}"))
+        } else {
+            dir.join(format!("{stem}_{i}.{ext}"))
+        };
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    dir.join(format!("{stem}_{ms}.{ext}"))
+}
+
+/// 曲库扫描要跳过的目录名：暂存目录 + **元数据目录 `.mt`** + 回收站目录 `trash`。
+///
+/// `.mt` 里放 config.toml / library.db / playstate.json / trash/，本就不是音乐目录；
+/// 尤其 `trash/` 存的是「已删除」的音频，若不跳过，下次扫描会把它们**重新入库**，
+/// 右键「删除歌曲」就会失效。曲库根即扫描根（`cfg.paths.download_root`），故这层判断是必需的。
+fn is_excluded_dir(name: &OsStr) -> bool {
+    matches!(
+        name.to_str(),
+        Some(".mt")
+            | Some("_ncm_raw")
+            | Some("ing")
+            | Some("ncm")
+            | Some("pendingNcm")
+            | Some("trash")
+    )
+}
+
 fn scan_dir(root: &Path, stats: &mut db::ScanStats, conn: &Connection) -> Result<()> {
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            if path
-                .file_name()
-                .map(|n| n == "_ncm_raw" || n == "ing" || n == "ncm" || n == "pendingNcm")
-                .unwrap_or(false)
-            {
-                continue; // 暂存/原始目录不参与可播放曲库扫描
+            if path.file_name().map(is_excluded_dir).unwrap_or(false) {
+                continue; // 暂存 / 元数据 / 回收站目录不参与可播放曲库扫描
             }
             scan_dir(&path, stats, conn)?;
         } else if is_playable_audio(&path) {
@@ -224,4 +362,43 @@ fn shell_split(s: &str) -> Vec<String> {
         out.push(cur);
     }
     out
+}
+
+#[cfg(test)]
+mod trash_tests {
+    use super::*;
+
+    #[test]
+    fn excluded_dirs_include_metadata_and_trash() {
+        for n in [".mt", "trash", "_ncm_raw", "ing", "ncm", "pendingNcm"] {
+            assert!(is_excluded_dir(OsStr::new(n)), "{n} 必须跳过扫描");
+        }
+        for n in ["artist", "范特西", "download", "周杰伦"] {
+            assert!(!is_excluded_dir(OsStr::new(n)), "{n} 是普通音乐目录，不能跳过");
+        }
+    }
+
+    #[test]
+    fn lexical_clean_resolves_parent_dirs() {
+        assert_eq!(
+            lexical_clean(Path::new("D:/lib/artist/../album/a.flac")),
+            PathBuf::from("D:/lib/album/a.flac")
+        );
+        assert_eq!(
+            lexical_clean(Path::new("D:/lib/./x//y.flac")),
+            PathBuf::from("D:/lib/x/y.flac")
+        );
+    }
+
+    #[test]
+    fn unique_destination_avoids_existing_names() {
+        let dir = std::env::temp_dir().join(format!("kqk-trash-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("song.flac"), b"x").unwrap();
+        std::fs::write(dir.join("song_1.flac"), b"x").unwrap();
+        let got = unique_destination(&dir, OsStr::new("song.flac"));
+        assert_eq!(got, dir.join("song_2.flac"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

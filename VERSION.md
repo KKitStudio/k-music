@@ -10,14 +10,75 @@
 >
 > | 项目 | 值 |
 > |------|-----|
-> | 当前版本 | **v0.5.0** |
+> | 当前版本 | **v0.5.1** |
 > | 版本号数据源 | `Cargo.toml` → `[workspace.package] version` |
 > | 配置文件最低兼容版本 | `0.2.0`（`mt_core::app::MIN_COMPATIBLE_VERSION`，见 docs/03 §3.4） |
 > | 许可证 / 作者 | MIT / kill33 <kill33@126.com> |
+>
+> **入口命名（2026-11-06 起）**：发布目录 GUI 入口为 `k_music.exe`；crate 与构建产物仍为 `mt-gui` / `mt-gui.exe`，
+> 由 `tools/package_gui.bat` 在拷贝时改名。本文件 v0.4.0 及更早条目中的 `mt-gui.exe` 是当时的实际文件名，属历史记录，不改写。
+
+---
+
+## 版本号递增规则（2026-11-06 16:19 用户定义，所有会话强制遵守）
+
+格式固定 **`a.b.c`**：
+
+| 段 | 含义 | 递增 | 归零 |
+|---|---|---|---|
+| `a` | 大版本 | **只由用户指定**，当前 `0`；任何会话不得自行 +1 | `a` 变动时 `b`、`c` 一并归零 |
+| `b` | 小版本 | **每完成一组大需求** +1 | `a` 变动时归零重新计数 |
+| `c` | 修订号 | **每改一次 bug 或小需求** +1 | `b` +1 时归零（从 `a.b.0` 起步） |
+
+- **生效与历史**：自 2026-11-06 16:19 起生效；**v0.5.0 及之前为历史版本，不追溯改写**。规则生效后首个版本 = **v0.5.1**（FR-21 三处反馈修复记一次 `c`）。
+- **一次收尾只改一次号**，且**禁止「改了功能 / 修了 bug 却把版本号留在旧值上补记」**。
+- **改号必同步 4 处**：`Cargo.toml [workspace.package] version`（唯一数据源）、`app/gui/tauri.conf.json`、本文件头部「当前版本」表、本文件「变更记录」追加该版本完整明细；随后重编 release 刷新产物。
+- **判定权**：`a` 用户指定；`b` 的「一组大需求」由用户确认（会话可提建议，不得擅自升 `a` / `b`）；`c` 按「**一次改动收尾并成功产出用于交付的 release 可执行文件**」计一次（一轮内多个 bug 只 +1，调试期重复编译与纯文档改动不计数）。
+- 共享事实入口：`CODEBUDDY.md` §0；长期约定：`.workbuddy/memory/MEMORY.md`。
 
 ---
 
 ## 变更记录
+
+### v0.5.1 — 2026-11-06
+
+> **首个按 `CODEBUDDY.md` §0 版本号规则递增的修订版本**：FR-21 三处用户反馈修复记一次 `c` +1，
+> **0.5.0 → 0.5.1**（`b` 不变）。用户 16:19 定义 `a.b.c` 规则后拍板「立即记为 v0.5.1」。
+> 本版本**只含修复与规则落地，不含新大需求**，故不升 `b`。
+
+#### 修复（FR-21 用户反馈三处）
+
+1. **「打开文件所在位置」定位错误**：`serve.rs::track_reveal_handler` 原 `cmd.arg("/select,<path>")` 在含空格路径
+   （`Alan Walker\Different World\Faded.wav`）下把 `/select,` 前缀与路径整体加引号，explorer.exe 解析失败落到默认位置。
+   改为 `#[cfg(windows)] reveal_explorer_arg()` + `CommandExt::raw_arg("/select,\"<path>\"")`（前缀在引号外、引号只包路径）；
+   文件不存在降级打开父目录；成功响应回带 `path`。新增 2 条 Rust 单测。
+2. **移除列表内 ▶ 播放按钮**：播放列表 / 专辑 / 歌手三张表的第二列按钮、表头空 `<th>` 与事件绑定全部删除；
+   同步删 `styles.css` 的 `.pl-table th:nth-child(2)` 46px 规则（否则曲名列被压窄）。播放由双击行与右键菜单「播放」承担。
+3. **跨界面加入已有播放列表后不刷新**：`runTrackContextAction` 去掉 `view === 'playlists'` 限制，
+   `switchTab('playlists')` 对 `state.currentPlaylist` 重新 `loadPlaylistTracks()`（`plReq` 并发守卫）。
+
+#### 规则落地
+
+- `CODEBUDDY.md` 新增 **§0 版本号规则**（每轮 IDE 注入，所有会话强制）：`a` 只由用户指定、`b` 一组大需求 +1、`c` 一次 bug / 小需求 +1；
+  `a` 变动时 `b` / `c` 一并归零，`b` +1 时 `c` 归零。同步 `VERSION.md` 头部规则块、`MEMORY.md`、当日日志。
+- 判定权：`a` 用户指定、`b` 一组大需求由用户确认（会话不得擅自升 `a` / `b`）；`c` 按「一次改动收尾并成功产出用于交付的
+  release 可执行文件」计一次，调试期重复编译与纯文档改动不计数。
+- 历史：**v0.5.0 及更早条目不追溯改写**；运行时配置里的 `config_version`（生成该配置时的构建版本）保持原值，不随应用版本改动。
+
+#### 验证
+
+- `cargo test -p mt-core -p mt-gui`：**80 + 9 = 89 passed, 0 failed**。
+- `python demo/run_all.py`：**13/13**；重新生成预览页后 `run_preview.py` 三尺寸 **E/F/G 组 ALL PASS**（G 组 10 条 ×3）。
+- `node --check` / `py_compile` 通过；前端源与 `dist/frontend` 三文件 md5 一致；`mt-cli --version` = `K music v0.5.1`。
+- 改号同步：`Cargo.toml`（唯一源）/ `tauri.conf.json` / `VERSION.md` 头部表 + 本条目 / `Cargo.lock`（cargo 自动更新 `mt-*` 三处）；
+  release 重编后刷新 `dist/k_music.exe` 与 `dist/mt-cli.exe`，**运行时配置未动**。
+
+#### 不变式（防回归）
+
+- 曲库根即扫描根：`.mt`（含 `trash/`）必须被 `scan_dir` 跳过；删除曲目须「文件进回收站 + 清索引」同时成功，任一步失败回滚，路径越界一律拒绝。
+- 「下一首播放」插播项同时进入 `queue` 与 `originalQueue` 并持久化；无队列时先构造无名列表再加入。
+- reveal 必须用 `raw_arg`；四张表无 ▶ 按钮且 `.pl-table th:nth-child(2)` 不得复活；跨界面加入列表必须刷新。
+- **改了 bug / 小需求必须升 `c`，禁止留在旧版本号上「补记」**。
 
 ### v0.5.0 — 2026-11-06
 
@@ -78,11 +139,77 @@
   - 新增 `demo/tests/test_playlist_io.py`（34 断言：双文件导出 / 全量不受 n=1 影响 / 文件名安全化 /
     JSON 无损字段 / M3U8 相对路径 / 四种格式导入 / 两级去重 / 未匹配跳过 / 错误语义）。
 
+- **发布入口重命名为 `k_music.exe`（TODO A3）**
+  - 采用「打包时改名、crate 名不动」：`tools/package_gui.bat` 把 `target/release/mt-gui.exe` 拷成 `dist/k_music.exe`，
+    `mt-cli.exe` 原样拷入，并清理旧版残留的 `dist/mt-gui.exe`；脚本仍保持 CRLF + 纯 ASCII。
+  - 运行时无文件名硬引用（GUI 用 `current_exe()` 取目录、单实例用命名互斥体、前端目录按 exe 目录级联解析），改名安全；
+    `target/release/mt-gui.exe`、`cargo build -p mt-gui`、`tauri.conf.json`、`productName`、`.vscode` 调试配置均不变。
+  - 同步发布说明与真机验证口径：`README.md`、`tools/dist_readme.md`、`dist/README.md`、`docs/07` §0 与 P1/P15/P16/P17、
+    `CODEBUDDY.md`、`MEMORY.md`、`demo/README.md`、`demo/tests/test_single_instance.py`；`docs/02` 仅含模块名 `mt-gui::native_titlebar`，无需改。
+  - 改名当时 `dist/k_music.exe` 与 `target/release/mt-gui.exe` md5 一致；`dist/` 运行时配置（`kqk-app.toml` / `.guest/` /
+    `kqk-instance.port` / `kqk-window.state`）全部保留，旧 `dist/mt-gui.exe` 已不存在。
+  - 验证时发现「GUI 正在运行时 exe 被占用、`copy` 静默失败」：已给 `tools/package_gui.bat` 的两个 `copy` 加
+    `if errorlevel 1` 检查并提示「关闭 K music 后重试」，避免打包看似成功却仍是旧 exe。
+
+- **歌曲列表右键菜单（FR-21，2026-11-06 补记，在 v0.5.0 版本号内发布，未另升版）**
+  - 用户要求「列表里的歌曲增加右键菜单，含删除歌曲和添加到播放列表，其他功能看着做」；
+    **四张歌曲表（曲库 / 播放列表 / 专辑 / 歌手）统一菜单**，右键即选中该行，菜单只存 `local_id` 快照。
+  - 菜单项：播放、下一首播放、添加到播放列表（列出全部已有列表 +「新建播放列表并加入」）、
+    「从本播放列表移除」（仅播放列表页）、打开文件所在位置、复制歌曲信息、删除歌曲（危险项 + 统一 modal 二次确认）。
+  - **删除语义（关键决策）**：文件 `rename` 到 `<曲库>/.mt/trash/`（可手动取回，**不做不可逆删除、不是系统回收站**）
+    + 单事务清 `download_records` 与 `playlist_items` 全部引用；同名避让 `_1` / `_2`；
+    文件被占用导致移动失败则报错且**索引保持不变**，索引删除失败则把文件移回原位。
+    只删 DB 是无效的（文件还在磁盘，下次扫描会重新入库），故两者必须同时发生。
+  - **配套不变式**：`library.rs::scan_dir()` 新增跳过 `.mt` / `trash`（曲库根即扫描根），
+    否则回收站文件会被扫描重新入库使删除失效；`ensure_within_library()` 词法规范化后校验路径落在曲库根内，
+    删除与「打开文件所在位置」共用，越界一律拒绝。
+  - 后端新增 `library::trash_track()`、`db::delete_track()`、`POST /api/tracks/delete`、
+    `POST /api/tracks/reveal`（4 条 Rust 单测）；前端新增菜单模块与 `dropFromPlaybackQueue()` /
+    `refreshAfterTrackDelete()`，删除正在播放的曲目自动顺延并刷新视图与分组计数。
+  - **「下一首播放」同步追加到当前无名播放列表（用户 15:04 追加要求）**：`enqueueNext(id, view)` 把被点曲
+    同时写入 `queue` 与 `originalQueue`（各自按自己的顺序定位，修掉随机模式下复用洗牌后下标导致关闭随机错位）、
+    补 `meta` 并 `savePlaystate()` 落盘；**无队列时先按来源视图用既有 n 规则构造无名列表再加入并播放**，
+    不再只提示「请先播放一首歌」。有名列表插播只进运行时队列、不写 DB。新增 F10 无头断言。
+  - 验证：`cargo test -p mt-core -p mt-gui` **78 + 9 = 87 passed**；
+    `demo/tests/test_track_context_menu.py` **35 断言**；`run_preview.py` F 组三尺寸 ALL PASS；
+    `demo/run_all.py` **13/13**。真机目视见 `docs/07` P19。
+
+- **应用图标正式定为 v5 低饱和蓝版（2026-11-06 15:22 用户拍板，v0.5.0 版本号内发布，未另升版）**
+  - 正式文件 `app/gui/icons/icon.{svg,png,ico}`：低饱和蓝圆角方块渐变 `#D5E1F2→#B9CCE8` +
+    手写「K music」字标（基线 y=496，相对 v4 上移）+ 底部加粗加深微笑飘带（stroke 14 / opacity .78），
+    字与飘带统一 `#324A6E`；保留 v3 的「字标 + 飘带」构图，仅换配色与字/飘带权重。
+  - 冻结备份：`icons/v1/`（横版字标）、`icons/v2-backup/`（否决）、`icons/v3/`（暖灰艺术字 v3）、
+    `icons/v5/v5-blue.{svg,png,ico}`；候选 `icons/v3-candidates/`（C-blue-soft / v4-smiley）保留但不采用。
+  - 已 `touch app/gui/tauri.conf.json` 后 `cargo build --release -p mt-gui -p mt-cli`（图标编译期嵌入），
+    并刷新 `dist/k_music.exe` / `dist/mt-cli.exe`、删除旧 `dist/mt-gui.exe`；运行时配置未动。
+  - **验证**：在 `target/release/mt-gui.exe` 与 `dist/k_music.exe` 二进制中检索 v5 `icon.ico` 的 6 帧原始字节
+    全部命中、旧 v3 帧 0 命中 → 嵌入正确；真机目视（任务栏 / 资源管理器 / 标题栏）仍待确认。
+  - 注意：`tools/icon_pipeline.py` 的 `chroma_key` 按中性色假设会把纯蓝底洗成青绿；渲染蓝底候选须用
+    一次性修正版抠图 `(R+B)/2 - G` 判品红占比，**不要改管线本体**。
+
+- **FR-21 三处用户反馈修复（2026-11-06 15:41 / 15:51，v0.5.0 版本号内补记，未另升版）**
+  - ①「打开文件所在位置」定位错误：根因是 `Command::arg("/select,<path>")` 在含空格路径
+    （曲库内 `Alan Walker` / `Different World` 等目录）下会把 `/select,` 前缀与路径**整体加引号**，
+    explorer.exe 不按标准 argv 解析，遂落到默认位置。改为 `raw_arg("/select,\"<path>\"")`
+    —— 前缀在引号外、引号只包路径；文件已不在磁盘时降级为打开其父目录；
+    响应回带 `path`（实际定位的绝对路径）便于排查。新增 2 条 Rust 单测覆盖参数构造。
+  - ② 歌曲列表内 ▶ 播放按钮移除（用户要求）：播放列表页、专辑页、歌手页表格第二列的
+    `<td class="pl-play">`、表头空 `<th>` 与对应事件绑定全部删除；播放改由**双击行**与
+    **右键菜单「播放」**承担。同步删除 `styles.css` 的 `.pl-table th:nth-child(2)` 46px 规则，
+    否则移除该列后曲名列会被误压成 46px。
+  - ③ 跨界面「添加到已有播放列表」后曲目不刷新：`runTrackContextAction` 的 add/new 分支去掉
+    `view === 'playlists'` 限制（只要目标列表正是当前打开列表就刷新）；`switchTab('playlists')`
+    对 `state.currentPlaylist` 重新 `loadPlaylistTracks()`，兜住任何视图发生的加入 / 移除 / 删除。
+  - 无头断言新增 **G 组**（三尺寸 ALL PASS）：四表无 ▶ 按钮、表头列数正确、
+    从曲库页加入后立即重拉曲目、切回播放列表页再次重拉。
+
 #### 验证
 
-- `cargo test -p mt-core -p mt-gui`：**74 + 9 = 83 passed, 0 failed**。
-- `python demo/run_all.py`：**12/12 用例通过**（新增 3 个播放列表用例）；`gen_preview.py` + `run_preview.py`
-  在 1080×645 / 900×600 / 1280×800 三窗口尺寸 **ALL PASS**。
+- `cargo test -p mt-core -p mt-gui`：**发布时 74 + 9 = 83 passed；FR-21 三处修复后 80 + 9 = 89 passed, 0 failed**
+  （新增 2 条 `serve.rs::reveal_explorer_arg()` 参数构造单测）。
+- `python demo/run_all.py`：**发布时 12/12；FR-21 补记后 13/13**（新增 `test_track_context_menu.py`）；
+  `gen_preview.py` + `run_preview.py` 在 1080×645 / 900×600 / 1280×800 三窗口尺寸 **ALL PASS**
+  （含 E 组播放队列 / F 组右键菜单 / F10 插播断言）。
 - release 构建后 `dist/mt-{gui,cli}.exe` 同步；`app/gui/frontend` 与 `dist/frontend` 三文件 md5 一致。
 - 真机目视项见 `docs/07` P18（播控手感、队列跨重启恢复、原生文件对话框焦点、导入报告、导出文件）。
 
@@ -92,6 +219,10 @@
 - 有名播放列表队列不受 n 约束；导出文件不含播放队列；M3U8 不回读、不被当作第二份数据源。
 - 列表内不允许同一曲目重复，沿用主键 `(playlist_id, local_id)`，**不做破坏性迁移**。
 - 播放来源判定唯一依据 = 触发播放的那个视图；仅选中不播放不切换队列；队列生成后不再读 DOM。
+- **曲库根即扫描根**：`.mt`（含 `trash/`）必须被 `scan_dir` 跳过；删除曲目必须「文件进回收站 + 清索引」同时成功，
+  任一步失败都要回滚，且路径越界一律拒绝。
+- **「下一首播放」的插播项必须同时进入 `queue` 与 `originalQueue` 并持久化**；无队列时先构造无名列表再加入，
+  两个快照各自按自己的顺序定位（随机模式不得复用洗牌后下标）。
 
 ### v0.4.0 — 2026-11-05
 

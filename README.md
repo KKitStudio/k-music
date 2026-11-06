@@ -7,7 +7,7 @@ K music（原代号 musicMT）是一个 **PC 端音乐管理系统**（未来可
 > ⚠️ 设计要点：应用本质是**本地曲库管理 + 播放器**；网易云服务端登录/下载能力已于 2026-10-29 **彻底移除**（规避批量下载封号风险）。
 > 当前仅保留「从本地网易云音乐曲库目录增量合并」的本地操作（`mt-cli import-netease`），不再有扫码登录 / 按歌单下载 / 配额等联网能力。
 
-**当前版本：v0.5.0** —— 版本号取自根 `Cargo.toml` 的 `[workspace.package] version`；窗口标题、
+**当前版本：v0.5.1** —— 版本号取自根 `Cargo.toml` 的 `[workspace.package] version`；窗口标题、
 「设置 → 关于」与 `mt-cli --version` 三处同源显示。**完整变更记录见 [`VERSION.md`](VERSION.md)**（升级版本号时须同步更新该文件）。
 
 **关于**：作者 kill33 · 联系方式 kill33@126.com · 许可证 MIT。
@@ -96,7 +96,7 @@ GUI（`k_music.exe`）基于 **Tauri 2 + 系统 Edge WebView2**，需要本机�
 
 ```toml
 [meta]
-config_version = "0.5.0"        # 生成该配置时的构建版本号
+config_version = "0.5.1"        # 生成该配置时的构建版本号
 min_compatible_version = "0.2.0" # 可正常解析该配置的最低应用版本号
 ```
 

@@ -304,6 +304,8 @@ fn build_router(
     };
     Router::new()
         .route("/api/tracks", get(tracks_handler))
+        .route("/api/tracks/delete", post(track_delete_handler))
+        .route("/api/tracks/reveal", post(track_reveal_handler))
         .route("/api/track/:id", get(track_handler))
         .route("/api/lyrics/:id", get(lyrics_handler))
         .route("/api/audio/:id", get(audio_handler))
@@ -713,6 +715,126 @@ async fn track_handler(State(st): State<AppState>, AxumPath(id): AxumPath<i64>) 
     .ok()
     .flatten();
     axum::Json(serde_json::json!({ "track": row })).into_response()
+}
+
+#[derive(Deserialize)]
+struct TrackActionReq {
+    local_id: i64,
+}
+
+/// 删除歌曲（FR-21）：把文件移入 `<曲库>/.mt/trash/`，并清掉索引与所有播放列表引用。
+/// 文件移动失败时索引保持不变（见 `library::trash_track` 的回滚），不做不可逆删除。
+async fn track_delete_handler(
+    State(st): State<AppState>,
+    axum::Json(body): axum::Json<TrackActionReq>,
+) -> Response {
+    if body.local_id <= 0 {
+        return err_json("local_id 无效");
+    }
+    let cfg = st.cfg.lock().unwrap().clone();
+    let conn = st.conn.clone();
+    let res = blocking(move || {
+        let c = conn.lock().unwrap();
+        library::trash_track(&cfg, &c, body.local_id)
+    })
+    .await;
+    match res {
+        Ok(o) => axum::Json(serde_json::json!({
+            "ok": true,
+            "name": o.name,
+            "trashed": o.trashed_path,
+            "playlists_affected": o.playlists_affected,
+        }))
+        .into_response(),
+        Err(e) => err_json(&e.to_string()),
+    }
+}
+
+/// 在资源管理器中选中曲目文件。路径须落在当前曲库根内（`ensure_within_library` 防越界）。
+/// 构造 explorer.exe 的定位参数（纯字符串，便于单测）。
+///
+/// explorer.exe 不按标准 `CommandLineToArgvW` 解析命令行：`Command::arg("/select,<path>")`
+/// 在路径含空格时会把整段（含 `/select,` 前缀）加引号，explorer 于是把前缀当作路径的一部分，
+/// 定位失败并落到默认位置 —— 这正是「打开的位置不对」的根因（曲库里 `Alan Walker`、
+/// `Different World` 这类带空格的目录必然触发）。
+/// 正确形式：`/select,"<path>"`，前缀在引号外、引号只包路径，用 `raw_arg` 原样传入。
+/// 文件已不在磁盘时（索引残留 / 被外部移动）降级为只打开其父目录，保证至少落在正确目录。
+#[cfg(windows)]
+fn reveal_explorer_arg(abs: &Path, file_exists: bool) -> String {
+    if file_exists {
+        format!("/select,\"{}\"", abs.display())
+    } else {
+        let parent = abs.parent().unwrap_or(abs);
+        format!("\"{}\"", parent.display())
+    }
+}
+
+#[cfg(all(test, windows))]
+mod reveal_tests {
+    use super::reveal_explorer_arg;
+    use std::path::Path;
+
+    #[test]
+    fn select_prefix_stays_outside_quotes_for_path_with_spaces() {
+        let p = Path::new(r"D:\Music\Alan Walker\Different World\Faded.wav");
+        let arg = reveal_explorer_arg(p, true);
+        assert!(arg.starts_with("/select,\""), "前缀必须在引号外：{arg}");
+        assert!(arg.ends_with('"'), "路径必须用引号闭合：{arg}");
+        assert!(!arg.starts_with('"'), "整段参数不可被引号包裹：{arg}");
+        assert!(arg.contains("Alan Walker\\Different World\\Faded.wav"));
+    }
+
+    #[test]
+    fn missing_file_falls_back_to_parent_folder() {
+        let p = Path::new(r"D:\Music\Alan Walker\Different World\Faded.wav");
+        let arg = reveal_explorer_arg(p, false);
+        assert!(!arg.contains("/select,"), "文件不存在时不应尝试选中：{arg}");
+        assert!(arg.starts_with('"') && arg.ends_with('"'));
+        assert!(arg.contains("Alan Walker\\Different World\""));
+    }
+}
+
+async fn track_reveal_handler(
+    State(st): State<AppState>,
+    axum::Json(body): axum::Json<TrackActionReq>,
+) -> Response {
+    if body.local_id <= 0 {
+        return err_json("local_id 无效");
+    }
+    let cfg = st.cfg.lock().unwrap().clone();
+    let conn = st.conn.clone();
+    let res = blocking(move || -> crate::Result<PathBuf> {
+        let c = conn.lock().unwrap();
+        let path = db::lookup_path_by_local_id(&c, body.local_id)
+            .ok()
+            .flatten()
+            .ok_or_else(|| anyhow::anyhow!("曲目不存在或没有文件路径"))?;
+        library::ensure_within_library(&cfg, Path::new(&path))
+    })
+    .await;
+    match res {
+        Ok(abs) => {
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                let mut cmd = crate::silent_command("explorer.exe");
+                // raw_arg：/select, 前缀留在引号外，避免含空格路径被整段加引号后定位失败。
+                cmd.raw_arg(reveal_explorer_arg(&abs, abs.is_file()));
+                if let Err(e) = cmd.spawn() {
+                    return err_json(&format!("无法打开资源管理器：{e}"));
+                }
+            }
+            #[cfg(not(windows))]
+            let _ = &abs;
+            // 回带实际定位的绝对路径：便于端到端断言与真机排查「打开的位置不对」。
+            axum::Json(serde_json::json!({
+                "ok": true,
+                "path": abs.display().to_string(),
+            }))
+            .into_response()
+        }
+        Err(e) => err_json(&e.to_string()),
+    }
 }
 
 /// 歌词：按 local_id 取曲目文件路径 → 优先同名 `.lrc`，其次音频内嵌歌词。

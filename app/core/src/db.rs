@@ -381,6 +381,31 @@ pub fn prune_missing(conn: &Connection) -> Result<u32> {
     Ok(removed)
 }
 
+/// 删除曲目索引：连同所有播放列表里指向它的条目一起清掉（单个事务）。
+///
+/// 调用方（`library::trash_track`）必须先把音频文件移入回收站：只删索引而磁盘文件仍在，
+/// 下一次扫描会把文件原样重新入库，等于没删。本函数不碰任何磁盘文件。
+/// 返回受影响的播放列表条目数，供 UI 提示「已从 N 个列表移除」。
+pub fn delete_track(conn: &Connection, local_id: i64) -> Result<u32> {
+    let tx = conn.unchecked_transaction()?;
+    // playlist_items 对 download_records 没有外键，必须显式删，否则留下孤儿
+    // （左侧 track_count 仍计入、右侧 JOIN 取不到，播放队列也会撞上失效 id）。
+    let items = tx.execute(
+        "DELETE FROM playlist_items WHERE local_id=?1",
+        params![local_id],
+    )? as u32;
+    let rows = tx.execute(
+        "DELETE FROM download_records WHERE local_id=?1",
+        params![local_id],
+    )?;
+    if rows == 0 {
+        tx.rollback()?;
+        bail!("曲目不存在或已被删除");
+    }
+    tx.commit()?;
+    Ok(items)
+}
+
 /// 取某 file_path 已缓存的 (file_size, file_mtime)，供扫描增量门控判断是否需重新抽取音质元数据。
 /// file_mtime 可能为 NULL（旧记录），此时返回 None 的 mtime，调用方应视为「未缓存」而下探抽取。
 pub fn get_cached_file_info(conn: &Connection, file_path: &str) -> Result<Option<(i64, Option<i64>)>> {
@@ -864,6 +889,31 @@ mod playlist_tests {
         assert!(add_to_playlist(&c, 9999, 1).is_err(), "向不存在的列表加曲应报错");
         let id = create_playlist(&c, "X").unwrap();
         assert!(remove_from_playlist(&c, id, 999).is_err(), "移除不在列表内的曲目应报错");
+    }
+
+    #[test]
+    fn delete_track_removes_index_and_all_playlist_refs() {
+        let c = test_conn();
+        insert_missing_tracks(&c, &[1, 2]);
+        let p1 = create_playlist(&c, "A").unwrap();
+        let p2 = create_playlist(&c, "B").unwrap();
+        add_to_playlist(&c, p1, 1).unwrap();
+        add_to_playlist(&c, p2, 1).unwrap();
+        add_to_playlist(&c, p1, 2).unwrap();
+
+        let affected = delete_track(&c, 1).unwrap();
+        assert_eq!(affected, 2, "两个列表里的引用都应清掉");
+        let exists: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM download_records WHERE local_id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 0, "索引记录应消失");
+        assert_eq!(get_playlist_tracks(&c, p1).unwrap().len(), 1, "另一首曲目不受影响");
+        assert!(get_playlist_tracks(&c, p2).unwrap().is_empty());
+        assert!(delete_track(&c, 1).is_err(), "重复删除应报错");
     }
 }
 

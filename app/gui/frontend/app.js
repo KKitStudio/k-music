@@ -817,6 +817,7 @@ function renderTracks() {
     tr.innerHTML = `<td class="idx-col">${i + 1}</td>` + trackCellsHtml(t, cols);
     tr.addEventListener('click', () => selectTrack(t, tr));
     tr.addEventListener('dblclick', () => { selectTrack(t, tr); playTrack(t); });
+    tr.addEventListener('contextmenu', (e) => openTrackContextMenu(e, t, 'library', tr));
     body.appendChild(tr);
   });
   setupColumnResize($('track-table'));
@@ -1230,7 +1231,8 @@ function startPlayback(t, view) {
   playCurrent();
 }
 
-// 兼容既有调用点：双击 / ▶ 按钮都使用「当前活动视图」作为队列来源。
+// 兼容既有调用点：双击歌曲行 / 右键菜单「播放」都使用指定视图（或当前活动视图）作为队列来源。
+// 列表内不再渲染 ▶ 按钮（用户要求）；播放入口统一为双击与右键菜单。
 function playTrack(t, view) {
   startPlayback(t, view || state.activeTab);
 }
@@ -1270,33 +1272,78 @@ function stepQueue(delta, auto) {
   playCurrent();
 }
 
-// 「下一首播放」插播（S6：不引入右键菜单，工具栏 + 队列面板各一个入口）。
-function enqueueNext(id) {
+// 从来源视图补一首曲目的显示摘要（队列只存副本，绝不引用 state.tracks 的对象）。
+function ensureQueueMeta(pb, id, view) {
+  if (pb.meta[id]) return;
+  const views = [view, 'library', 'playlists', 'albums', 'artists'];
+  for (const v of views) {
+    const hit = sourceTracks(v).find((x) => Number(x.local_id) === id);
+    if (hit) {
+      pb.meta[id] = { name: hit.name || '', artist: hit.artist || '' };
+      return;
+    }
+  }
+  pb.meta[id] = { name: '', artist: '' };
+}
+
+// 「下一首播放」插播（工具栏 / 队列面板 / 右键菜单共用）。
+//
+// FR-21 追加要求：被点歌曲必须**同步追加到当前无名播放列表**，成为队列的持久成员——
+// 即同时写入 queue（播放顺序）与 originalQueue（界面顺序快照），并由 savePlaystate() 落盘，
+// 关闭随机 / 重启后都仍在。当前没有队列时（例如未播放就右键），先按来源视图构造一个
+// 无名列表再加入，而不是只提示「请先播放」。
+function enqueueNext(id, view) {
   const pb = state.playback;
   const n = Number(id);
   if (!n) return;
-  if (!pb.queue.length) { setHint('请先播放一首歌以建立播放队列'); return; }
+  const v = view || pb.source || state.activeTab;
+
+  // ① 尚无队列：按既有 n 规则建立无名播放列表，把该曲追加进去并开始播放。
+  if (!pb.queue.length) {
+    const built = buildQueue(v, n, false);
+    const ids = built && built.queue.length ? built.queue.slice() : [];
+    if (ids.indexOf(n) < 0) ids.push(n);          // 追加到当前无名播放列表
+    const fresh = freshPlayback();
+    fresh.shuffle = pb.shuffle;
+    fresh.repeat = pb.repeat;
+    fresh.originalQueue = ids.slice();
+    fresh.queue = ids.slice();
+    fresh.meta = {};
+    ids.forEach((k) => ensureQueueMeta(fresh, k, v));
+    fresh.source = v;
+    fresh.named = false;
+    fresh.n = built ? built.n : autoPlaylistLimit();
+    fresh.title = queueTitle(v, false);
+    fresh.index = Math.max(0, ids.indexOf(n));
+    state.playback = fresh;
+    if (fresh.shuffle) applyShuffle();
+    renderQueueUI();
+    playCurrent();                                // 内部会 savePlaystate()
+    setHint('已建立自动播放列表，并把该曲加入其中');
+    return;
+  }
+
+  // ② 已有队列：插播项同步进入两个快照，且**各自按自己的顺序定位**。
+  // 随机模式下 queue 已被洗牌，若把洗牌后的下标 at 直接用到 originalQueue 会错位，
+  // 关闭随机后插播项会跑到别的位置（旧缺陷）。
   const curId = pb.queue[pb.index];
   const pos = pb.queue.indexOf(n);
   if (pos >= 0) pb.queue.splice(pos, 1);
   const curIdx = Math.max(0, pb.queue.indexOf(curId));
   const at = Math.min(curIdx + 1, pb.queue.length);
   pb.queue.splice(at, 0, n);
-  if (!pb.meta[n]) {
-    ['library', 'playlists', 'albums', 'artists'].some((v) => {
-      const hit = sourceTracks(v).find((x) => Number(x.local_id) === n);
-      if (hit) { pb.meta[n] = { name: hit.name || '', artist: hit.artist || '' }; return true; }
-      return false;
-    });
-  }
-  // 插播项也写进原始顺序，关闭随机时不会凭空消失。
-  const op = pb.originalQueue.indexOf(n);
-  if (op >= 0) pb.originalQueue.splice(op, 1);
-  pb.originalQueue.splice(Math.min(at, pb.originalQueue.length), 0, n);
+  ensureQueueMeta(pb, n, v);
+
+  const oPos = pb.originalQueue.indexOf(n);
+  if (oPos >= 0) pb.originalQueue.splice(oPos, 1);
+  const oCur = Math.max(0, pb.originalQueue.indexOf(curId));
+  const oAt = Math.min(oCur + 1, pb.originalQueue.length);
+  pb.originalQueue.splice(oAt, 0, n);
+
   pb.index = Math.max(0, pb.queue.indexOf(curId));
   renderQueueUI();
   savePlaystate();
-  setHint('已插到下一首播放');
+  setHint('已插到下一首播放，并同步加入当前播放列表');
 }
 
 function clearQueue() {
@@ -1438,6 +1485,246 @@ $('pl-dialog-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') closeDialog(e.target.value);
   if (e.key === 'Escape') closeDialog(null);
 });
+
+// ==========================================================================
+// 歌曲列表右键菜单（FR-21）
+// 四张歌曲表（曲库 / 播放列表 / 专辑 / 歌手）共用一个浮动菜单。
+// 菜单只保存 local_id 与曲目摘要快照，不引用表格行对象；播放列表清单异步补齐。
+// 删除采用「移入曲库回收站 .mt/trash/ + 清索引」，不做不可逆删除（见后端 trash_track）。
+// ==========================================================================
+let ctxTrack = null;   // { id, track, view }
+
+function ctxItem(icon, label, act, extra, danger) {
+  return `<button type="button" class="ctx-item${danger ? ' ctx-danger' : ''}"` +
+    ` data-ctx-act="${act}"${extra ? ' ' + extra : ''}${danger ? ' data-ctx-danger="1"' : ''}>` +
+    `<span class="ctx-icon">${icon}</span><span class="ctx-label">${esc(label)}</span></button>`;
+}
+
+function renderTrackContextMenu(lists, view) {
+  let html = ctxItem('▶', '播放', 'play') + ctxItem('⏭', '下一首播放', 'enqueue');
+  html += '<div class="ctx-sep"></div><div class="ctx-group-title">添加到播放列表</div>';
+  if (lists && lists.length) {
+    lists.forEach((pl) => {
+      html += ctxItem('＋', pl.name || '未命名列表', 'add', `data-pl-id="${Number(pl.id)}"`);
+    });
+  } else {
+    html += '<div class="ctx-empty">暂无播放列表，可新建</div>';
+  }
+  html += ctxItem('＋', '新建播放列表并加入', 'new');
+  if (view === 'playlists') {
+    html += '<div class="ctx-sep"></div>' + ctxItem('⊖', '从本播放列表移除', 'remove');
+  }
+  html += '<div class="ctx-sep"></div>';
+  html += ctxItem('📂', '打开文件所在位置', 'reveal') + ctxItem('⧉', '复制歌曲信息', 'copy');
+  html += '<div class="ctx-sep"></div>' + ctxItem('🗑', '删除歌曲', 'delete', '', true);
+  $('ctx-menu-items').innerHTML = html;
+}
+
+function positionTrackContextMenu(x, y) {
+  const menu = $('track-context-menu');
+  const w = menu.offsetWidth || 240;
+  const h = menu.offsetHeight || 360;
+  menu.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + 'px';
+  menu.style.top = Math.max(8, Math.min(y, window.innerHeight - h - 8)) + 'px';
+}
+
+function closeTrackContextMenu() {
+  $('track-context-menu').hidden = true;
+  ctxTrack = null;
+}
+
+async function openTrackContextMenu(e, t, view, tr) {
+  if (!t || !(Number(t.local_id) > 0)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const id = Number(t.local_id);
+  ctxTrack = { id: id, track: t, view: view };
+  // 右键即选中该行：菜单动作与详情面板上下文保持一致。
+  selectTrack(t, tr);
+  $('ctx-track-name').textContent = (t.name || '未命名') + (t.artist ? ' — ' + t.artist : '');
+  renderTrackContextMenu([], view);
+  $('track-context-menu').hidden = false;
+  positionTrackContextMenu(e.clientX, e.clientY);
+  const { data } = await api('/api/playlists');
+  // 异步返回时菜单可能已关闭或已换目标，丢弃过期结果。
+  if (!ctxTrack || ctxTrack.id !== id || $('track-context-menu').hidden) return;
+  renderTrackContextMenu((data && data.playlists) || [], view);
+  positionTrackContextMenu(e.clientX, e.clientY);
+}
+
+function ctxPost(path, body) {
+  return api(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+async function runTrackContextAction(act, btn) {
+  const ctx = ctxTrack;
+  if (!ctx) return;
+  const id = ctx.id;
+  const t = ctx.track;
+  const view = ctx.view;
+  closeTrackContextMenu();
+
+  if (act === 'play') { playTrack(t, view); return; }
+  if (act === 'enqueue') { enqueueNext(id, view); return; }
+
+  if (act === 'add' || act === 'new') {
+    let plId = Number(btn.dataset.plId);
+    if (act === 'new') {
+      const name = await showDialog({
+        title: '新建播放列表',
+        text: `将把「${t.name || '未命名'}」加入新建的播放列表。`,
+        input: true, value: '', okText: '创建并加入',
+      });
+      if (!name || !String(name).trim()) return;
+      const created = await ctxPost('/api/playlists', { name: String(name).trim() });
+      if (!created.data || !created.data.ok) {
+        setHint((created.data && created.data.error) || '新建播放列表失败');
+        return;
+      }
+      plId = Number(created.data.id);
+      await loadPlaylists();
+    }
+    const added = await ctxPost('/api/playlists/' + plId + '/add', { local_id: id });
+    if (!added.data || !added.data.ok) {
+      setHint((added.data && added.data.error) || '加入播放列表失败');
+      return;
+    }
+    await loadPlaylists();
+    // 加入动作可能来自曲库 / 专辑 / 歌手任意视图：只要目标列表正是当前已打开的列表，
+    // 就必须刷新右侧曲目表格，否则切回播放列表页看到的仍是旧快照。
+    if (state.currentPlaylist && Number(state.currentPlaylist.id) === plId) {
+      await loadPlaylistTracks(plId);
+    }
+    setHint(`「${t.name || '未命名'}」已加入播放列表`);
+    return;
+  }
+
+  if (act === 'remove') { await removeFromPlaylist(id); return; }
+
+  if (act === 'reveal') {
+    const r = await ctxPost('/api/tracks/reveal', { local_id: id });
+    setHint((r.data && r.data.ok) ? '已在资源管理器中定位文件' : ((r.data && r.data.error) || '定位失败'));
+    return;
+  }
+
+  if (act === 'copy') {
+    const text = (t.name || '未命名') + (t.artist ? ' — ' + t.artist : '') + (t.album ? ' · ' + t.album : '');
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+      }
+      setHint('已复制歌曲信息');
+    } catch (err) {
+      setHint('复制失败：' + (err && err.message ? err.message : err));
+    }
+    return;
+  }
+
+  if (act === 'delete') { await confirmDeleteTrack(id, t, view); }
+}
+
+async function confirmDeleteTrack(id, t, view) {
+  const detail = await api('/api/track/' + id);
+  const trx = (detail.data && detail.data.track) || t;
+  const path = trx.file_path || '';
+  const ok = await showDialog({
+    title: '删除歌曲',
+    text: `「${t.name || '未命名'}」将从曲库中删除。\n` +
+      (path ? `文件：${path}\n` : '') +
+      '\n音频文件会移入曲库回收站 .mt/trash/（可手动取回），' +
+      '索引以及所有播放列表中的引用会一并清除。此操作不会放入系统回收站。',
+    okText: '移入回收站',
+  });
+  if (!ok) return;
+  const res = await ctxPost('/api/tracks/delete', { local_id: id });
+  if (!res.data || !res.data.ok) {
+    setHint((res.data && res.data.error) || '删除失败');
+    return;
+  }
+  dropFromPlaybackQueue(id);
+  await refreshAfterTrackDelete(id, view);
+  setHint(`已删除「${t.name || '未命名'}」` +
+    (res.data.playlists_affected ? `，并从 ${res.data.playlists_affected} 个列表移除` : '') +
+    (res.data.trashed ? '；文件在 .mt/trash/ 可恢复' : ''));
+}
+
+// 删除曲目后从正在播放的队列里摘掉该 id；若删的正是当前曲则顺延到下一首。
+function dropFromPlaybackQueue(id) {
+  const pb = state.playback;
+  if (!pb.queue || !pb.queue.length || pb.queue.indexOf(id) < 0) return;
+  const curId = pb.queue[pb.index];
+  const wasPlaying = !audio.paused;
+  pb.queue = pb.queue.filter((x) => x !== id);
+  pb.originalQueue = (pb.originalQueue || []).filter((x) => x !== id);
+  delete pb.meta[id];
+  if (!pb.queue.length) { clearQueue(); return; }
+  const kept = pb.queue.indexOf(curId);
+  pb.index = kept >= 0 ? kept : Math.min(pb.index, pb.queue.length - 1);
+  if (curId !== pb.queue[pb.index]) {
+    if (wasPlaying) playCurrent();
+    else {
+      audio.pause(); audio.removeAttribute('src');
+      $('btn-play').textContent = '▶';
+      renderQueueUI(); savePlaystate();
+    }
+  } else {
+    renderQueueUI(); savePlaystate();
+  }
+}
+
+// 删除后刷新当前视图与分组计数，并清掉四页内存里残留的该曲，避免详情/队列显示脏数据。
+async function refreshAfterTrackDelete(id, view) {
+  ['tracks', 'playlistTracks', 'albumTracks', 'artistTracks'].forEach((k) => {
+    state[k] = (state[k] || []).filter((x) => Number(x.local_id) !== id);
+  });
+  ['library', 'playlists', 'albums', 'artists'].forEach((v) => {
+    const sel = state.viewSelection[v];
+    if (sel && sel.track && Number(sel.track.local_id) === id) state.viewSelection[v] = null;
+  });
+  if (state.current && Number(state.current.local_id) === id) state.current = null;
+  if (view === 'library') await loadTracks($('search').value);
+  else if (view === 'playlists' && state.currentPlaylist) await loadPlaylistTracks(state.currentPlaylist.id);
+  else if (view === 'albums' && state.currentAlbum) await loadAlbumTracks(state.currentAlbum.name);
+  else if (view === 'artists' && state.currentArtist) await loadArtistTracks(state.currentArtist.name);
+  await loadPlaylists();
+  if (state.activeTab === 'albums') await loadAlbums();
+  if (state.activeTab === 'artists') await loadArtists();
+  renderActiveDetail();
+  renderViewDetail(state.activeTab);
+}
+
+$('ctx-menu-items').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-ctx-act]');
+  if (!btn) return;
+  e.stopPropagation();
+  runTrackContextAction(btn.dataset.ctxAct, btn);
+});
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#track-context-menu')) closeTrackContextMenu();
+});
+document.addEventListener('contextmenu', (e) => {
+  if (e.target.closest('#track-context-menu')) { e.preventDefault(); return; }
+  closeTrackContextMenu();
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeTrackContextMenu(); });
+window.addEventListener('resize', closeTrackContextMenu);
+document.addEventListener('scroll', (e) => {
+  // 菜单自身滚动（播放列表很多时）不能误关菜单。
+  if (e.target === $('track-context-menu') ||
+      (e.target.closest && e.target.closest('#track-context-menu'))) return;
+  closeTrackContextMenu();
+}, true);
 
 // ---------- 歌词 ----------
 // LRC 时间戳：[mm:ss] / [mm:ss.xx] / [mm:ss.xxx]，一行可带多个时间戳。
@@ -1721,6 +2008,7 @@ $('search').addEventListener('input', (e) => loadTracks(e.target.value));
 
 // ---------- 左侧 tab 选择栏（全部曲库 / 播放列表 / 专辑 / 歌手）----------
 function switchTab(tab) {
+  closeTrackContextMenu();
   state.activeTab = tab;
   $('tab-library').classList.toggle('active', tab === 'library');
   $('tab-playlists').classList.toggle('active', tab === 'playlists');
@@ -1739,8 +2027,12 @@ function switchTab(tab) {
   syncSelectionHighlight(tab);
   // 目标页的内联详情条也按该页自己的选中态重算（与右侧详情栏保持同一来源）。
   renderViewDetail(tab);
-  // 切到对应面板时载入列表（首次切换才需要网络；之后切回也不重复请求除非数据变更）。
-  if (tab === 'playlists') loadPlaylists();
+  // 切到对应面板时载入列表。播放列表页额外重拉当前列表曲目：
+  // 加入 / 移除 / 删除歌曲可能发生在别的视图，右侧表格不能沿用上次加载的快照。
+  if (tab === 'playlists') {
+    loadPlaylists();
+    if (state.currentPlaylist) loadPlaylistTracks(state.currentPlaylist.id);
+  }
   if (tab === 'albums') loadAlbums();
   if (tab === 'artists') loadArtists();
 }
@@ -1870,13 +2162,12 @@ function renderPlaylistTracks() {
   const cols = visibleTrackCols();
   let html = '<table class="track-table pl-table"><thead><tr>' +
     '<th class="idx-col">#</th>' +
-    '<th></th>' + trackHeadHtml(cols) +
+    trackHeadHtml(cols) +
     '<th class="pl-remove-col"></th>' +
     '</tr></thead><tbody>';
   state.playlistTracks.forEach((t, i) => {
     html += `<tr data-id="${t.local_id}">` +
       `<td class="idx-col">${i + 1}</td>` +
-      `<td class="pl-play"><button class="md-btn round sm" type="button" data-act="play">▶</button></td>` +
       trackCellsHtml(t, cols) +
       `<td class="pl-remove">` +
         `<button class="md-btn sm" type="button" data-act="up" title="上移">↑</button>` +
@@ -1896,10 +2187,7 @@ function renderPlaylistTracks() {
       selectTrack(t, tr);
     });
     tr.addEventListener('dblclick', () => { selectTrack(t, tr); playTrack(t); });
-    tr.querySelector('[data-act="play"]').addEventListener('click', (e) => {
-      e.stopPropagation();
-      selectTrack(t, tr); playTrack(t);
-    });
+    tr.addEventListener('contextmenu', (e) => openTrackContextMenu(e, t, 'playlists', tr));
     tr.querySelector('[data-act="remove"]').addEventListener('click', (e) => {
       e.stopPropagation();
       removeFromPlaylist(id);
@@ -2072,6 +2360,8 @@ async function removeFromPlaylist(local_id) {
 // 通用：把曲目渲染为与播放列表内一致的表格（只读浏览，不含「移除」等编辑操作）。
 function renderBrowseTracks(boxId, tracks, emptyMsg) {
   const box = $(boxId);
+  // 右键菜单要知道触发来源：al-content = 专辑页，ar-content = 歌手页。
+  const ctxView = boxId === 'al-content' ? 'albums' : 'artists';
   if (!tracks.length) {
     box.innerHTML = '<div class="placeholder">' + esc(emptyMsg) + '</div>';
     return;
@@ -2079,12 +2369,11 @@ function renderBrowseTracks(boxId, tracks, emptyMsg) {
   const cols = visibleTrackCols();
   let html = '<table class="track-table pl-table"><thead><tr>' +
     '<th class="idx-col">#</th>' +
-    '<th></th>' + trackHeadHtml(cols) +
+    trackHeadHtml(cols) +
     '</tr></thead><tbody>';
   tracks.forEach((t, i) => {
     html += '<tr data-id="' + t.local_id + '">' +
       '<td class="idx-col">' + (i + 1) + '</td>' +
-      '<td class="pl-play"><button class="md-btn round sm" type="button" data-act="play">▶</button></td>' +
       trackCellsHtml(t, cols) +
       '</tr>';
   });
@@ -2099,10 +2388,7 @@ function renderBrowseTracks(boxId, tracks, emptyMsg) {
       selectTrack(t, tr);
     });
     tr.addEventListener('dblclick', () => { selectTrack(t, tr); playTrack(t); });
-    tr.querySelector('[data-act="play"]').addEventListener('click', (e) => {
-      e.stopPropagation();
-      selectTrack(t, tr); playTrack(t);
-    });
+    tr.addEventListener('contextmenu', (e) => openTrackContextMenu(e, t, ctxView, tr));
   });
 }
 

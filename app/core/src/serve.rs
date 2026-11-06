@@ -325,14 +325,20 @@ fn build_router(
         .route("/api/netease/library-dir", post(netease_library_dir_handler))
         .route("/api/playlists", get(playlists_handler).post(playlist_create_handler))
         .route("/api/playlists/:id", delete(playlist_delete_handler))
+        .route("/api/playlists/:id/rename", post(playlist_rename_handler))
         .route("/api/playlists/:id/tracks", get(playlist_tracks_handler))
         .route("/api/playlists/:id/add", post(playlist_add_handler))
         .route("/api/playlists/:id/remove", post(playlist_remove_handler))
+        .route("/api/playlists/:id/move", post(playlist_move_handler))
+        .route("/api/playlists/:id/export", post(playlist_export_handler))
+        .route("/api/playlist-import", post(playlist_import_handler))
+        .route("/api/pick-playlist-file", post(pick_playlist_file_handler))
         .route("/api/albums", get(albums_handler))
         .route("/api/albums/tracks", get(album_tracks_handler))
         .route("/api/artists", get(artists_handler))
         .route("/api/artists/tracks", get(artist_tracks_handler))
         .route("/api/status", get(status_handler))
+        .route("/api/playstate", get(playstate_get_handler).post(playstate_post_handler))
         .route("/api/focus", get(focus_handler))
         .route("/api/about", get(about_handler))
         .route("/api/appearance/titlebar", post(titlebar_color_handler))
@@ -436,6 +442,7 @@ async fn status_handler(State(st): State<AppState>) -> Response {
     // 布局风格（4 视图各自独立）与歌曲列表列宽占比（%）。
     let layout_styles = cfg_guard.ui.layout_styles_map();
     let column_widths = cfg_guard.ui.widths_map();
+    let auto_playlist_count = cfg_guard.ui.auto_playlist_count;
     // 外观 / 主题方案（配置文件为准；自定义皮肤图片本体不入配置，由前端 localStorage 兜底）。
     let appearance = serde_json::json!({
         "theme": cfg_guard.ui.theme,
@@ -475,6 +482,7 @@ async fn status_handler(State(st): State<AppState>) -> Response {
             "layout_styles": layout_styles,
             "column_widths": column_widths,
             "appearance": appearance,
+            "auto_playlist_count": auto_playlist_count,
             "app_version": app::APP_VERSION,
             "min_compatible_version": app::MIN_COMPATIBLE_VERSION,
             "config_version": cs.app_config_version,
@@ -488,6 +496,180 @@ async fn status_handler(State(st): State<AppState>) -> Response {
         }),
     )
     .into_response()
+}
+
+/// 读取播放状态（跨重启恢复队列与位置）。失效 id → 后端返回 `state: null`，前端按「无队列」处理。
+async fn playstate_get_handler(State(st): State<AppState>) -> Response {
+    let cfg = st.cfg.clone();
+    let conn = st.conn.clone();
+    let state = blocking(move || {
+        let g = cfg.lock().unwrap();
+        let c = conn.lock().unwrap();
+        crate::playstate::load(&g, &c)
+    })
+    .await;
+    axum::Json(serde_json::json!({ "ok": true, "state": state })).into_response()
+}
+
+/// 写入播放状态；`{"clear": true}` 表示清空队列并删除状态文件。
+/// 保存前逐个校验 queue 里的 local_id 仍在 download_records（DB 是唯一权威源）。
+async fn playstate_post_handler(
+    State(st): State<AppState>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Response {
+    if body.get("clear").and_then(|v| v.as_bool()) == Some(true) {
+        let cfg = st.cfg.clone();
+        let res = blocking(move || {
+            let g = cfg.lock().unwrap();
+            crate::playstate::clear(&g)
+        })
+        .await;
+        return match res {
+            Ok(()) => axum::Json(serde_json::json!({ "ok": true })).into_response(),
+            Err(e) => err_json(&format!("清空播放状态失败：{e}")),
+        };
+    }
+    let cfg = st.cfg.clone();
+    let conn = st.conn.clone();
+    let res = blocking(move || {
+        let g = cfg.lock().unwrap();
+        let c = conn.lock().unwrap();
+        crate::playstate::save(&g, &c, &body)
+    })
+    .await;
+    match res {
+        Ok(()) => axum::Json(serde_json::json!({ "ok": true })).into_response(),
+        Err(e) => err_json(&format!("保存播放状态失败：{e}")),
+    }
+}
+
+// ---------- 播放列表导入导出（FR-20，格式方案 A）----------
+
+#[derive(Deserialize)]
+struct PlaylistExportReq {
+    dir: String,
+}
+
+/// 导出**单个列表的全量**（绝不导出当前播放队列，否则 n 的截断结果会污染文件）。
+/// 一次产出 `.json` 无损备份 + `.m3u8` 通用交换格式（UTF-8 Extended M3U）。
+async fn playlist_export_handler(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<i64>,
+    axum::Json(body): axum::Json<PlaylistExportReq>,
+) -> Response {
+    let dir = PathBuf::from(body.dir.trim());
+    if body.dir.trim().is_empty() {
+        return err_json("导出目录不能为空");
+    }
+    let conn = st.conn.clone();
+    let cfg = st.cfg.clone();
+    let res = blocking(move || -> Result<serde_json::Value> {
+        let c = conn.lock().unwrap();
+        let g = cfg.lock().unwrap();
+        let name: String = c
+            .query_row("SELECT name FROM playlists WHERE id=?1", rusqlite::params![id], |r| r.get(0))
+            .map_err(|_| anyhow::anyhow!("播放列表不存在或已被删除"))?;
+        let tracks = db::get_playlist_tracks(&c, id)?;
+        let root = g.paths.download_root.clone();
+        let lib_name = g.library.name.clone();
+        let backup = crate::playlist_io::build_backup(&name, &lib_name, &root, &tracks);
+        let json_text = serde_json::to_string_pretty(&backup)?;
+        let m3u8_text = crate::playlist_io::build_m3u8(&name, &tracks, &root);
+        std::fs::create_dir_all(&dir)?;
+        let (pj, pm) = crate::playlist_io::export_paths(&dir, &name);
+        std::fs::write(&pj, json_text)?;
+        std::fs::write(&pm, m3u8_text)?;
+        Ok(serde_json::json!({
+            "name": name,
+            "track_count": tracks.len(),
+            "files": [pj.to_string_lossy(), pm.to_string_lossy()],
+        }))
+    })
+    .await;
+    match res {
+        Ok(mut v) => {
+            v["ok"] = serde_json::json!(true);
+            axum::Json(v).into_response()
+        }
+        Err(e) => err_json(&e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+struct PlaylistImportReq {
+    file: String,
+    #[serde(default)]
+    name: String,
+}
+
+/// 导入外部播放列表文件（M3U8 / JSON / CSV），匹配 → 两级去重 → **新建**列表并写 DB。
+/// 未匹配跳过、不建占位；多副本取第一个并报告歧义；误合并逐条列出。
+async fn playlist_import_handler(
+    State(st): State<AppState>,
+    axum::Json(body): axum::Json<PlaylistImportReq>,
+) -> Response {
+    let file = PathBuf::from(body.file.trim());
+    let name_override = body.name.trim().to_string();
+    let conn = st.conn.clone();
+    let cfg = st.cfg.clone();
+    let res = blocking(move || -> Result<serde_json::Value> {
+        let parsed = crate::playlist_io::parse_file(&file)?;
+        let c = conn.lock().unwrap();
+        let g = cfg.lock().unwrap();
+        let root = g.paths.download_root.clone();
+        let resolved = crate::playlist_io::resolve(&c, &root, &parsed)?;
+        if resolved.local_ids.is_empty() {
+            anyhow::bail!("没有匹配到任何本地曲目，未创建播放列表");
+        }
+        let base = if name_override.is_empty() {
+            parsed.name.clone().unwrap_or_default()
+        } else {
+            name_override
+        };
+        let name = crate::playlist_io::unique_name(&c, &base)?;
+        let id = db::create_playlist(&c, &name)?;
+        for lid in &resolved.local_ids {
+            db::add_to_playlist(&c, id, *lid)?;
+        }
+        Ok(serde_json::json!({
+            "playlist_id": id,
+            "name": name,
+            "total": parsed.entries.len(),
+            "matched": resolved.report.matched,
+            "report": resolved.report,
+        }))
+    })
+    .await;
+    match res {
+        Ok(mut v) => {
+            v["ok"] = serde_json::json!(true);
+            axum::Json(v).into_response()
+        }
+        Err(e) => err_json(&e.to_string()),
+    }
+}
+
+/// 原生文件对话框选择导入源（rfd）；关闭后恢复主窗口焦点，避免历史「对话框抢焦点」问题。
+async fn pick_playlist_file_handler(State(st): State<AppState>) -> Response {
+    let init_dir = st.cfg.lock().unwrap().paths.download_root.clone();
+    let resp = match blocking(move || {
+        rfd::FileDialog::new()
+            .set_title("选择播放列表文件（.m3u8 / .m3u / .json / .csv）")
+            .set_directory(init_dir)
+            .add_filter("播放列表", &["m3u", "m3u8", "json", "csv"])
+            .pick_file()
+    })
+    .await
+    {
+        Some(p) => axum::Json(serde_json::json!({
+            "ok": true,
+            "path": p.to_string_lossy()
+        }))
+        .into_response(),
+        None => axum::Json(serde_json::json!({ "ok": true, "canceled": true })).into_response(),
+    };
+    restore_focus_after_dialog();
+    resp
 }
 
 /// 「关于」信息：应用名称 / 版本号 / 作者 / 联系方式 / 许可证 / 技术栈。
@@ -1127,6 +1309,7 @@ async fn ui_prefs_get_handler(State(st): State<AppState>) -> Response {
         "layout_styles": ui.layout_styles_map(),
         "column_widths": ui.widths_map(),
         "appearance": appearance_json(&ui),
+        "auto_playlist_count": ui.auto_playlist_count,
     }))
     .into_response()
 }
@@ -1197,6 +1380,16 @@ async fn ui_prefs_post_handler(
         // 收到外观请求即视为「已显式保存过」，用于旧配置的一次性迁移判定。
         ui.appearance_saved = true;
     }
+    // 自动播放列表上限 n：数字或数字字符串都接受，坏值回退默认 20、越界钳制到 [1, 200]。
+    // 这是应用设置，与曲库无关，走同一处 [ui] 段就地更新。
+    if let Some(v) = body.get("auto_playlist_count") {
+        let n = match v {
+            serde_json::Value::Number(n) => n.as_f64().unwrap_or(f64::NAN),
+            serde_json::Value::String(s) => s.trim().parse::<f64>().unwrap_or(f64::NAN),
+            _ => f64::NAN,
+        };
+        ui.auto_playlist_count = config::clamp_auto_playlist_count(n);
+    }
     ui.sanitize();
 
     // 写盘（就地更新 [ui] 段）→ 失败则不污染内存状态。
@@ -1210,6 +1403,7 @@ async fn ui_prefs_post_handler(
         "layout_styles": ui.layout_styles_map(),
         "column_widths": ui.widths_map(),
         "appearance": appearance_json(&ui),
+        "auto_playlist_count": ui.auto_playlist_count,
     }))
     .into_response()
 }
@@ -1441,13 +1635,16 @@ fn fname_of_path(p: &str) -> String {
 /// 列出全部播放列表（含各自曲目数）。
 async fn playlists_handler(State(st): State<AppState>) -> Response {
     let conn = st.conn.clone();
-    let rows = blocking(move || {
+    let res = blocking(move || {
         let c = conn.lock().unwrap();
         db::list_playlists(&c)
     })
-    .await
-    .unwrap_or_default();
-    axum::Json(serde_json::json!({ "playlists": rows })).into_response()
+    .await;
+    // DB 异常必须如实返回，不能用空数组伪装成「暂无播放列表」。
+    match res {
+        Ok(rows) => axum::Json(serde_json::json!({ "ok": true, "playlists": rows })).into_response(),
+        Err(e) => err_json(&format!("读取播放列表失败：{e}")),
+    }
 }
 
 #[derive(Deserialize)]
@@ -1499,13 +1696,15 @@ async fn playlist_tracks_handler(
     AxumPath(id): AxumPath<i64>,
 ) -> Response {
     let conn = st.conn.clone();
-    let rows = blocking(move || {
+    let res = blocking(move || {
         let c = conn.lock().unwrap();
         db::get_playlist_tracks(&c, id)
     })
-    .await
-    .unwrap_or_default();
-    axum::Json(serde_json::json!({ "tracks": rows })).into_response()
+    .await;
+    match res {
+        Ok(rows) => axum::Json(serde_json::json!({ "ok": true, "tracks": rows })).into_response(),
+        Err(e) => err_json(&format!("读取播放列表曲目失败：{e}")),
+    }
 }
 
 #[derive(Deserialize)]
@@ -1548,6 +1747,54 @@ async fn playlist_remove_handler(
     .await;
     match res {
         Ok(()) => axum::Json(serde_json::json!({ "ok": true })).into_response(),
+        Err(e) => err_json(&e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+struct PlaylistRename {
+    name: String,
+}
+
+/// 重命名播放列表（名称非空 / ≤60 字符 / 同名拒绝，由 db 层统一校验）。
+async fn playlist_rename_handler(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<i64>,
+    axum::Json(body): axum::Json<PlaylistRename>,
+) -> Response {
+    let conn = st.conn.clone();
+    let res = blocking(move || {
+        let c = conn.lock().unwrap();
+        db::rename_playlist(&c, id, &body.name)
+    })
+    .await;
+    match res {
+        Ok(()) => axum::Json(serde_json::json!({ "ok": true })).into_response(),
+        Err(e) => err_json(&e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+struct PlaylistMove {
+    local_id: i64,
+    /// -1 = 上移，+1 = 下移。
+    delta: i64,
+}
+
+/// 列表内上移 / 下移一首（交换相邻 position）。
+async fn playlist_move_handler(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<i64>,
+    axum::Json(body): axum::Json<PlaylistMove>,
+) -> Response {
+    let conn = st.conn.clone();
+    let res = blocking(move || {
+        let c = conn.lock().unwrap();
+        db::move_playlist_item(&c, id, body.local_id, body.delta)
+    })
+    .await;
+    match res {
+        Ok(moved) => axum::Json(serde_json::json!({ "ok": true, "moved": moved })).into_response(),
         Err(e) => err_json(&e.to_string()),
     }
 }

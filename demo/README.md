@@ -1,4 +1,4 @@
-# demo —— K曲库（musicMT）测试代码集中区
+# demo —— K music（musicMT）测试代码集中区
 
 本目录集中存放**全部**测试与验证代码，便于统一运行与查看。
 
@@ -18,6 +18,9 @@ demo/
 │   ├── test_boot_appearance.py    入口 HTML 首屏注入外观（防启动主题闪烁）
 │   ├── test_single_instance.py    /api/focus 单实例唤起端点（未注册 sink 时优雅空转）
 │   ├── test_time_columns.py    导入/创建时间字段 + 创建时间默认隐藏/设置面板开关（真实 E2E）
+│   ├── test_playlists.py       播放列表 CRUD / 重排 / 孤儿清理 / 错误不吞（真实 E2E）
+│   ├── test_auto_playlist_count.py  自动播放列表上限 n：默认值 / 落盘 / 重启 / 越界钳制
+│   ├── test_playlist_io.py     播放列表导入导出：JSON 备份 + M3U8 投影 + 两级去重
 │   └── test_real_config.py     用用户真实 dist/kqk-app.toml 验证就地更新不破坏内容
 ├── tools/                 ← 辅助工具
 │   ├── gen_preview.py         生成前端 mock 预览页（注入假 fetch）
@@ -137,7 +140,12 @@ python demo/fixtures/make_fixtures.py --status   # 只看状态
 布局风格切换、8 列存储占比 / 默认可见 7 列的列宽比例与拖拽、跨页详情隔离、
 **导入时间默认显示 + 创建时间默认隐藏**（含空值隐藏契约）、
 「设置 → 列表」勾选 / 取消「创建时间」后四张表同步显隐且 POST `/api/columns`、
-外观主题方案还原与落盘。
+外观主题方案还原与落盘、
+**E 组 · 播放队列**（n 默认值与「设置 → 播放」保存、无名队列可视段构造与快照语义、
+有名队列全量不受 n 影响、上一首 / 下一首 / 随机 / 循环、队列面板、「下一首播放」插播、清空队列）。
+
+> mock 页会设 `window.__KQK_DISABLE_AUDIO_ERROR_SKIP__ = true`：无头环境里 `/api/audio/:id` 必然 404，
+> 若不禁掉 `audio.error` 的自动跳曲逻辑会打乱队列断言。该钩子只存在于 mock 注入脚本，前端本身仍保留跳曲。
 
 > 默认列规则（勿回归）：`default_track_columns()` 只有 7 列（含 `imported_at`、不含 `created_at`）；
 > `all_track_column_keys()` 仍是 8 列，所以设置面板里能看到但未勾选「创建时间」。
@@ -190,3 +198,22 @@ POST 保存 dark 主题后重新 GET 立即反映、`/index.html` 同样注入�
 
 用**修复前**的备份 `app.js` 跑同一套断言，确认断言确实能捕捉到目标 bug
 （失败项即为修复前的真实症状）。
+
+### `tests/test_playlists.py` —— 播放列表基础链路（真实端到端）
+
+零 mock：真实 `mt-cli serve` + 真实 SQLite。覆盖空名 / 超长名 / 同名拒绝、建单 / 列出 / 删除 /
+取曲目 / 加曲（`INSERT OR IGNORE` 幂等）/ 移除、↑↓ 重排、`prune_missing()` 清理 `playlist_items` 孤儿、
+DB 异常不再被 `unwrap_or_default()` 吞成「暂无播放列表」、重启后列表与曲目仍在。**35 断言**。
+
+### `tests/test_auto_playlist_count.py` —— 自动播放列表上限 n
+
+验证 `auto_playlist_count` 默认值 20、`/api/status` 与 `GET/POST /api/ui-prefs` 读写、
+落盘到 app 级 `kqk-app.toml [ui]`、**重启后读回**、越界 / 坏值钳制与默认回退、
+`[ui]` 段注释与未知键不被抹掉、其它设置互不干扰、创建时间仍默认隐藏。**24 断言**。
+
+### `tests/test_playlist_io.py` —— 播放列表导入导出
+
+验证一次导出同时产 `.json` + `.m3u8`（安全文件名、M3U8 相对曲库根路径、JSON 无损字段）、
+**导出列表全量不受 n=1 影响**、`.m3u` / `.m3u8` / `.json` / `.csv` 四种格式导入、
+四级匹配与两级去重（`local_id` 级 + 文件名 / 艺人 / 时长内容级）、未匹配跳过并报告、
+不支持格式 / 不存在列表的错误语义。**34 断言**。

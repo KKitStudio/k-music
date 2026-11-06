@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <!-- K曲库 正式图标 v3：v1 横版构图，字标放大 1.20x；配色/字体/飘带沿用 v1 -->
+  <!-- K music 正式图标 v3：v1 横版构图，字标放大 1.20x；配色/字体/飘带沿用 v1 -->
   <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
     <stop offset="0" stop-color="#EEEBE7"/><stop offset="1" stop-color="#DBD6D0"/>
   </linearGradient></defs>

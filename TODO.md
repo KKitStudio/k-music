@@ -1,6 +1,6 @@
 # TODO — 发布可执行包（直发个人 / GitHub Release 共用同一产物）
 
-> 状态：结论已整理，暂缓执行。等当前版本（v0.4.0）暂时稳定后再逐项推进。
+> 状态：结论已整理，暂缓执行。等当前版本（v0.5.0）暂时稳定后再逐项推进。
 > 背景：2026-11-06 关于"如何发给别人 / 如何发 GitHub"的复盘结论。
 > 关键澄清：**直发个人** 与 **GitHub Release** 的二进制产物是同一个清理后的 `dist` zip；
 > GitHub 仅额外多一层"开源代码 + 官方下载页"。故两者合并为同一条流水线。
@@ -70,6 +70,7 @@
         `README.md`、`VERSION.md`、`TODO.md`、`CODEBUDDY.md`、`.gitignore`、`.gitattributes`、`.vscode/`、`.workbuddy/memory/`。
       - 写/补 `README.md`：项目简介、依赖（Rust stable + WebView2）、编译命令、
         运行方式（`mt-gui.exe` 双击 或 `mt-cli.exe serve`）、`frontend/` 须与 exe 同级、ncm 可选说明。（现状已基本覆盖，发布前复核即可。）
+- [ ] **A3. 发布/GitHub 前将入口可执行文件重命名为 `k_music.exe`**：GUI 入口当前 bin 名为 `mt-gui`（产物 `mt-gui.exe`，来自 `app/gui/Cargo.toml` 的 `name = "mt-gui"`），发布包入口文件名应统一为 `k_music.exe`（对应项目名 `K music`，文件名用下划线更文件系统友好）。影响面（已核查）：① 改名方式二选一——**推荐在打包步骤重命名**（`tools/package_gui.bat` 拷贝时 `ren`/`cp` 改目标名，及规划中的 CI `release.yml`），避免改 crate 名牵连 Tauri 配置与构建；若改 `Cargo.toml name`，须同步 `tauri.conf.json` 与所有 `mt-gui` 引用；② `tools/package_gui.bat` 第 50 行拷贝目标与第 57 行提示文案；③ `app/gui/src/single_instance.rs` 注释（逻辑未硬引用文件名，安全）；④ 文档中所有 `mt-gui.exe`：`README.md`、`tools/dist_readme.md`、`docs/02`、`docs/07`、`VERSION.md`、`CODEBUDDY.md`、本 TODO；⑤ 规划中的 CI `release.yml` 拷贝/打包目标名。注意：CLI 入口 `mt-cli.exe` 由 GUI 内部调用，本次**不动**；显示名 `productName = "K music"` 保持不变。优先级：**发布前必做**。
 - [ ] **B. 新增 `.github/workflows/release.yml` 自动出包**（标准可行）：
       - Runner：`windows-latest`（预装 MSVC 工具链 + Windows SDK，可编译 Tauri）。
       - 步骤：装 Rust → `cargo build --release -p mt-gui -p mt-cli`
@@ -78,6 +79,25 @@
       - 触发：打 tag（`v*`）时自动跑；产物即上面的 zip。
       - 优势：CI 不运行 app，**天然无 `.guest/`/`kqk-app.toml` 残留**，比本地手工更干净。
       - 注意：WebView2 是用户运行时依赖，CI 无需也不处理。
+
+---
+
+## 待决策：品牌图标（UI Brief 冲突项，未实施）
+
+- **冲突点**：UI Brief【品牌】建议「单字母 K + 渐变方块、清新蓝」；当前正式图标为已拍板的 **v3**
+  （石墨暖灰圆角方块 `#EEEBE7→#DBD6D0` + 手写 Segoe Script 艺术字「K music」+ 飘带），
+  且用户此前明确否决过「蓝高对比」。两套视觉语言不同，直接套用等于推翻已定稿的 v3。
+- **另两处文案过时**（采纳 Brief 前需改写，非代码冲突）：Brief 正文仍写旧名「K曲库」、
+  及「网易云本地库同步」；与已改名「K music」、以及「网易云服务端登录/下载已移除（仅本地增量合并）」事实不符。
+- **候选方案（待用户拍板，决定前不改动 v1/v2 备份与 v3 正式图标）**：
+  - **A. 维持 v3 不变（推荐）**：尊重已拍板结果，图标与界面主色（蓝）轻微不统一可接受；
+    后续若想统一，走方案 C 的低成本协调。
+  - **B. 按 Brief 重做图标**：单字母 K + 清新蓝（`#4F7CFF`）渐变方块，并同步替换
+    顶栏 `brand::before` 图标遮罩、窗口图标（重跑 `icon_pipeline.py` + `cargo build`）。
+    风险：回到用户曾否决的蓝高对比调性，需二次确认。
+  - **C. 折中协调**：保留 v3 的「K music 字标 + 飘带」构图，仅把暖灰底色换成与全新主色一致的
+    **低饱和蓝系**（非高对比），让 logo 与界面主色统一，改动最小、风险最低。
+- **入口可执行文件名**：已在 A3 记录（发布前重命名为 `k_music.exe`），与图标方案无关。
 
 ---
 

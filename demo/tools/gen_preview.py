@@ -83,12 +83,15 @@ const MOCK_STATUS = {
   appearance: {
     theme: 'dark', accent: '#7e57c2', skin_type: '', skin_preset: '', skin_accent: '', saved: true
   },
+  auto_playlist_count: 20,
   app_version: '0.3.0',
   min_compatible_version: '0.3.0',
   config_version: '0.3.0',
   config_compat: 'compatible',
 };
 window.__POSTS = [];
+// 无头环境里 <audio src="/api/audio/..."> 必然 404；禁用「失效自动跳曲」，否则队列断言会被连跳打乱。
+window.__KQK_DISABLE_AUDIO_ERROR_SKIP__ = true;
 window.fetch = function (url, opts) {
   opts = opts || {};
   const u = String(url);
@@ -99,6 +102,9 @@ window.fetch = function (url, opts) {
     // /api/columns 要回显保存后的列，前端才能据它重建 state.columns / state.visible。
     let reply = { ok: true };
     if (u.indexOf('/api/columns') === 0) reply.columns = body.columns || [];
+    if (u.indexOf('/api/ui-prefs') === 0 && body.auto_playlist_count !== undefined) {
+      reply.auto_playlist_count = Number(body.auto_playlist_count);
+    }
     return Promise.resolve({ ok: true, json: () => Promise.resolve(reply) });
   }
   const qname = (u.indexOf('name=') >= 0)
@@ -119,6 +125,7 @@ window.fetch = function (url, opts) {
   else if (u.indexOf('/api/playlists/') === 0 && u.indexOf('/tracks') > 0)
     data = { tracks: MOCK_TRACKS.slice(0, 2) };
   else if (u.indexOf('/api/playlists') === 0) data = { playlists: MOCK_PLAYLISTS };
+  else if (u.indexOf('/api/playstate') === 0) data = { ok: true, state: null };
   else if (u.indexOf('/api/cover') === 0) data = {};
   else if (u.indexOf('/api/lyrics') === 0) data = { timed: false, lines: [] };
   else data = {};
@@ -515,6 +522,109 @@ ASSERT = r"""
      'D7 POST 的 appearance.theme=light');
   ok(document.documentElement.getAttribute('data-theme') === 'light',
      'D7 改主题后界面立即生效');
+
+  // ---------- E. 统一播放上下文 / n / 全局播控 ----------
+  document.getElementById('tab-library').click();
+  await wait(250);
+  ok(state.autoPlaylistCount === 20, 'E1 /api/status 读回默认 n=20（实际 ' + state.autoPlaylistCount + '）');
+  ok(state.playback.queue.length === 0, 'E1 首次进入无播放队列');
+  ok($('queue-title').textContent === '', 'E1 未播放时队列标题为空');
+
+  // n=2、曲库共 3 首 → 队列最多 2 首；点击第 2 首，检验「不从队首播」。
+  state.autoPlaylistCount = 2;
+  const rowsLib = Array.from(document.querySelectorAll('#track-body tr[data-id]'));
+  const clickedId = Number(rowsLib[1].dataset.id);
+  rowsLib[1].dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+  await wait(250);
+  const pb0 = state.playback;
+  ok(pb0.queue.length === 2, 'E2 n=2 → 无名队列最多 2 首（实际 ' + pb0.queue.length + '）');
+  ok(pb0.n === 2, 'E2 队列快照记下生成时的 n=2');
+  ok(pb0.named === false, 'E2 曲库来源判定为无名队列');
+  ok(pb0.queue.indexOf(clickedId) >= 0 && pb0.index === pb0.queue.indexOf(clickedId),
+     'E2 点击曲在队列内且 index 指向它（不从队首播）');
+  ok(pb0.title.indexOf('自动播放列表') >= 0, 'E2 队列标题标识无名列表');
+
+  // 快照只存 id，不引用 state.tracks（搜索 / 扫描 / 导入不会改写队列）。
+  const qBefore = pb0.queue.join(',');
+  state.tracks = [];
+  ok(state.playback.queue.join(',') === qBefore, 'E3 改写 state.tracks 不影响已生成队列');
+  state.tracks = MOCK_TRACKS.slice();
+  renderTracks();
+  state.autoPlaylistCount = 3;
+  ok(state.playback.n === 2, 'E4 播放中改 n 不改写已生成队列的 n 快照');
+
+  // 播控：上 / 下一首、循环开关、随机洗一次固定顺序。
+  // 先重播队首（E2 点的是队尾，顺序模式下「下一首」按规格应停在末尾，不能拿它测推进）。
+  state.autoPlaylistCount = 2;
+  const libRows2 = document.querySelectorAll('#track-body tr[data-id]');
+  libRows2[0].dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+  await wait(220);
+  const idx0 = state.playback.index;
+  ok(idx0 === 0, 'E5 重播队首后 index=0（实际 ' + idx0 + '）');
+  $('btn-next').click(); await wait(120);
+  ok(state.playback.index === idx0 + 1, 'E5 下一首推进 index');
+  $('btn-prev').click(); await wait(120);
+  ok(state.playback.index === idx0, 'E5 上一首回退 index');
+  $('btn-repeat').click(); await wait(80);
+  ok(state.playback.repeat === true, 'E5 列表循环开关生效');
+  $('btn-repeat').click(); await wait(80);
+  ok(state.playback.repeat === false, 'E5 可关闭列表循环（顺序停止）');
+  const orig = state.playback.originalQueue.join(',');
+  $('btn-shuffle').click(); await wait(80);
+  ok(state.playback.shuffle === true, 'E6 随机开关生效');
+  ok(state.playback.originalQueue.join(',') === orig, 'E6 洗牌不改写原始顺序快照');
+  ok(state.playback.queue.length === 2 && state.playback.queue.slice().sort().join(',')
+     === orig.split(',').sort().join(','), 'E6 随机只洗当前队列，集合不变');
+  $('btn-shuffle').click(); await wait(80);
+  ok(state.playback.queue.join(',') === orig, 'E6 关闭随机恢复界面顺序');
+
+  // 队列面板 / 插播 / 清空。
+  $('btn-queue').click(); await wait(80);
+  ok(!$('queue-drawer').hidden, 'E7 队列面板可打开');
+  ok($('queue-list').querySelectorAll('li').length === state.playback.queue.length,
+     'E7 队列面板行数与队列长度一致');
+  const li0 = $('queue-list').querySelectorAll('li')[0];
+  if (li0) { li0.click(); await wait(100); ok(state.playback.index === 0, 'E7 点击队列行可跳播'); }
+  $('queue-close').click();
+  const beforeLen = state.playback.queue.length;
+  state.current = MOCK_TRACKS[2];
+  $('btn-enqueue').click(); await wait(80);
+  ok(state.playback.queue.length === beforeLen + 1, 'E8 「下一首播放」插入一首');
+  ok(Number(state.playback.queue[state.playback.index + 1]) === Number(MOCK_TRACKS[2].local_id),
+     'E8 插播位置紧跟当前曲');
+  $('queue-clear').click(); await wait(80);
+  ok(state.playback.queue.length === 0, 'E8 清空队列后状态归零');
+
+  // 有名列表：队列 = 列表全量，n=1 也不截断。
+  document.getElementById('tab-playlists').click(); await wait(350);
+  const plLi = document.querySelector('#pl-list li[data-id]');
+  if (plLi) plLi.click();
+  await wait(350);
+  const plRows = Array.from(document.querySelectorAll('#pl-content tr[data-id]'));
+  state.autoPlaylistCount = 1;
+  if (plRows.length) plRows[0].dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+  await wait(250);
+  ok(state.playback.named === true, 'E9 播放列表页来源判定为有名队列');
+  ok(state.playback.n === null, 'E9 有名队列不记 n（不受截断影响）');
+  ok(state.playback.queue.length === plRows.length && plRows.length === 2,
+     'E9 有名队列 = 列表全量 2 首（n=1 仍全量，实际 ' + state.playback.queue.length + '）');
+
+  // 设置 → 播放：保存 n，且不改动正在播放的队列。
+  document.getElementById('btn-settings').click(); await wait(150);
+  const tabPlayback = document.querySelector('.settings-tab[data-tab="playback"]');
+  ok(!!tabPlayback, 'E10 设置面板新增「播放」分区');
+  if (tabPlayback) tabPlayback.click();
+  await wait(100);
+  $('set-auto-count').value = '7';
+  const pMark = window.__POSTS.length;
+  $('set-apply-playback').click(); await wait(220);
+  const nPosts = window.__POSTS.slice(pMark).filter(
+    (p) => p.url.indexOf('/api/ui-prefs') === 0 && p.body.auto_playlist_count !== undefined);
+  ok(nPosts.length >= 1 && Number(nPosts[nPosts.length - 1].body.auto_playlist_count) === 7,
+     'E10 设置面板保存 n=7（POST /api/ui-prefs）');
+  ok(state.autoPlaylistCount === 7, 'E10 保存后 state 同步为 7');
+  ok(state.playback.queue.length === 2, 'E10 改 n 不影响正在播放的队列（下次生成才生效）');
+  document.getElementById('settings-close').click();
 
   const pre = document.createElement('pre');
   pre.id = 'ASSERT';

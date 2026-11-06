@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>K曲库</title>
+  <title>K music</title>
   <!--KQK_BOOT_APPEARANCE-->
   <script>
   // 首屏外观预置：styles.css 的 :root 是浅色，若等 body 末尾的 app.js 或异步 /api/status
@@ -26,7 +26,7 @@
     root.setAttribute('data-theme-mode', theme);
     var accent = src.skin_accent ||
       (local && local.skin && local.skin.enabled && local.skin.accent) ||
-      src.accent || (dark ? '#4f9bff' : '#1976d2');
+      src.accent || (dark ? '#6e92ff' : '#4F7CFF');
     try {
       var hex = String(accent).replace('#', '');
       if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
@@ -70,7 +70,7 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">K曲库</div>
+    <div class="brand">K music</div>
     <div class="library-name" id="library-name" title="曲库名称"></div>
     <button id="btn-switch-library" class="icon-btn" type="button" title="切换曲库" aria-label="切换曲库">
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 6h-7.59l3.29-3.29L16 2l-6 6 6 6 1.7-1.71L13.41 10H21V6zM3 18h7.59l-3.29 3.29L8 22l6-6-6-6-1.7 1.71L10.59 14H3v4z"/></svg>
@@ -87,6 +87,7 @@
     <button id="btn-scan" class="md-btn">扫描曲库</button>
     <button id="btn-import" class="md-btn">导入</button>
     <button id="btn-import-netease" class="md-btn">从本地网易云曲库更新</button>
+    <button id="btn-enqueue" class="md-btn" type="button" title="把最近选中的歌曲插到下一首播放">下一首播放</button>
     <span id="track-count" class="track-count">共 0 首</span>
     <button id="btn-refresh" class="md-btn">刷新</button>
   </section>
@@ -146,6 +147,9 @@
           <span id="pl-title">播放列表内容</span>
           <div class="pl-head-actions">
             <button id="pl-add-current" class="md-btn primary" type="button" hidden>＋ 加入选中歌曲</button>
+            <button id="pl-rename" class="md-btn" type="button" hidden>重命名</button>
+            <button id="pl-export" class="md-btn" type="button" hidden>导出</button>
+            <button id="pl-import" class="md-btn" type="button">导入列表</button>
             <button id="pl-delete" class="md-btn" type="button" hidden>删除列表</button>
           </div>
         </div>
@@ -221,10 +225,18 @@
   </main>
 
   <footer class="player">
-    <div class="now-playing" id="now-playing">未在播放</div>
+    <div class="player-info">
+      <div class="now-playing" id="now-playing">未在播放</div>
+      <div class="queue-title" id="queue-title"></div>
+    </div>
     <div class="controls">
+      <button id="btn-prev" class="md-btn round sm" type="button" title="上一首" aria-label="上一首">⏮</button>
       <button id="btn-play" class="md-btn round">▶</button>
-      <button id="btn-lyrics" class="md-btn" type="button" title="显示歌词">词</button>
+      <button id="btn-next" class="md-btn round sm" type="button" title="下一首" aria-label="下一首">⏭</button>
+      <button id="btn-shuffle" class="md-btn sm" type="button" title="随机播放当前队列" aria-label="随机播放">🔀</button>
+      <button id="btn-repeat" class="md-btn sm" type="button" title="列表循环" aria-label="列表循环">🔁</button>
+      <button id="btn-queue" class="md-btn sm" type="button" title="查看当前播放队列">队列</button>
+      <button id="btn-lyrics" class="md-btn sm" type="button" title="显示歌词">词</button>
       <span id="cur-time" class="time">0:00</span>
       <input id="seek" type="range" min="0" max="1000" value="0" />
       <span id="dur-time" class="time">0:00</span>
@@ -263,7 +275,7 @@
   <!-- 初始化向导（首次启动 / 曲库被移除时） -->
   <div class="modal-mask" id="init-wizard" hidden>
     <div class="modal init-wizard">
-      <h3>欢迎使用 K曲库 — 初始化曲库</h3>
+      <h3>欢迎使用 K music — 初始化曲库</h3>
       <p class="modal-hint">首次使用需指定曲库目录，并选择文件组织方式与 NCM 工具。</p>
 
       <div class="wizard-body">
@@ -351,6 +363,10 @@
           <button class="settings-tab" type="button" data-tab="columns">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 9h18M9 9v11M15 9v11" /></svg>
             <span><strong>列表</strong><small>布局风格 · 显示列与宽度</small></span>
+          </button>
+          <button class="settings-tab" type="button" data-tab="playback">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" /><path d="m17 16 4 2-4 2v-4z" /></svg>
+            <span><strong>播放</strong><small>自动播放列表上限</small></span>
           </button>
           <button class="settings-tab" type="button" data-tab="about">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></svg>
@@ -482,6 +498,28 @@
       </div>
           </div><!-- /pane: columns -->
 
+          <div class="settings-pane" data-pane="playback">
+            <div class="settings-pane-head"><h4>播放</h4><p>自动（无名）播放列表的生成规则</p></div>
+
+      <div class="settings-section">
+        <h4>自动播放列表歌曲数上限</h4>
+        <p class="modal-hint">
+          在曲库 / 专辑 / 歌手页面播放歌曲时，会按当前列表顺序自动生成一个临时播放队列，
+          最多列入 <b>n</b> 首（默认 20，范围 1–200）。<br />
+          该数值<b>只影响自动生成的播放队列</b>：不会改动任何播放列表的内容、列表行数或导出文件；
+          用户自己创建的有名播放列表始终按其全量曲目播放。<br />
+          修改后，<b>下一次</b>触发播放时才生效，当前正在播放的队列不变。
+        </p>
+        <div class="playback-count-row">
+          <label for="set-auto-count">最多列入</label>
+          <input id="set-auto-count" class="playback-count-input" type="number" min="1" max="200" step="1" value="20" />
+          <span>首</span>
+          <button id="set-apply-playback" class="md-btn primary" type="button">应用</button>
+        </div>
+        <p class="modal-hint" id="set-auto-count-hint"></p>
+      </div>
+          </div><!-- /pane: playback -->
+
           <div class="settings-pane" data-pane="about">
             <div class="settings-pane-head"><h4>关于与配置</h4><p>应用信息与配置文件兼容状态</p></div>
 
@@ -514,6 +552,33 @@
           </div><!-- /pane: about -->
         </div><!-- /settings-content -->
       </div><!-- /settings-layout -->
+    </div>
+  </div>
+
+  <!-- 播放队列面板：统一播放上下文的可视化（有名 / 无名队列共用） -->
+  <div class="queue-drawer" id="queue-drawer" hidden>
+    <div class="queue-drawer-head">
+      <span class="queue-drawer-title" id="queue-drawer-title">播放队列</span>
+      <span id="queue-count" class="queue-count"></span>
+      <button id="queue-clear" class="md-btn sm" type="button">清空队列</button>
+      <button id="queue-close" class="md-btn sm" type="button">关闭</button>
+    </div>
+    <ul class="queue-list" id="queue-list"></ul>
+  </div>
+
+  <!-- 播放列表通用对话框：替代 prompt/confirm（避免原生对话框抢焦点），也用于导入报告 -->
+  <div class="modal-mask" id="pl-dialog-modal" hidden>
+    <div class="modal pl-dialog">
+      <div class="pl-dialog-head"><h3 id="pl-dialog-title"></h3></div>
+      <div class="pl-dialog-body">
+        <p id="pl-dialog-text" class="modal-hint"></p>
+        <input id="pl-dialog-input" class="pl-dialog-input" type="text" hidden />
+        <ul id="pl-dialog-report" class="pl-dialog-report" hidden></ul>
+      </div>
+      <div class="modal-actions">
+        <button id="pl-dialog-cancel" class="md-btn" type="button">取消</button>
+        <button id="pl-dialog-ok" class="md-btn primary" type="button">确定</button>
+      </div>
     </div>
   </div>
 

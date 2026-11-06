@@ -10,6 +10,8 @@ pub mod import;
 pub mod library;
 pub mod log;
 pub mod lyrics;
+pub mod playlist_io;
+pub mod playstate;
 pub mod progress;
 pub mod serve;
 

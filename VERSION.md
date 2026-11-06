@@ -1,4 +1,4 @@
-# K曲库 · 版本记录（VERSION）
+# K music · 版本记录（VERSION）
 
 > 本文件与应用程序版本号**严格同步**。
 >
@@ -10,7 +10,7 @@
 >
 > | 项目 | 值 |
 > |------|-----|
-> | 当前版本 | **v0.4.0** |
+> | 当前版本 | **v0.5.0** |
 > | 版本号数据源 | `Cargo.toml` → `[workspace.package] version` |
 > | 配置文件最低兼容版本 | `0.2.0`（`mt_core::app::MIN_COMPATIBLE_VERSION`，见 docs/03 §3.4） |
 > | 许可证 / 作者 | MIT / kill33 <kill33@126.com> |
@@ -18,6 +18,80 @@
 ---
 
 ## 变更记录
+
+### v0.5.0 — 2026-11-06
+
+> 播放列表功能完整实施：`docs/01` FR-16～FR-20 与 2026-11-06 13:20 逐条拍板的 19 项决策全部落地。
+> 按 minor 升级 **0.4.0 → 0.5.0**，三处同步：根 `Cargo.toml` / `VERSION.md` / `app/gui/tauri.conf.json`。
+> 同期产品名定为 **K music**（`mt_core::app::APP_NAME`），不影响版本号规则。
+
+#### 新增 / 变更
+
+- **批次 0 · 播放列表基础链路加固（先修 P0）**
+  - `db.rs::prune_missing()` 在删除失效 `download_records` 后，同步删除 `playlist_items` 中
+    `NOT EXISTS download_records.local_id` 的孤儿条目；修复左侧 `track_count` 与右侧曲目 JOIN 不一致、
+    以及新模型下「播放到失效 id 中断」。
+  - 新增 `MAX_PLAYLIST_NAME_CHARS`（60）与 `normalize_playlist_name()`（空名 / 超长 / 同名拒绝）、
+    `rename_playlist()`、`move_playlist_item()`（上移 / 下移，交换相邻 `position`）。
+  - `playlists_handler` / `playlist_tracks_handler` 不再用 `unwrap_or_default()` 把 DB 异常伪装成「暂无播放列表」；
+    GET 显式返回 `ok: true`，失败返回真实 `error`。
+  - 播放列表新建 / 重命名 / 删除改走前端统一 modal，移除 `prompt` / `confirm`，规避历史「原生对话框抢焦点」问题。
+  - 新增 `demo/tests/test_playlists.py`（35 断言：名称约束 / CRUD / 幂等加曲 / 重排 / 孤儿清理 / 错误不吞 / 重启持久化）。
+
+- **批次 1a · 自动播放列表容量上限 n**
+  - `UiConfig::auto_playlist_count` 落 **app 级 `kqk-app.toml [ui]`**（默认 20 / 上限 200 / 下限 1），
+    宽容反序列化（数字 / 数字字符串 / 坏值回退默认）+ `clamp_auto_playlist_count()` + `sanitize()` 钳制，
+    `UI_FIELD_ORDER` 追加该键；新增 3 条 Rust 单测。
+  - `/api/status` 与 `GET/POST /api/ui-prefs` 贯通；设置面板新增「播放」分区（数字输入 + 「应用」按钮）。
+  - **作用域不变式**：n 只用于生成无名播放队列，不读不改任何列表的 DB 内容 / UI 行数 / 导出内容；
+    有名列表队列恒为全量；播放中修改 n 只影响下一次生成（队列快照记「生成时的 n」）。
+  - 新增 `demo/tests/test_auto_playlist_count.py`（24 断言：默认值 / 落盘 / 重启读回 / 越界钳制 /
+    `[ui]` 注释与未知段保留 / 其它设置互不干扰 / 创建时间默认隐藏不受影响）。
+
+- **批次 1b · 全局播放上下文与播控**
+  - 前端 `app.js` 把两类列表统一为**播放上下文**：`freshPlayback()` / `sourceTracks(view)` /
+    `visibleRange(view,total)` / `buildQueue(view,clickedId,named)` / `startPlayback()` / `stepQueue()` /
+    `enqueueNext()` / `renderQueueUI()`；队列只快照 `local_id[]` 与显示摘要，**不引用 `state.tracks` 对象**。
+  - 无名队列构造按 Q1.A+① / Q2.A / Q3.A：以播放瞬间**视口可见段**首项为起点冻结 `[start,end]`，
+    向后取 n 首，尾不足从紧邻 V 之前的连续段向前补，总数不足就不足，`|V|>n` 时以当前曲为锚截连续 n 首；
+    `currentIndex = queue.indexOf(点击曲)`，**从点击曲开始播，不从队首播**。
+  - 播控全加：上一首 / 下一首、随机（只洗当前队列一次并固定顺序）、列表循环、队列面板（≤200 行）、
+    当前队列标题、「下一首播放」插播、清空队列；`audio.ended` 改为推进队列；失效 id 跳过并提示。
+  - 新增 `app/core/src/playstate.rs` 与 `GET/POST /api/playstate`：队列跨重启保留并恢复位置，
+    落 **`<曲库根>/.mt/playstate.json`**（普通 JSON，非 TOML / 非关系表；换库即换文件）；
+    写入前逐个校验 `local_id` 仍在 `download_records`，任一失效即丢弃整份队列并删除文件；
+    临时文件 + rename 原子落盘；`clear: true` 删除状态文件。
+  - `index.html` / `styles.css` 增加播控按钮、队列抽屉、统一 modal、导入报告与「播放」设置分区。
+  - `demo/tools/gen_preview.py` 新增 E 组无头断言（n / 无名与有名队列 / 快照语义 / 播控 / 洗牌 /
+    队列面板 / 插播 / 清空 / 设置面板保存 n），三窗口尺寸全部通过。
+
+- **批次 2 · 播放列表导入 / 导出（格式方案 A）**
+  - 新增 `app/core/src/playlist_io.rs`：**DB 是运行时唯一权威**，文件只在导入 / 导出时存在，无双写不一致。
+    `.json` 为**无损备份、可回读**（`local_id` / `file_path` / `position` / `added_at` + 元数据快照）；
+    `.m3u8` 为 **UTF-8 Extended M3U 单向投影、不回读**（`#EXTM3U` / `#EXTINF` + 相对曲库根路径，**非 HLS**）。
+  - 解析支持 `.m3u` / `.m3u8` / `.json` / `.csv`；匹配优先级 相对路径 → 绝对路径 → 文件名+艺人 → 标签；
+    **两级去重**（① `local_id` 级保留首次位置；② 文件名+艺人+时长内容级）全部发生在写 DB 之前，
+    主键 `INSERT OR IGNORE` 兜底；多副本取第一个并报告歧义、未匹配跳过不建占位、误合并逐条列出。
+  - 新增 REST：`POST /api/playlists/:id/rename`、`/api/playlists/:id/move`、`/api/playlists/:id/export`、
+    `POST /api/playlist-import`、`POST /api/pick-playlist-file`（rfd 原生选择 + 焦点恢复）。
+    导出**单个列表全量**，绝不导出当前播放队列（避免 n 的截断结果污染文件），一次同时产出 `.json` + `.m3u8`。
+  - 新增 `demo/tests/test_playlist_io.py`（34 断言：双文件导出 / 全量不受 n=1 影响 / 文件名安全化 /
+    JSON 无损字段 / M3U8 相对路径 / 四种格式导入 / 两级去重 / 未匹配跳过 / 错误语义）。
+
+#### 验证
+
+- `cargo test -p mt-core -p mt-gui`：**74 + 9 = 83 passed, 0 failed**。
+- `python demo/run_all.py`：**12/12 用例通过**（新增 3 个播放列表用例）；`gen_preview.py` + `run_preview.py`
+  在 1080×645 / 900×600 / 1280×800 三窗口尺寸 **ALL PASS**。
+- release 构建后 `dist/mt-{gui,cli}.exe` 同步；`app/gui/frontend` 与 `dist/frontend` 三文件 md5 一致。
+- 真机目视项见 `docs/07` P18（播控手感、队列跨重启恢复、原生文件对话框焦点、导入报告、导出文件）。
+
+#### 不变式（防回归）
+
+- n 是**应用设置**，落 app 级 `[ui]`，不随曲库切换；`playstate.json` 是**曲库级**运行时状态，两者不得混写。
+- 有名播放列表队列不受 n 约束；导出文件不含播放队列；M3U8 不回读、不被当作第二份数据源。
+- 列表内不允许同一曲目重复，沿用主键 `(playlist_id, local_id)`，**不做破坏性迁移**。
+- 播放来源判定唯一依据 = 触发播放的那个视图；仅选中不播放不切换队列；队列生成后不再读 DOM。
 
 ### v0.4.0 — 2026-11-05
 
@@ -31,7 +105,7 @@
 - **后端逻辑更新**：`app/core/src/config.rs`、`serve.rs`、`db.rs`（11:00–13:46 改动）。
 - **前端界面更新**：`app/gui/frontend/app.js`、`index.html`、`styles.css`（15:07–15:10 改动）。
 
-#### 2026-11-06 补充（仍属 v0.4.0，未升版本号）
+#### 2026-11-06 补充（在 v0.4.0 版本号内发布，未单独升版；v0.5.0 才升 minor）
 
 - **外观主题方案持久化（修复「主题方案设置后没保存到配置文件」）**
   - `UiConfig` 新增 `theme` / `accent` / `skin_type` / `skin_preset` / `skin_accent` / `appearance_saved`，
@@ -365,7 +439,7 @@
 - **外观系统**（纯前端实现，偏好存 `localStorage`）：明暗主题切换、主题色预设/自定义、
   换肤（选本地背景图自动提取主色 + 玻璃拟态面板）。
 - 散落 `.ncm` 处理弹窗（扫描发现曲库内有散落 `.ncm` 时询问是否移入 `download/` 处理）。
-- 应用改名：**musicMT → K曲库**（产品名 / 窗口标题 / 前端文案；bundle `identifier` 保留以延续已装实例）。
+- 应用改名：**musicMT → K music**（产品名 / 窗口标题 / 前端文案；bundle `identifier` 保留以延续已装实例）。
 
 #### 变更
 

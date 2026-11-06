@@ -142,7 +142,7 @@ def build():
         f.write("last_library_dir = '%s'\n" % LIB.replace('\\', '\\\\'))
 
     # 4) 真正初始化曲库
-    p = subprocess.run([EXE, 'library', LIB, 'artist_album', 'K曲库测试夹具'],
+    p = subprocess.run([EXE, 'library', LIB, 'artist_album', 'K music测试夹具'],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
     out = p.stdout.decode('utf-8', 'ignore')
     if p.returncode != 0 or '.mt/config.toml' not in out:

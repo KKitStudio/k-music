@@ -1,4 +1,4 @@
-//! K曲库 GUI（Tauri 壳）。
+//! K music GUI（Tauri 壳）。
 //! 启动流程：加载配置 → 打开 SQLite → 启动 Rust localhost HTTP 服务（REST + 前端 + Range 音频流）
 //! → 接收服务实际端口 → 打开 WebView 窗口加载该地址（同源，前端用相对路径调用 /api）。
 //! 网易云服务端登录/下载已于 2026-10-29 移除；本地导入源仅「从本地网易云音乐曲库更新」按钮。
@@ -327,14 +327,14 @@ mod webview2_check {
     fn show_missing_dialog() {
         unsafe {
             let msg = format!(
-                "无法启动 K曲库：当前系统缺少 WebView2 运行时（窗口需要它来显示界面）。\n\n\
+                "无法启动 K music：当前系统缺少 WebView2 运行时（窗口需要它来显示界面）。\n\n\
 请安装后重新打开本程序（仅首次需要，装好即永久可用）：\n{}",
                 LINK
             );
             MessageBoxW(
                 std::ptr::null_mut(),
                 to_wide(&msg).as_ptr(),
-                to_wide("K曲库 - 缺少 WebView2 运行时").as_ptr(),
+                to_wide("K music - 缺少 WebView2 运行时").as_ptr(),
                 0x10, // MB_ICONERROR
             );
             // 直接打开微软官方 WebView2 下载页（Evergreen 引导器）。

@@ -1,4 +1,4 @@
-"""K曲库 应用图标生成管线（可复用，勿删）。
+"""K music 应用图标生成管线（可复用，勿删）。
 
 用途：把 `app/gui/icons/*.svg` 渲染为带透明通道的 PNG + 多尺寸 ICO。
 之所以不依赖 PIL / ImageMagick / rsvg：本环境未安装这些工具，改用

@@ -220,6 +220,66 @@ pub const LAYOUT_STYLE_VERTICAL: u8 = 2;
 /// 四个导航视图（对应左侧栏四个入口）。
 pub const VIEW_KEYS: [&str; 4] = ["library", "playlists", "albums", "artists"];
 
+// ---- 自动播放列表（无名播放列表）生成上限 n（FR-17，属应用设置，不随曲库切换）----
+pub const AUTO_PLAYLIST_COUNT_MIN: u32 = 1;
+pub const AUTO_PLAYLIST_COUNT_MAX: u32 = 200;
+pub const AUTO_PLAYLIST_COUNT_DEFAULT: u32 = 20;
+
+fn default_auto_playlist_count() -> u32 {
+    AUTO_PLAYLIST_COUNT_DEFAULT
+}
+
+/// n 的宽容归一化：坏值（非数字 / ≤0 / NaN / 无穷）回退默认，其余四舍五入并钳制到 [1, 200]。
+pub fn clamp_auto_playlist_count(n: f64) -> u32 {
+    if !n.is_finite() || n < AUTO_PLAYLIST_COUNT_MIN as f64 {
+        AUTO_PLAYLIST_COUNT_DEFAULT
+    } else {
+        (n.round() as u32)
+            .min(AUTO_PLAYLIST_COUNT_MAX)
+            .max(AUTO_PLAYLIST_COUNT_MIN)
+    }
+}
+
+/// 配置文件里手写的 n 可能是数字、数字字符串甚至缺值，全部宽容接住，避免整份配置加载失败。
+fn de_auto_playlist_count<'de, D>(de: D) -> std::result::Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, Visitor};
+    use std::fmt;
+    struct CountVisitor;
+    impl<'de> Visitor<'de> for CountVisitor {
+        type Value = u32;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("1..=200 的整数（也接受数字字符串）")
+        }
+        fn visit_i64<E: Error>(self, v: i64) -> std::result::Result<u32, E> {
+            Ok(clamp_auto_playlist_count(v as f64))
+        }
+        fn visit_u64<E: Error>(self, v: u64) -> std::result::Result<u32, E> {
+            Ok(clamp_auto_playlist_count(v as f64))
+        }
+        fn visit_f64<E: Error>(self, v: f64) -> std::result::Result<u32, E> {
+            Ok(clamp_auto_playlist_count(v))
+        }
+        fn visit_str<E: Error>(self, v: &str) -> std::result::Result<u32, E> {
+            Ok(clamp_auto_playlist_count(
+                v.trim().parse::<f64>().unwrap_or(f64::NAN),
+            ))
+        }
+        fn visit_bool<E: Error>(self, _v: bool) -> std::result::Result<u32, E> {
+            Ok(default_auto_playlist_count())
+        }
+        fn visit_none<E: Error>(self) -> std::result::Result<u32, E> {
+            Ok(default_auto_playlist_count())
+        }
+        fn visit_unit<E: Error>(self) -> std::result::Result<u32, E> {
+            Ok(default_auto_playlist_count())
+        }
+    }
+    de.deserialize_any(CountVisitor)
+}
+
 /// 界面偏好配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiConfig {
@@ -297,6 +357,15 @@ pub struct UiConfig {
     /// 「用户显式把主题设成默认值」——两者在字段值上完全一样，必须靠这个标志判别。
     #[serde(default)]
     pub appearance_saved: bool,
+    /// 自动（无名）播放列表最多列入的歌曲数 n（默认 20 / 上限 200 / 下限 1）。
+    /// **只约束队列生成器**：不读不改任何列表的 DB 内容、UI 行数、导出内容；
+    /// 有名播放列表的队列恒为列表全量，不受 n 影响（FR-17 已拍板）。
+    /// 属应用设置，落在 app 级 `kqk-app.toml`，切换曲库不随之变化。
+    #[serde(
+        default = "default_auto_playlist_count",
+        deserialize_with = "de_auto_playlist_count"
+    )]
+    pub auto_playlist_count: u32,
 }
 
 impl Default for UiConfig {
@@ -322,6 +391,7 @@ impl Default for UiConfig {
             skin_preset: String::new(),
             skin_accent: String::new(),
             appearance_saved: false,
+            auto_playlist_count: default_auto_playlist_count(),
         }
     }
 }
@@ -496,6 +566,11 @@ impl UiConfig {
         if self.skin_type.is_empty() {
             self.skin_accent.clear();
         }
+        // 自动播放列表上限：双保险（反序列化已归一化，这里防止运行期被直接赋值越界）。
+        self.auto_playlist_count = self
+            .auto_playlist_count
+            .min(AUTO_PLAYLIST_COUNT_MAX)
+            .max(AUTO_PLAYLIST_COUNT_MIN);
     }
 }
 
@@ -1088,7 +1163,7 @@ pub fn update_meta_in_place(path: &Path, meta: &ConfigMeta) -> Result<()> {
 }
 
 /// `[ui]` 段的字段顺序（新增键按此顺序追加，保证输出稳定可读）。
-pub const UI_FIELD_ORDER: [&str; 20] = [
+pub const UI_FIELD_ORDER: [&str; 21] = [
     "track_columns",
     "track_columns_saved",
     "layout_library",
@@ -1109,6 +1184,7 @@ pub const UI_FIELD_ORDER: [&str; 20] = [
     "skin_preset",
     "skin_accent",
     "appearance_saved",
+    "auto_playlist_count",
 ];
 
 /// 计算一行 TOML 中未闭合的括号深度（忽略字符串字面量与行注释内的括号）。
@@ -1802,10 +1878,10 @@ fn set_hidden(path: &Path) -> std::io::Result<()> {
 #[cfg(not(windows))]
 fn set_hidden(_path: &Path) {}
 
-const README_TEXT: &str = r#"K曲库 曲库数据目录
+const README_TEXT: &str = r#"K music 曲库数据目录
 =======================
 
-本目录（.mt）由 K曲库 自动创建并维护，是该曲库的隐藏数据目录。
+本目录（.mt）由 K music 自动创建并维护，是该曲库的隐藏数据目录。
 
 存放内容：
 - config.toml   本曲库的配置文件（曲库名称、文件结构方案、目录布局）
@@ -2220,6 +2296,63 @@ track_columns = ["name", "artist"]
         ui.track_columns = vec!["name".into(), "bogus".into(), "name".into(), "album".into()];
         ui.sanitize();
         assert_eq!(ui.track_columns, vec!["name".to_string(), "album".to_string()]);
+    }
+
+    #[test]
+    fn auto_playlist_count_defaults_and_clamps() {
+        assert_eq!(AUTO_PLAYLIST_COUNT_DEFAULT, 20);
+        assert_eq!(AUTO_PLAYLIST_COUNT_MAX, 200);
+        assert_eq!(AUTO_PLAYLIST_COUNT_MIN, 1);
+        assert_eq!(UiConfig::default().auto_playlist_count, 20);
+        assert_eq!(clamp_auto_playlist_count(20.4), 20);
+        assert_eq!(clamp_auto_playlist_count(20.6), 21);
+        assert_eq!(clamp_auto_playlist_count(9999.0), 200);
+        assert_eq!(clamp_auto_playlist_count(-5.0), 20);
+        assert_eq!(clamp_auto_playlist_count(0.0), 20);
+        assert_eq!(clamp_auto_playlist_count(f64::NAN), 20);
+        assert_eq!(clamp_auto_playlist_count(f64::INFINITY), 20);
+        let mut ui = UiConfig::default();
+        ui.auto_playlist_count = 0;
+        ui.sanitize();
+        assert_eq!(ui.auto_playlist_count, 1, "sanitize 把越界值钳到下限");
+        ui.auto_playlist_count = 9999;
+        ui.sanitize();
+        assert_eq!(ui.auto_playlist_count, 200, "sanitize 把越界值钳到上限");
+    }
+
+    #[test]
+    fn auto_playlist_count_tolerates_handwritten_values() {
+        // 缺失 → 默认；数字字符串 / 越界 / 坏类型都不得让整份配置加载失败。
+        let ui: UiConfig = toml::from_str("track_columns = [\"name\"]").unwrap();
+        assert_eq!(ui.auto_playlist_count, 20);
+        let ui: UiConfig = toml::from_str("auto_playlist_count = 42").unwrap();
+        assert_eq!(ui.auto_playlist_count, 42);
+        let ui: UiConfig = toml::from_str("auto_playlist_count = \"37\"").unwrap();
+        assert_eq!(ui.auto_playlist_count, 37);
+        let ui: UiConfig = toml::from_str("auto_playlist_count = \"abc\"").unwrap();
+        assert_eq!(ui.auto_playlist_count, 20);
+        let ui: UiConfig = toml::from_str("auto_playlist_count = 999999").unwrap();
+        assert_eq!(ui.auto_playlist_count, 200);
+        let ui: UiConfig = toml::from_str("auto_playlist_count = 0").unwrap();
+        assert_eq!(ui.auto_playlist_count, 20);
+        let ui: UiConfig = toml::from_str("auto_playlist_count = true").unwrap();
+        assert_eq!(ui.auto_playlist_count, 20);
+    }
+
+    #[test]
+    fn auto_playlist_count_is_written_into_ui_section() {
+        let mut ui = UiConfig::default();
+        ui.auto_playlist_count = 33;
+        let text = upsert_ui_section("# 用户注释\n[other]\nx = 1\n", &ui);
+        assert!(text.contains("auto_playlist_count = 33"), "n 必须写入 [ui] 段：\n{text}");
+        assert!(text.contains("# 用户注释"), "就地更新不得丢注释");
+        let back: UiConfig = {
+            let doc: toml::Value = toml::from_str(&text).unwrap();
+            doc["ui"].clone().try_into().unwrap()
+        };
+        assert_eq!(back.auto_playlist_count, 33);
+        assert_eq!(UI_FIELD_ORDER.len(), 21);
+        assert_eq!(UI_FIELD_ORDER[20], "auto_playlist_count");
     }
 
     #[test]

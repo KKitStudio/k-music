@@ -1,4 +1,4 @@
-// K曲库 前端（原生 JS + Material 风样式）。所有接口走相对路径（WebView 与后端同源）。
+// K music 前端（原生 JS + Material 风样式）。所有接口走相对路径（WebView 与后端同源）。
 // 设计要点：网易云服务端登录/下载已移除（2026-10-29）；本地导入源仅「从本地网易云曲库更新」按钮。
 
 const $ = (id) => document.getElementById(id);
@@ -12,6 +12,18 @@ const ALL_COLUMN_KEYS = [
 // 默认可见列：导入时间显示、创建时间隐藏（创建时间由设置面板勾选开启）。
 // 定义必须早于 state，避免 const 暂时性死区。
 const DEFAULT_VISIBLE_COLUMN_KEYS = ALL_COLUMN_KEYS.filter((k) => k !== 'created_at');
+
+// 自动（无名）播放列表上限 n：app 级设置，默认 20 / 下限 1 / 上限 200。
+// 只允许 autoPlaylistLimit() 这个唯一入口读取，且只用于「生成队列」，绝不用于表格 / 导出。
+const AUTO_COUNT_DEFAULT = 20;
+const AUTO_COUNT_MIN = 1;
+const AUTO_COUNT_MAX = 200;
+function clampAutoCount(v) {
+  const n = Number(v);
+  if (!isFinite(n) || n < AUTO_COUNT_MIN) return AUTO_COUNT_DEFAULT;
+  return Math.min(Math.round(n), AUTO_COUNT_MAX);
+}
+function autoPlaylistLimit() { return clampAutoCount(state.autoPlaylistCount); }
 
 const state = {
   library_configured: false,
@@ -67,6 +79,8 @@ const state = {
   layoutStyles: { library: 1, playlists: 2, albums: 2, artists: 2 },
   // 歌曲列表各列宽度占比（%），八列之和恒为 100（持久化在配置文件 [ui] 段）。
   columnWidths: { name: 24, artist: 16, album: 18, quality_tier: 6, duration_ms: 6, file_size: 8, imported_at: 11, created_at: 11 },
+  // 自动播放列表上限（由 /api/status 读回；设置 → 播放 可改）。
+  autoPlaylistCount: 20,
   // 歌词：{ timed, lines: [{t, text}], plain }；lyricsIndex = 当前高亮行序号。
   lyrics: null,
   lyricsIndex: -1,
@@ -375,6 +389,10 @@ async function refreshStatus() {
     state.app_version = data.app_version || '';
     // 外观 / 主题方案：以配置文件为准（或把旧版 localStorage 偏好一次性迁移进配置）。
     syncAppearanceFromStatus(data.appearance);
+    // 自动播放列表上限 n（app 级设置，换曲库不变）。
+    if (data.auto_playlist_count !== undefined) {
+      state.autoPlaylistCount = clampAutoCount(data.auto_playlist_count);
+    }
     // 解析歌曲列表显示列配置（持久化的是可见列有序列表；补齐缺失列并保留顺序）。
     // 后端 UiConfig::sanitize() 已做过旧配置迁移，这里再兜一层：
     // 若拿到的是完全不含时间列的旧配置（例如后端尚未重启 / 老版本服务），
@@ -703,7 +721,7 @@ function updateLibraryName() {
 }
 
 // ---------- 关于（应用元信息） ----------
-// 数据源：后端 /api/about（编译期常量 mt_core::app），与原生窗口标题「K曲库 vX.Y.Z」同源。
+// 数据源：后端 /api/about（编译期常量 mt_core::app），与原生窗口标题「K music vX.Y.Z」同源。
 async function loadAbout() {
   const { data } = await api('/api/about');
   if (data) state.about = data;
@@ -716,7 +734,7 @@ function renderAbout() {
   // 版本号：文档标题（窗口标题栏已显示版本号，顶栏不再重复徽标）。
   const ver = a && a.version ? a.version : '';
   if (ver) {
-    document.title = (a.name || 'K曲库') + ' v' + ver;
+    document.title = (a.name || 'K music') + ' v' + ver;
   }
   if (!a) return;
   const set = (id, text) => {
@@ -1048,13 +1066,378 @@ async function selectTrack(t, tr) {
   if (state.activeTab === view) renderActiveDetail();
 }
 
-function playTrack(t) {
-  audio.src = '/api/audio/' + t.local_id;
-  audio.play().catch(() => {});
-  $('now-playing').textContent = t.name + ' — ' + (t.artist || '');
-  $('btn-play').textContent = '⏸';
-  loadLyrics(t.local_id);
+// ==========================================================================
+// 统一播放上下文（FR-16 ～ FR-18）
+//
+// 两类播放列表共用一套状态机：
+//   * 有名播放列表 = DB 持久化的集合，播放时队列 = 列表全量（不受 n 影响）；
+//   * 无名播放列表 = 播放瞬间由「触发播放的来源视图」推导出的 local_id[] 快照，
+//     受 app 级 n 约束。播放是全局功能，不局限于播放列表页。
+//
+// 三条硬规则（防回归）：
+//   1. 队列只快照 id 与显示摘要，**不引用** state.tracks 等来源数组
+//      （搜索 / 扫描 / 导入 / 切 Tab 都不会改写正在播放的队列）。
+//   2. n 只在「生成队列」这一处读取，绝不用于表格行数、DB 内容或导出内容。
+//   3. 「仅选中、不播放」不切换队列；换来源播放一律重建当前队列。
+// ==========================================================================
+
+function freshPlayback() {
+  return {
+    queue: [],            // 实际播放顺序（洗牌后可能不同于界面顺序）
+    originalQueue: [],    // 生成时的界面顺序快照（关闭随机时还原）
+    meta: {},             // local_id → { name, artist } 显示摘要（副本，非引用）
+    index: -1,
+    source: '',
+    title: '',
+    named: false,         // true = 有名播放列表
+    n: null,              // 生成队列时的 n；改 n 只影响下次生成
+    shuffle: false,
+    repeat: false,        // 列表循环
+  };
 }
+
+// state 的队列字段（放在 state 初始化之后补齐，避免打乱既有初始化结构）。
+state.playback = freshPlayback();
+
+function sourceTracks(view) {
+  if (view === 'library') return state.tracks || [];
+  if (view === 'playlists') return state.playlistTracks || [];
+  if (view === 'albums') return state.albumTracks || [];
+  if (view === 'artists') return state.artistTracks || [];
+  return [];
+}
+
+// 「可视段」= 屏幕上实际可见的行；播放瞬间冻结成 [start, end)，播放过程中不再读 DOM。
+function visibleRange(view, total) {
+  if (!total) return [0, 0];
+  const box = $(VIEW_BOX[view]);
+  const table = box && box.querySelector('table.track-table');
+  if (!table) return [0, Math.min(total, 1)];
+  const rows = Array.from(table.querySelectorAll('tbody tr[data-id]'));
+  if (!rows.length) return [0, Math.min(total, 1)];
+  const host = box.getBoundingClientRect();
+  let start = -1;
+  let end = -1;
+  rows.forEach((tr, i) => {
+    const r = tr.getBoundingClientRect();
+    if (r.bottom > host.top + 1 && r.top < host.bottom - 1) {
+      if (start < 0) start = i;
+      end = i + 1;
+    }
+  });
+  if (start < 0) return [0, Math.min(total, 1)];
+  return [Math.min(start, total - 1), Math.min(end, total)];
+}
+
+// FR-17 队列构造：可视段第一项为队首 → 向后最多 n 首 → 尾部不足从紧邻 V 之前连续段前补。
+// 总数不足就不足（搜索过滤态不跨过滤补）；|V| > n 时以当前曲为锚在 V 内截连续 n 首。
+function buildQueue(view, clickedId, named) {
+  const src = sourceTracks(view);
+  const ids = src.map((t) => Number(t.local_id)).filter((n) => n > 0);
+  if (!ids.length) return null;
+  if (named) return { queue: ids.slice(), n: null };  // 有名列表：全量，n 不生效
+
+  const n = autoPlaylistLimit();                     // n 的唯一消费点
+  const [vs, ve] = visibleRange(view, ids.length);
+  const clickedIdx = ids.indexOf(clickedId);
+  let from;
+  let to;
+  const vLen = ve - vs;
+  if (vLen > n) {
+    from = Math.max(vs, Math.min(clickedIdx - Math.floor(n / 2), ve - n));
+    from = Math.min(Math.max(from, vs), Math.max(vs, ve - n));
+    to = Math.min(from + n, ids.length);
+  } else {
+    from = vs;
+    to = Math.min(from + n, ids.length);
+  }
+  // 尾部不足 → 从紧邻 V 之前的连续段前补（Q2.A），队列始终是 src 的连续区间。
+  if (to - from < n && from > 0) {
+    from = Math.max(0, from - (n - (to - from)));
+  }
+  // 兜底：确保被点击的曲一定在队列内（Q1 的根本要求）。
+  if (clickedIdx >= 0 && (clickedIdx < from || clickedIdx >= to)) {
+    from = Math.max(0, Math.min(clickedIdx, Math.max(0, ids.length - n)));
+    to = Math.min(from + n, ids.length);
+  }
+  return { queue: ids.slice(from, to), n: n };
+}
+
+function queueTitle(view, named) {
+  if (view === 'playlists' && state.currentPlaylist) {
+    return '播放列表 · ' + state.currentPlaylist.name;
+  }
+  if (view === 'albums') {
+    return '专辑 · ' + (state.currentAlbum ? state.currentAlbum.name : '未知专辑');
+  }
+  if (view === 'artists') {
+    return '歌手 · ' + (state.currentArtist ? state.currentArtist.name : '未知艺人');
+  }
+  return named ? '播放列表' : '自动播放列表 · 全部曲库';
+}
+
+// 洗牌一次并固定顺序（S2）：整个队列 Fisher-Yates，随后把当前曲重新定位。
+// 「上一首」按洗牌后的播放顺序回退，不再随机一次（S3）。
+function applyShuffle() {
+  const pb = state.playback;
+  if (pb.queue.length < 2) return;
+  const cur = pb.queue[pb.index];
+  for (let i = pb.queue.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = pb.queue[i];
+    pb.queue[i] = pb.queue[j];
+    pb.queue[j] = tmp;
+  }
+  pb.index = Math.max(0, pb.queue.indexOf(cur));
+}
+
+function restoreOriginalOrder() {
+  const pb = state.playback;
+  if (!pb.originalQueue.length) return;
+  const cur = pb.queue[pb.index];
+  pb.queue = pb.originalQueue.slice();
+  pb.index = Math.max(0, pb.queue.indexOf(cur));
+}
+
+// 播放入口：所有来源（曲库 / 播放列表 / 专辑 / 歌手）都走这里重建上下文。
+function startPlayback(t, view) {
+  const v = view || state.activeTab;
+  if (!t || !Number(t.local_id)) return;
+  const named = (v === 'playlists' && !!state.currentPlaylist);
+  const built = buildQueue(v, Number(t.local_id), named);
+  if (!built || !built.queue.length) { setHint('当前列表没有可播放的歌曲'); return; }
+
+  // 只快照显示摘要，不引用来源数组（搜索 / 扫描 / 导入不会改写队列）。
+  const meta = {};
+  sourceTracks(v).forEach((x) => {
+    const id = Number(x.local_id);
+    if (id > 0) meta[id] = { name: x.name || '', artist: x.artist || '' };
+  });
+  const pb = freshPlayback();
+  pb.shuffle = state.playback.shuffle;   // 模式是全局偏好，跨队列保留
+  pb.repeat = state.playback.repeat;
+  pb.originalQueue = built.queue.slice();
+  pb.queue = built.queue.slice();
+  pb.meta = meta;
+  pb.source = v;
+  pb.named = named;
+  pb.n = built.n;
+  pb.title = queueTitle(v, named);
+  pb.index = Math.max(0, pb.queue.indexOf(Number(t.local_id)));
+  state.playback = pb;
+  if (pb.shuffle) applyShuffle();
+  renderQueueUI();
+  playCurrent();
+}
+
+// 兼容既有调用点：双击 / ▶ 按钮都使用「当前活动视图」作为队列来源。
+function playTrack(t, view) {
+  startPlayback(t, view || state.activeTab);
+}
+
+function playCurrent() {
+  const pb = state.playback;
+  const id = pb.queue[pb.index];
+  if (!id) { setHint('队列已空'); return; }
+  const m = pb.meta[id] || {};
+  audio.src = '/api/audio/' + id;
+  audio.play().catch(() => {});
+  $('now-playing').textContent = (m.name || ('#' + id)) + (m.artist ? ' — ' + m.artist : '');
+  $('btn-play').textContent = '⏸';
+  loadLyrics(id);
+  renderQueueUI();
+  savePlaystate();
+}
+
+// 上一首 / 下一首 / 自动推进。auto=true 表示由 audio.ended 触发。
+function stepQueue(delta, auto) {
+  const pb = state.playback;
+  if (!pb.queue.length) { setHint('当前没有播放队列'); return; }
+  let next = pb.index + delta;
+  if (next < 0 || next >= pb.queue.length) {
+    if (!pb.repeat) {
+      if (auto) {
+        $('btn-play').textContent = '▶';
+        setHint('播放结束');
+      } else {
+        setHint(delta > 0 ? '已是队列最后一首' : '已是队列第一首');
+      }
+      return;
+    }
+    next = delta > 0 ? 0 : pb.queue.length - 1;   // 列表循环回绕
+  }
+  pb.index = next;
+  playCurrent();
+}
+
+// 「下一首播放」插播（S6：不引入右键菜单，工具栏 + 队列面板各一个入口）。
+function enqueueNext(id) {
+  const pb = state.playback;
+  const n = Number(id);
+  if (!n) return;
+  if (!pb.queue.length) { setHint('请先播放一首歌以建立播放队列'); return; }
+  const curId = pb.queue[pb.index];
+  const pos = pb.queue.indexOf(n);
+  if (pos >= 0) pb.queue.splice(pos, 1);
+  const curIdx = Math.max(0, pb.queue.indexOf(curId));
+  const at = Math.min(curIdx + 1, pb.queue.length);
+  pb.queue.splice(at, 0, n);
+  if (!pb.meta[n]) {
+    ['library', 'playlists', 'albums', 'artists'].some((v) => {
+      const hit = sourceTracks(v).find((x) => Number(x.local_id) === n);
+      if (hit) { pb.meta[n] = { name: hit.name || '', artist: hit.artist || '' }; return true; }
+      return false;
+    });
+  }
+  // 插播项也写进原始顺序，关闭随机时不会凭空消失。
+  const op = pb.originalQueue.indexOf(n);
+  if (op >= 0) pb.originalQueue.splice(op, 1);
+  pb.originalQueue.splice(Math.min(at, pb.originalQueue.length), 0, n);
+  pb.index = Math.max(0, pb.queue.indexOf(curId));
+  renderQueueUI();
+  savePlaystate();
+  setHint('已插到下一首播放');
+}
+
+function clearQueue() {
+  const shuffle = state.playback.shuffle;
+  const repeat = state.playback.repeat;
+  audio.pause();
+  audio.removeAttribute('src');
+  audio.load();
+  state.playback = freshPlayback();
+  state.playback.shuffle = shuffle;
+  state.playback.repeat = repeat;
+  $('now-playing').textContent = '未在播放';
+  $('btn-play').textContent = '▶';
+  renderQueueUI();
+  api('/api/playstate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ clear: true }),
+  });
+  setHint('播放队列已清空');
+}
+
+// 队列面板：超过窗口阈值时只渲染当前位置附近的一段，避免上千行 DOM 卡顿。
+function renderQueueUI() {
+  const pb = state.playback;
+  const total = pb.queue.length;
+  $('queue-title').textContent = total ? (pb.title + ' · ' + total + ' 首') : '';
+  $('queue-drawer-title').textContent = pb.title || '播放队列';
+  $('queue-count').textContent = total ? ((pb.index + 1) + '/' + total) : '';
+  $('btn-shuffle').classList.toggle('is-active', pb.shuffle);
+  $('btn-repeat').classList.toggle('is-active', pb.repeat);
+  const WINDOW = 120;
+  let from = 0;
+  let to = total;
+  if (total > WINDOW) {
+    from = Math.max(0, pb.index - 40);
+    to = Math.min(total, from + WINDOW);
+    $('queue-count').textContent = ((pb.index + 1) + '/' + total + '（显示 ' + (from + 1) + '–' + to + '）');
+  }
+  const rows = [];
+  for (let i = from; i < to; i++) {
+    const id = pb.queue[i];
+    const m = pb.meta[id] || {};
+    rows.push(
+      `<li data-id="${id}" class="${i === pb.index ? 'is-current' : ''}">` +
+      `<span class="q-idx">${i + 1}</span>` +
+      `<span class="q-name">${esc(m.name || ('#' + id))}</span>` +
+      `<span class="q-artist">${esc(m.artist || '')}</span>` +
+      `<button class="md-btn sm q-next" data-act="next" type="button">下一首播放</button>` +
+      `</li>`,
+    );
+  }
+  $('queue-list').innerHTML = rows.join('');
+}
+
+// 播放状态持久化：切歌 / 暂停 / 模式切换时写，不做定时落盘（S4）。
+let playstateTimer = null;
+function savePlaystate() {
+  const pb = state.playback;
+  if (!pb.queue.length) return;
+  const payload = {
+    queue: pb.queue,
+    originalQueue: pb.originalQueue,
+    meta: pb.meta,
+    index: pb.index,
+    source: pb.source,
+    title: pb.title,
+    named: pb.named,
+    n: pb.n,
+    shuffle: pb.shuffle,
+    repeat: pb.repeat,
+  };
+  clearTimeout(playstateTimer);
+  playstateTimer = setTimeout(() => {
+    api('/api/playstate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }, 120);
+}
+
+// 启动恢复：队列与位置读回，但**不自动开始播放**（避免重启即出声）。
+// 失效 id 由后端校验并丢弃整份队列（返回 state:null）。
+async function restorePlaystate() {
+  const { data } = await api('/api/playstate');
+  const s = data && data.state;
+  if (!s || !Array.isArray(s.queue) || !s.queue.length) return;
+  const pb = freshPlayback();
+  pb.queue = s.queue.map(Number);
+  pb.originalQueue = (Array.isArray(s.originalQueue) && s.originalQueue.length
+    ? s.originalQueue : s.queue).map(Number);
+  pb.meta = s.meta && typeof s.meta === 'object' ? s.meta : {};
+  pb.index = Math.max(0, Math.min(Number(s.index) || 0, pb.queue.length - 1));
+  pb.source = s.source || '';
+  pb.title = s.title || '播放队列';
+  pb.named = !!s.named;
+  pb.n = s.n == null ? null : Number(s.n);
+  pb.shuffle = !!s.shuffle;
+  pb.repeat = !!s.repeat;
+  state.playback = pb;
+  const id = pb.queue[pb.index];
+  const m = pb.meta[id] || {};
+  $('now-playing').textContent = (m.name || ('#' + id)) + '（已暂停 · 点播放继续）';
+  renderQueueUI();
+}
+
+// ---------- 播放列表通用对话框（替代 prompt / confirm，避免原生对话框抢焦点）----------
+let dialogResolve = null;
+function showDialog(opts) {
+  return new Promise((resolve) => {
+    dialogResolve = resolve;
+    $('pl-dialog-title').textContent = opts.title || '';
+    $('pl-dialog-text').textContent = opts.text || '';
+    const inp = $('pl-dialog-input');
+    inp.hidden = !opts.input;
+    inp.value = opts.value || '';
+    const rep = $('pl-dialog-report');
+    const report = opts.report || [];
+    rep.hidden = !report.length;
+    rep.innerHTML = report.map((x) => `<li>${esc(x)}</li>`).join('');
+    $('pl-dialog-ok').textContent = opts.okText || '确定';
+    $('pl-dialog-cancel').hidden = !!report.length && !opts.input;
+    $('pl-dialog-modal').hidden = false;
+    if (opts.input) setTimeout(() => { inp.focus(); inp.select(); }, 0);
+  });
+}
+function closeDialog(val) {
+  $('pl-dialog-modal').hidden = true;
+  const r = dialogResolve;
+  dialogResolve = null;
+  if (r) r(val);
+}
+$('pl-dialog-ok').addEventListener('click', () => {
+  closeDialog($('pl-dialog-input').hidden ? true : $('pl-dialog-input').value);
+});
+$('pl-dialog-cancel').addEventListener('click', () => closeDialog(null));
+$('pl-dialog-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') closeDialog(e.target.value);
+  if (e.key === 'Escape') closeDialog(null);
+});
 
 // ---------- 歌词 ----------
 // LRC 时间戳：[mm:ss] / [mm:ss.xx] / [mm:ss.xxx]，一行可带多个时间戳。
@@ -1179,9 +1562,13 @@ $('lyrics-close').addEventListener('click', () => {
   $('lyrics-drawer').hidden = true;
 });
 
-// ---------- 播放控制 ----------
+// ---------- 播放控制（全局队列状态机）----------
 $('btn-play').addEventListener('click', () => {
-  if (!audio.src) return;
+  if (!audio.src) {
+    // 重启后恢复了队列但尚未设置 audio.src：点播放即从恢复的位置继续。
+    if (state.playback.queue.length) { playCurrent(); return; }
+    return;
+  }
   if (audio.paused) { audio.play().catch(() => {}); $('btn-play').textContent = '⏸'; }
   else { audio.pause(); $('btn-play').textContent = '▶'; }
 });
@@ -1195,9 +1582,76 @@ audio.addEventListener('timeupdate', () => {
 audio.addEventListener('loadedmetadata', () => {
   $('dur-time').textContent = fmtTime(audio.duration * 1000);
 });
-audio.addEventListener('ended', () => { $('btn-play').textContent = '▶'; });
+// 一曲结束：按队列推进；列表循环开启时回绕，否则停在末尾。
+audio.addEventListener('ended', () => { stepQueue(1, true); });
+// 暂停时落盘（S4：不做定时写盘）。
+audio.addEventListener('pause', () => { savePlaystate(); });
+// 文件失效 / 无法解码：跳过该 id，不中断整个队列（FR-18 已拍板）。
+let errorSkips = 0;
+audio.addEventListener('error', () => {
+  // 无头断言环境里 /api/audio 不可达，禁用自动跳过以免队列被连续推进（仅供测试置位）。
+  if (window.__KQK_DISABLE_AUDIO_ERROR_SKIP__) return;
+  const pb = state.playback;
+  if (!audio.src || !pb.queue.length) return;
+  errorSkips += 1;
+  if (errorSkips > pb.queue.length) {
+    setHint('队列中多首歌曲已失效，播放停止');
+    errorSkips = 0;
+    return;
+  }
+  setHint('曲目文件失效或无法播放，已跳过');
+  const next = pb.index + 1;
+  if (next >= pb.queue.length) {
+    if (pb.repeat) { pb.index = 0; playCurrent(); }
+    else { $('btn-play').textContent = '▶'; }
+  } else {
+    pb.index = next;
+    playCurrent();
+  }
+});
+audio.addEventListener('playing', () => { errorSkips = 0; });
 $('seek').addEventListener('input', () => {
   if (audio.duration) audio.currentTime = audio.duration * ($('seek').value / 1000);
+});
+
+$('btn-prev').addEventListener('click', () => stepQueue(-1, false));
+$('btn-next').addEventListener('click', () => stepQueue(1, false));
+$('btn-shuffle').addEventListener('click', () => {
+  const pb = state.playback;
+  pb.shuffle = !pb.shuffle;
+  if (pb.shuffle) applyShuffle(); else restoreOriginalOrder();
+  renderQueueUI();
+  savePlaystate();
+  setHint(pb.shuffle ? '随机播放：已打乱当前队列并固定顺序' : '顺序播放：已恢复界面顺序');
+});
+$('btn-repeat').addEventListener('click', () => {
+  const pb = state.playback;
+  pb.repeat = !pb.repeat;
+  renderQueueUI();
+  savePlaystate();
+  setHint(pb.repeat ? '列表循环已开启' : '列表循环已关闭（顺序播放到末尾停止）');
+});
+$('btn-queue').addEventListener('click', () => {
+  const box = $('queue-drawer');
+  box.hidden = !box.hidden;
+  if (!box.hidden) renderQueueUI();
+});
+$('queue-close').addEventListener('click', () => { $('queue-drawer').hidden = true; });
+$('queue-clear').addEventListener('click', () => clearQueue());
+$('queue-list').addEventListener('click', (e) => {
+  const li = e.target.closest('li[data-id]');
+  if (!li) return;
+  const id = Number(li.dataset.id);
+  if (e.target.closest('[data-act="next"]')) { enqueueNext(id); return; }
+  const pb = state.playback;
+  pb.index = Math.max(0, pb.queue.indexOf(id));
+  playCurrent();
+});
+// 工具栏「下一首播放」：把最近选中的曲插到当前曲之后（S6）。
+$('btn-enqueue').addEventListener('click', () => {
+  const t = state.current;
+  if (!t || !t.local_id) { setHint('请先选中一首歌曲'); return; }
+  enqueueNext(t.local_id);
 });
 
 // ---------- 工具栏 ----------
@@ -1344,7 +1798,13 @@ function renderPlaylists() {
 
 // 新建播放列表：弹窗输入名称 → 后端创建 → 自动选中并打开。
 $('pl-new').addEventListener('click', async () => {
-  const name = (prompt('请输入播放列表名称：') || '').trim();
+  const raw = await showDialog({
+    title: '新建播放列表',
+    text: '名称不能为空、不超过 60 个字符，且不与已有列表重名。',
+    input: true, okText: '创建',
+  });
+  if (raw === null) return;
+  const name = String(raw).trim();
   if (!name) return;
   setHint('创建播放列表中…');
   const { data } = await api('/api/playlists', {
@@ -1375,6 +1835,8 @@ async function selectPlaylist(id) {
   if (li) li.classList.add('selected');
   $('pl-title').textContent = pl ? pl.name : '播放列表内容';
   $('pl-add-current').hidden = !pl;
+  $('pl-rename').hidden = !pl;
+  $('pl-export').hidden = !pl;
   $('pl-delete').hidden = !pl;
   // 切换播放列表 → 旧列表内的曲级选中不再适用，清空后展示新列表的分组信息。
   state.viewSelection.playlists = null;
@@ -1416,7 +1878,11 @@ function renderPlaylistTracks() {
       `<td class="idx-col">${i + 1}</td>` +
       `<td class="pl-play"><button class="md-btn round sm" type="button" data-act="play">▶</button></td>` +
       trackCellsHtml(t, cols) +
-      `<td class="pl-remove"><button class="md-btn sm" type="button" data-act="remove">移除</button></td>` +
+      `<td class="pl-remove">` +
+        `<button class="md-btn sm" type="button" data-act="up" title="上移">↑</button>` +
+        `<button class="md-btn sm" type="button" data-act="down" title="下移">↓</button>` +
+        `<button class="md-btn sm" type="button" data-act="remove">移除</button>` +
+      `</td>` +
       `</tr>`;
   });
   html += '</tbody></table>';
@@ -1438,8 +1904,107 @@ function renderPlaylistTracks() {
       e.stopPropagation();
       removeFromPlaylist(id);
     });
+    tr.querySelector('[data-act="up"]').addEventListener('click', (e) => {
+      e.stopPropagation();
+      moveInPlaylist(id, -1);
+    });
+    tr.querySelector('[data-act="down"]').addEventListener('click', (e) => {
+      e.stopPropagation();
+      moveInPlaylist(id, 1);
+    });
   });
 }
+
+// 列表内上移 / 下移（FR-19 一期最小集：按钮重排，拖拽后置）。
+async function moveInPlaylist(localId, delta) {
+  if (!state.currentPlaylist) return;
+  const { data } = await api('/api/playlists/' + state.currentPlaylist.id + '/move', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ local_id: localId, delta: delta }),
+  });
+  if (!data || !data.ok) { setHint((data && data.error) || '调整顺序失败'); return; }
+  await loadPlaylistTracks(state.currentPlaylist.id);
+  setHint(data.moved ? '顺序已调整' : '已在列表边界');
+}
+
+// 重命名（统一弹框，替代原生 prompt 以免抢焦点）。
+$('pl-rename').addEventListener('click', async () => {
+  if (!state.currentPlaylist) return;
+  const raw = await showDialog({
+    title: '重命名播放列表',
+    text: '名称不能为空、不超过 60 个字符，且不与其它列表重名。',
+    input: true, value: state.currentPlaylist.name, okText: '保存',
+  });
+  if (raw === null) return;
+  const name = String(raw).trim();
+  if (!name) return;
+  const { data } = await api('/api/playlists/' + state.currentPlaylist.id + '/rename', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name }),
+  });
+  if (!data || !data.ok) { setHint((data && data.error) || '重命名失败'); return; }
+  await loadPlaylists();
+  await selectPlaylist(state.currentPlaylist.id);
+  setHint('播放列表已重命名：' + name);
+});
+
+// ---------- 导入导出（FR-20）----------
+// 导出的是「单个有名列表全量」，绝不导出当前播放队列（否则 n 的截断结果会写进文件）。
+$('pl-export').addEventListener('click', async () => {
+  if (!state.currentPlaylist) return;
+  const pick = await api('/api/pick-folder', { method: 'POST' });
+  if (!pick.data || !pick.data.ok || pick.data.canceled || !pick.data.path) return;
+  setHint('导出中…');
+  const { data } = await api('/api/playlists/' + state.currentPlaylist.id + '/export', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dir: pick.data.path }),
+  });
+  if (!data || !data.ok) { setHint((data && data.error) || '导出失败'); return; }
+  const lines = [
+    '列表「' + data.name + '」共 ' + data.track_count + ' 首（全量导出）',
+    '已生成：',
+  ].concat((data.files || []).map((f) => f));
+  lines.push('JSON 为无损备份（可回读），M3U8 为通用交换格式（单向投影）。');
+  await showDialog({ title: '导出完成', report: lines, okText: '好' });
+  setHint('播放列表已导出');
+});
+
+// 导入：文件对话框选外部播放列表 → 后端匹配 + 去重 → 新建列表 → 展示完整报告。
+$('pl-import').addEventListener('click', async () => {
+  const pick = await api('/api/pick-playlist-file', { method: 'POST' });
+  if (!pick.data || !pick.data.ok || pick.data.canceled || !pick.data.path) return;
+  setHint('导入中…');
+  const { data } = await api('/api/playlist-import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file: pick.data.path }),
+  });
+  if (!data || !data.ok) { setHint((data && data.error) || '导入失败'); return; }
+  const r = data.report || {};
+  const lines = [
+    '新建列表「' + data.name + '」：外部 ' + data.total + ' 条，写入 ' + data.matched + ' 首。',
+  ];
+  const groups = [
+    ['未匹配（已跳过）', r.unmatched],
+    ['重复曲目（保留首次位置）', r.duplicate_ids],
+    ['内容级去重（可能误合并不同录音版本）', r.content_duplicates],
+    ['匹配歧义（多副本取第一个）', r.ambiguous],
+  ];
+  groups.forEach(([label, list]) => {
+    if (list && list.length) {
+      lines.push('— ' + label + '：' + list.length + ' 条');
+      list.forEach((x) => lines.push('  ' + x));
+    }
+  });
+  if (lines.length === 1) lines.push('全部条目匹配成功，无重复与未匹配。');
+  await showDialog({ title: '导入报告', report: lines, okText: '好' });
+  await loadPlaylists();
+  await selectPlaylist(data.playlist_id);
+  setHint('已导入播放列表：' + data.name);
+});
 
 // 将「全部曲库」页当前选中的曲目加入当前播放列表。
 $('pl-add-current').addEventListener('click', async () => {
@@ -1463,7 +2028,12 @@ $('pl-add-current').addEventListener('click', async () => {
 // 删除当前播放列表（级联删除条目）。
 $('pl-delete').addEventListener('click', async () => {
   if (!state.currentPlaylist) return;
-  if (!confirm('确定删除播放列表「' + state.currentPlaylist.name + '」？该操作不可撤销。')) return;
+  const yes = await showDialog({
+    title: '删除播放列表',
+    text: '确定删除播放列表「' + state.currentPlaylist.name + '」？该操作不可撤销。',
+    okText: '删除',
+  });
+  if (!yes) return;
   const id = state.currentPlaylist.id;
   const { data } = await api('/api/playlists/' + id, { method: 'DELETE' });
   if (!data || !data.ok) { setHint((data && data.error) || '删除失败'); return; }
@@ -1471,6 +2041,8 @@ $('pl-delete').addEventListener('click', async () => {
   state.viewSelection.playlists = null;
   $('pl-title').textContent = '播放列表内容';
   $('pl-add-current').hidden = true;
+  $('pl-rename').hidden = true;
+  $('pl-export').hidden = true;
   $('pl-delete').hidden = true;
   await loadPlaylists();
   renderViewDetail('playlists');
@@ -1760,6 +2332,8 @@ function openSettings() {
   renderAppearanceUI();
   renderAbout();
   renderConfigStatus();
+  $('set-auto-count').value = String(state.autoPlaylistCount);
+  $('set-auto-count-hint').textContent = '当前：' + state.autoPlaylistCount + ' 首';
 }
 
 // 渲染「歌曲列表显示项」配置（勾选可见 + ↑/↓ 调整顺序）。
@@ -1881,6 +2455,27 @@ $('set-apply-columns').addEventListener('click', async () => {
   renderColConfig();
   renderTracks();
   setHint('歌曲列表显示设置已保存');
+});
+
+// 设置 → 播放：n 只写 app 级 [ui] 段，下次生成队列才生效（当前队列的 n 已快照）。
+$('set-apply-playback').addEventListener('click', async () => {
+  const n = clampAutoCount($('set-auto-count').value);
+  $('set-auto-count').value = String(n);
+  const { data } = await api('/api/ui-prefs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ auto_playlist_count: n }),
+  });
+  if (!data || !data.ok) {
+    $('set-auto-count-hint').textContent = (data && data.error) || '保存失败';
+    setHint('自动播放列表上限保存失败');
+    return;
+  }
+  state.autoPlaylistCount = clampAutoCount(data.auto_playlist_count);
+  $('set-auto-count').value = String(state.autoPlaylistCount);
+  $('set-auto-count-hint').textContent =
+    '已保存：' + state.autoPlaylistCount + ' 首（下次播放生效）';
+  setHint('自动播放列表上限已保存：' + state.autoPlaylistCount + ' 首');
 });
 
 $('library-dir-cancel').addEventListener('click', () => {
@@ -2245,7 +2840,7 @@ async function applyScheme() {
 const APPEARANCE_KEY = 'kqk_appearance';
 
 const ACCENT_PRESETS = [
-  { name: '经典蓝', hex: '#1976d2' },
+  { name: '经典蓝', hex: '#4F7CFF' },
   { name: '青绿', hex: '#00897b' },
   { name: '靛蓝', hex: '#3949ab' },
   { name: '紫', hex: '#7e57c2' },
@@ -2431,7 +3026,7 @@ function extractDominantColor(img, theme) {
   if (!count) return null;
   r = Math.round(r / count); g = Math.round(g / count); b = Math.round(b / count);
   let [hue, sat, lig] = rgbToHsl(r, g, b);
-  if (sat < 0.12) return theme === 'dark' ? '#5b9bff' : '#1976d2'; // 近灰阶回退
+  if (sat < 0.12) return theme === 'dark' ? '#6e92ff' : '#4F7CFF'; // 近灰阶回退
   sat = 0.58;                                  // 适中饱和，保证鲜明
   lig = theme === 'dark' ? 0.62 : 0.48;        // 暗色主题用更亮、亮色用更深
   const [nr, ng, nb] = hslToRgb(hue, sat, lig);
@@ -2481,7 +3076,7 @@ function applyAppearance() {
   root.setAttribute('data-theme-mode', a.theme); // 保留设置值，便于诊断与后续样式扩展
 
   // 决定强调色：皮肤激活时优先用皮肤提取色，否则用预设/自定义色，再回退默认。
-  const fallback = eff === 'dark' ? '#4f9bff' : '#1976d2';
+  const fallback = eff === 'dark' ? '#6e92ff' : '#4F7CFF';
   const accent = (a.skin && a.skin.enabled && a.skin.accent)
     ? a.skin.accent
     : (a.accent || fallback);
@@ -2559,7 +3154,7 @@ function renderAppearanceUI() {
     el.classList.toggle('active', !a.skin.enabled && curAccent && curAccent.toLowerCase() === el.dataset.hex.toLowerCase());
   });
   const cc = $('ap-accent-custom');
-  if (cc) cc.value = (a.accent || '#1976d2');
+  if (cc) cc.value = (a.accent || '#4F7CFF');
 
   // 皮肤缩略图（仅首次构建）
   const sk = $('ap-skins');
@@ -2622,7 +3217,7 @@ function initAppearanceEvents() {
       const img = new Image();
       img.onload = () => {
         const eff = resolveTheme(loadAppearance().theme);
-        const accent = extractDominantColor(img, eff) || (eff === 'dark' ? '#4f9bff' : '#1976d2');
+        const accent = extractDominantColor(img, eff) || (eff === 'dark' ? '#6e92ff' : '#4F7CFF');
         setSkin({ type: 'custom', src: dataUrl, accent, name: '自定义' });
         setHint('已应用自定义皮肤，主题色已根据图片自动调整');
       };
@@ -2662,4 +3257,4 @@ function initAppearanceEvents() {
 initAppearanceEvents();
 applyAppearance();
 loadAbout();
-refreshStatus();
+refreshStatus().then(() => { restorePlaystate(); }).catch(() => {});

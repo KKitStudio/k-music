@@ -1,6 +1,7 @@
 //! SQLite 存储（rusqlite，bundled）。对应 docs/03 §2 的表结构草案。
 use crate::config::Config;
 use crate::Result;
+use anyhow::bail;
 use rusqlite::{Connection, OptionalExtension, params};
 /// 再导出连接类型，便于 CLI/GUI 在不直接依赖 rusqlite 的情况下引用。
 pub use rusqlite::Connection as SqliteConnection;
@@ -365,6 +366,18 @@ pub fn prune_missing(conn: &Connection) -> Result<u32> {
             removed += 1;
         }
     }
+    // 曲目记录消失后，playlist_items 里指向它的条目就成孤儿：
+    //   - 左侧 track_count 用 COUNT(*) 仍计入，右侧 get_playlist_tracks 用 JOIN 取不到 → 计数与列表不符；
+    //   - 播放队列遇到失效 local_id 会中断（FR-18 要求跳过并提示）。
+    // 这里按 NOT EXISTS 全量清扫，顺带修掉旧版本只删 download_records 留下的历史孤儿。
+    // playlist_items 对 download_records 没有外键，必须显式清理。
+    conn.execute(
+        "DELETE FROM playlist_items
+         WHERE NOT EXISTS (
+             SELECT 1 FROM download_records dr WHERE dr.local_id = playlist_items.local_id
+         )",
+        [],
+    )?;
     Ok(removed)
 }
 
@@ -406,10 +419,63 @@ pub struct PlaylistItemView {
     pub created_at: Option<i64>,
 }
 
-/// 新建播放列表，返回其自增 id。
+/// 播放列表名称上限（按 Unicode 字符计）。
+pub const MAX_PLAYLIST_NAME_CHARS: usize = 60;
+
+/// 名称规范：去首尾空白、非空、长度受限。
+fn normalize_playlist_name(name: &str) -> Result<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("播放列表名称不能为空");
+    }
+    if name.chars().count() > MAX_PLAYLIST_NAME_CHARS {
+        bail!("播放列表名称不能超过 {} 个字符", MAX_PLAYLIST_NAME_CHARS);
+    }
+    Ok(name.to_string())
+}
+
+/// 同名检查（大小写不敏感）；`except_id` 用于重命名时排除自身。
+fn ensure_playlist_name_available(conn: &Connection, name: &str, except_id: i64) -> Result<()> {
+    let dup: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM playlists WHERE lower(name)=lower(?1) AND id<>?2)",
+        params![name, except_id],
+        |r| r.get(0),
+    )?;
+    if dup {
+        bail!("已存在同名播放列表：{name}");
+    }
+    Ok(())
+}
+
+/// 播放列表是否存在（供删除 / 加曲 / 移除给出明确错误，而非静默成功）。
+pub fn playlist_exists(conn: &Connection, playlist_id: i64) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM playlists WHERE id=?1)",
+        params![playlist_id],
+        |r| r.get::<_, bool>(0),
+    )?)
+}
+
+/// 新建播放列表，返回其自增 id。名称非空 / ≤60 字符 / 不允许同名。
 pub fn create_playlist(conn: &Connection, name: &str) -> Result<i64> {
+    let name = normalize_playlist_name(name)?;
+    ensure_playlist_name_available(conn, &name, -1)?;
     conn.execute("INSERT INTO playlists(name) VALUES(?1)", params![name])?;
     Ok(conn.last_insert_rowid())
+}
+
+/// 重命名播放列表（校验规则与新建一致）。
+pub fn rename_playlist(conn: &Connection, playlist_id: i64, name: &str) -> Result<()> {
+    let name = normalize_playlist_name(name)?;
+    ensure_playlist_name_available(conn, &name, playlist_id)?;
+    let n = conn.execute(
+        "UPDATE playlists SET name=?1 WHERE id=?2",
+        params![name, playlist_id],
+    )?;
+    if n == 0 {
+        bail!("播放列表不存在或已被删除");
+    }
+    Ok(())
 }
 
 /// 列出全部播放列表（含各自曲目数）。
@@ -434,7 +500,10 @@ pub fn list_playlists(conn: &Connection) -> Result<Vec<PlaylistView>> {
 
 /// 删除播放列表（级联删除其条目）。
 pub fn delete_playlist(conn: &Connection, playlist_id: i64) -> Result<()> {
-    conn.execute("DELETE FROM playlists WHERE id=?1", params![playlist_id])?;
+    let n = conn.execute("DELETE FROM playlists WHERE id=?1", params![playlist_id])?;
+    if n == 0 {
+        bail!("播放列表不存在或已被删除");
+    }
     Ok(())
 }
 
@@ -472,7 +541,11 @@ pub fn get_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<Vec<Pl
 }
 
 /// 将曲目加入播放列表（追加到末尾）；已存在则忽略（幂等）。
+/// 主键 `(playlist_id, local_id)` 禁止同一曲目重复出现（FR-19 已拍板，不做破坏性迁移）。
 pub fn add_to_playlist(conn: &Connection, playlist_id: i64, local_id: i64) -> Result<()> {
+    if !playlist_exists(conn, playlist_id)? {
+        bail!("播放列表不存在或已被删除");
+    }
     let max_pos: Option<i64> = conn
         .query_row(
             "SELECT MAX(position) FROM playlist_items WHERE playlist_id=?1",
@@ -489,11 +562,65 @@ pub fn add_to_playlist(conn: &Connection, playlist_id: i64, local_id: i64) -> Re
 
 /// 从播放列表移除曲目。
 pub fn remove_from_playlist(conn: &Connection, playlist_id: i64, local_id: i64) -> Result<()> {
-    conn.execute(
+    let n = conn.execute(
         "DELETE FROM playlist_items WHERE playlist_id=?1 AND local_id=?2",
         params![playlist_id, local_id],
     )?;
+    if n == 0 {
+        bail!("该曲目不在此播放列表中");
+    }
     Ok(())
+}
+
+/// 在列表内上移 / 下移一首（`delta = -1` 上移 / `+1` 下移）。
+///
+/// `position` 在移除曲目后会留下空洞，所以按「当前有序序列」定位相邻项并交换两者的
+/// `position` 值，而不是简单 `position ± 1`。返回 `false` 表示已在边界或曲目不在列表内，
+/// 属于 UI 可静默忽略的情况，不报错。
+pub fn move_playlist_item(
+    conn: &Connection,
+    playlist_id: i64,
+    local_id: i64,
+    delta: i64,
+) -> Result<bool> {
+    if delta != -1 && delta != 1 {
+        return Ok(false);
+    }
+    let rows: Vec<(i64, i64)> = {
+        let mut stmt = conn.prepare(
+            "SELECT local_id, position FROM playlist_items
+             WHERE playlist_id=?1 ORDER BY position, local_id",
+        )?;
+        let rows = stmt
+            .query_map(params![playlist_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let idx = match rows.iter().position(|(id, _)| *id == local_id) {
+        Some(i) => i as i64,
+        None => return Ok(false),
+    };
+    let target = idx + delta;
+    if target < 0 || target >= rows.len() as i64 {
+        return Ok(false);
+    }
+    let (_, own_pos) = rows[idx as usize];
+    let (other_id, other_pos) = rows[target as usize];
+    if own_pos == other_pos {
+        return Ok(false);
+    }
+    // 事务内交换，避免中途失败留下两行同 position 的不确定顺序。
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "UPDATE playlist_items SET position=?1 WHERE playlist_id=?2 AND local_id=?3",
+        params![other_pos, playlist_id, local_id],
+    )?;
+    tx.execute(
+        "UPDATE playlist_items SET position=?1 WHERE playlist_id=?2 AND local_id=?3",
+        params![own_pos, playlist_id, other_id],
+    )?;
+    tx.commit()?;
+    Ok(true)
 }
 
 /// 分组视图（专辑 / 歌手）：分组名称 + 组内曲目数。
@@ -639,6 +766,104 @@ mod playlist_tests {
         add_to_playlist(&c, id, 7).unwrap();
         let items = get_playlist_tracks(&c, id).unwrap();
         assert_eq!(items[0].position, 1, "首曲 position 应为 1 而非 0");
+    }
+
+    /// 造若干条「磁盘上不存在」的曲目记录，供孤儿清理测试使用。
+    fn insert_missing_tracks(c: &Connection, ids: &[i64]) {
+        for id in ids {
+            c.execute(
+                "INSERT INTO download_records(local_id,source_kind,status,file_path,name,file_size)
+                 VALUES(?1,'local_scan','downloaded',?2,?3,1000)",
+                params![id, format!("/definitely/missing/{id}.flac"), format!("曲{id}")],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn prune_missing_clears_playlist_orphans() {
+        let c = test_conn();
+        let id = create_playlist(&c, "孤儿测试").unwrap();
+        insert_missing_tracks(&c, &[1, 2, 3]);
+        for i in 1..=3 {
+            add_to_playlist(&c, id, i).unwrap();
+        }
+        assert_eq!(list_playlists(&c).unwrap()[0].track_count, 3);
+
+        // 旧缺陷：只删 download_records，playlist_items 留下 3 条孤儿，
+        // 左侧计数仍为 3、右侧 JOIN 取不到任何曲目。
+        let removed = prune_missing(&c).unwrap();
+        assert_eq!(removed, 3, "应清掉 3 条失效曲目记录");
+        assert_eq!(list_playlists(&c).unwrap()[0].track_count, 0, "计数必须归零");
+        assert!(get_playlist_tracks(&c, id).unwrap().is_empty());
+
+        // 历史孤儿（旧版本遗留，download_records 里已无对应行）也要被清掉。
+        c.execute(
+            "INSERT INTO playlist_items(playlist_id,local_id,position) VALUES(?1,999,4)",
+            params![id],
+        )
+        .unwrap();
+        assert_eq!(list_playlists(&c).unwrap()[0].track_count, 1);
+        prune_missing(&c).unwrap();
+        assert_eq!(list_playlists(&c).unwrap()[0].track_count, 0, "历史孤儿也要清扫");
+    }
+
+    #[test]
+    fn playlist_name_constraints_and_rename() {
+        let c = test_conn();
+        assert!(create_playlist(&c, "   ").is_err(), "空白名称应拒绝");
+        assert!(create_playlist(&c, &"长".repeat(61)).is_err(), "超长名称应拒绝");
+        let id = create_playlist(&c, "My List").unwrap();
+        assert!(create_playlist(&c, "my list").is_err(), "同名（大小写不敏感）应拒绝");
+        assert!(create_playlist(&c, "  My List  ").is_err(), "trim 后同名应拒绝");
+
+        // 重命名为自身大小写变体不应误判为冲突。
+        rename_playlist(&c, id, "MY LIST").unwrap();
+        assert_eq!(list_playlists(&c).unwrap()[0].name, "MY LIST");
+        let other = create_playlist(&c, "另一列表").unwrap();
+        assert!(rename_playlist(&c, other, "my list").is_err(), "改成他人同名应拒绝");
+        assert!(rename_playlist(&c, 9999, "新名").is_err(), "不存在的 id 应报错");
+        assert!(rename_playlist(&c, id, &"长".repeat(61)).is_err(), "重命名也受长度约束");
+    }
+
+    #[test]
+    fn move_playlist_item_swaps_neighbors() {
+        let c = test_conn();
+        let id = create_playlist(&c, "重排").unwrap();
+        insert_missing_tracks(&c, &[1, 2, 3]);
+        for i in 1..=3 {
+            add_to_playlist(&c, id, i).unwrap();
+        }
+        let ids = |c: &Connection| {
+            get_playlist_tracks(c, id)
+                .unwrap()
+                .into_iter()
+                .map(|t| t.local_id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&c), vec![1, 2, 3]);
+
+        assert!(move_playlist_item(&c, id, 3, -1).unwrap(), "第 3 首上移应成功");
+        assert_eq!(ids(&c), vec![1, 3, 2]);
+        assert!(move_playlist_item(&c, id, 1, 1).unwrap(), "第 1 首下移应成功");
+        assert_eq!(ids(&c), vec![3, 1, 2]);
+        assert!(!move_playlist_item(&c, id, 3, -1).unwrap(), "首项上移应返回 false");
+        assert!(!move_playlist_item(&c, id, 2, 1).unwrap(), "末项下移应返回 false");
+        assert!(!move_playlist_item(&c, id, 999, -1).unwrap(), "不在列表内应返回 false");
+
+        // 移除中间项留下 position 空洞后，重排仍按有序序列正确工作。
+        remove_from_playlist(&c, id, 1).unwrap();
+        assert!(move_playlist_item(&c, id, 2, -1).unwrap());
+        assert_eq!(ids(&c), vec![2, 3]);
+    }
+
+    #[test]
+    fn missing_playlist_id_returns_error() {
+        let c = test_conn();
+        assert!(delete_playlist(&c, 9999).is_err(), "删除不存在的列表应报错");
+        assert!(add_to_playlist(&c, 9999, 1).is_err(), "向不存在的列表加曲应报错");
+        let id = create_playlist(&c, "X").unwrap();
+        assert!(remove_from_playlist(&c, id, 999).is_err(), "移除不在列表内的曲目应报错");
     }
 }
 

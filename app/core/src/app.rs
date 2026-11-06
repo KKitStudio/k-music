@@ -8,7 +8,7 @@
 //! 因此升级只需改该处一处版本号即可全局同步。
 
 /// 产品名称（窗口标题 / 顶栏品牌 / 关于面板）。
-pub const APP_NAME: &str = "K曲库";
+pub const APP_NAME: &str = "K music";
 /// 历史代号（2026-11-02 改名前为 musicMT；保留以便识别旧安装与旧文档）。
 pub const APP_LEGACY_NAME: &str = "musicMT";
 /// 版本号：取自 Cargo 包版本，与 `Cargo.toml` 的 `[workspace.package] version` 一致。
@@ -33,12 +33,12 @@ pub const APP_DESCRIPTION: &str = "本地曲库管理 + 桌面播放器";
 /// 技术栈摘要（关于面板展示用）。
 pub const APP_TECH: &str = "Rust · Tauri 2 · SQLite(rusqlite) · lofty · axum";
 
-/// 带版本号的窗口标题（例：`K曲库 v0.2.0`）。
+/// 带版本号的窗口标题（例：`K music v0.2.0`）。
 pub fn title() -> String {
     format!("{APP_NAME} v{APP_VERSION}")
 }
 
-/// 带版本号的应用标识（例：`K曲库 v0.2.0`），供 CLI / 日志等场景复用。
+/// 带版本号的应用标识（例：`K music v0.2.0`），供 CLI / 日志等场景复用。
 pub fn full_name() -> String {
     title()
 }

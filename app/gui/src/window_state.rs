@@ -85,7 +85,7 @@ pub fn load(path: &Path) -> Option<Geometry> {
 /// 原子替换（临时文件 + rename），避免关闭瞬间被打断留下半截状态文件。
 pub fn save(path: &Path, g: &Geometry) {
     let text = format!(
-        "# K曲库 主窗口几何（物理像素，由 GUI 自动维护）\nx={}\ny={}\nw={}\nh={}\nmaximized={}\n",
+        "# K music 主窗口几何（物理像素，由 GUI 自动维护）\nx={}\ny={}\nw={}\nh={}\nmaximized={}\n",
         g.x,
         g.y,
         g.w,

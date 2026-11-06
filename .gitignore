@@ -67,3 +67,6 @@ _verify.*
 _preview.html
 _shot_*.png
 *.new
+
+# --- 编辑器/IDE 配置（含个人调试设置，不发布） ---
+/.vscode/

@@ -1,0 +1,55 @@
+# ============================================================
+# K曲库 (musicMT) — Git 忽略规则
+# 原则：仓库只放源码 / 文档 / 可重建脚本；构建产物、运行时数据、
+#       本机配置、第三方 NCM 工具一律不入库（见 TODO.md 发布流水线）。
+# ============================================================
+
+# --- 构建产物（二进制走 Release，不进仓库） ---
+/target/
+/dist/
+**/*.o
+**/*.obj
+**/*.pdb
+**/*.rlib
+**/*.rmeta
+**/*.d
+
+# --- 运行时数据 / 本机配置（含曲库绝对路径、凭证、日志） ---
+kqk-app.toml
+musicmt-launcher.toml
+musicmt-guest.toml
+.guest/
+.mt/
+musiclibrary/
+/app/data/
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# --- NCM 外部工具（合规：项目不内置解密，也不公开分享该工具） ---
+# tools/ncm/source 是上游 git 克隆（含嵌套 .git），直接入库会变成悬空 gitlink。
+/tools/ncm/bin/
+/tools/ncm/source/
+
+# --- demo 测试运行产物 / 可由脚本重建的夹具 ---
+# 夹具曲库 DB 存绝对路径，不可随仓库分发；make_fixtures.py 可幂等重建。
+/demo/.run/
+**/__pycache__/
+*.py[cod]
+/demo/fixtures/bin/
+/demo/fixtures/library/
+/demo/fixtures/manifest.json
+
+# --- WorkBuddy 会话数据：仅 memory/ 入库（日志与长期约定） ---
+/.workbuddy/backups/
+/.workbuddy/tmp/
+
+# --- 临时预览 / 验证文件 ---
+_icon_*.png
+_icon_*.html
+_icon_raw.*
+_verify.*
+_preview.html
+_shot_*.png
+*.new

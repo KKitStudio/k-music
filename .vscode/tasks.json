@@ -1,0 +1,33 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cargo build mt-gui",
+      "type": "shell",
+      "command": "cargo build -p mt-gui",
+      "problemMatcher": ["$rustc"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "cargo build mt-cli",
+      "type": "shell",
+      "command": "cargo build -p mt-cli",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "cargo build mt-core",
+      "type": "shell",
+      "command": "cargo build -p mt-core",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "cargo check (workspace)",
+      "type": "shell",
+      "command": "cargo check",
+      "problemMatcher": ["$rustc"]
+    }
+  ]
+}

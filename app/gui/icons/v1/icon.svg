@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- K曲库 应用图标：低对比柔和圆角方块 + 飘逸手写美术字 "K music" + 旋律飘带 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEEBE7"/>
+      <stop offset="1" stop-color="#DBD6D0"/>
+    </linearGradient>
+  </defs>
+  <!-- 圆角方块（四角透明） -->
+  <rect x="0" y="0" width="1024" height="1024" rx="224" ry="224" fill="url(#bg)"/>
+  <!-- 字标：Segoe Script 连笔手写体，K 大 music 小 -->
+  <text x="512" y="592" text-anchor="middle"
+        font-family="'Segoe Script', 'Segoe Print', cursive" font-weight="700" fill="#4C4741">
+    <tspan font-size="224">K</tspan>
+    <tspan font-size="160" dx="30"> music</tspan>
+  </text>
+  <!-- 旋律飘带：轻盈收笔，呼应音乐主题 -->
+  <g fill="none" stroke="#4C4741" stroke-linecap="round">
+    <path d="M 150 686 C 300 742, 430 668, 560 700 C 690 732, 800 716, 892 646"
+          stroke-width="7" opacity="0.45"/>
+    <path d="M 892 646 C 900 640, 906 636, 910 628" stroke-width="6" opacity="0.40"/>
+  </g>
+</svg>

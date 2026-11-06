@@ -1,68 +1,66 @@
-# MEMORY.md — K曲库（musicMT）音乐管理系统
+# MEMORY.md — K曲库（musicMT）
 
 ## 定位与约束
-- PC 端本地音乐库管理器 + 桌面播放器。Rust 路线：`mt-core` 纯库 + 可替换 UI 壳；PC 壳 = Tauri 2 + Material Web 前端；Electron 排除。
-- 网易云服务端登录/下载已于 2026-10-29 彻底移除；备份源 = 用户在官方 APP 维护 + 本地增量合并（规避封号）。
-- 文件组织由 `config.library.file_scheme` 决定（默认 `artist_album`，另 `album`/`artist`/`flat`）。
-- 版本号唯一数据源 = 根 `Cargo.toml` `[workspace.package] version`（现 **0.4.0**），改动须同步 `VERSION.md` + `app/gui/tauri.conf.json`。`VERSION.md` 为权威变更记录（含兼容版本、min_compatible=0.2.0）。
+- PC 本地音乐库 + 桌面播放器；Rust workspace：`mt-core`(纯库)/`mt-cli`/`mt-gui`(Tauri 2 + 原生 HTML/JS Material 前端)，Electron 排除。
+- 网易云服务端登录/下载 2026-10-29 彻底移除；备份源 = 用户官方 APP + 本地增量合并（规避封号）。
+- 文件组织 `config.library.file_scheme`（默认 artist_album，另 album/artist/flat）。
+- 版本唯一源 = 根 `Cargo.toml [workspace.package] version`（**0.4.0**），须同步 `VERSION.md` + `app/gui/tauri.conf.json`；min_compatible=0.2.0。
 
-## NCM 规则（易回归，务必遵守）
-- 不内置解密，仅通过可配置路径调外部工具 `tools/ncm/bin/ncmdump.exe`（taurusxin/ncmdump, MIT）。
-- 唯一开关 = `NcmConfig::tool_ready()`（工具路径存在即生效）；无 `enabled`/`auto_convert`。
-- 无工具 + 导入含 ncm：普通音频入库，`.ncm` 暂存 `<曲库>/download/pendingNcm/`（不删源）；指定工具后 `POST /api/ncm-tool` 自动回补积压（路由是 `/api/ncm-tool` 非 `/api/ncm/tool`）。
-- 静默执行：`mt_core::silent_command()` 置 `CREATE_NO_WINDOW=0x08000000`（ncmdump 无静默参数，只能调用侧解决）。
-- 合规：绝不重新分发解密音频 / 公开分享 NCM 工具；打包排除 `tools/ncm/bin`。
+## NCM 规则（易回归）
+- 不内置解密，只调外部 `tools/ncm/bin/ncmdump.exe`；唯一开关 `NcmConfig::tool_ready()`，无 enabled/auto_convert。
+- 无工具时普通音频入库、`.ncm` 暂存 `<曲库>/download/pendingNcm/`（不删源）；指定工具后 `POST /api/ncm-tool` 回补（不是 /api/ncm/tool）。
+- `mt_core::silent_command()` 置 CREATE_NO_WINDOW；合规：不分发解密音频/工具，打包排除 `tools/ncm/bin`。
 
-## 架构现状
-- workspace：`app/core`(mt-core) / `app/cli`(mt-cli) / `app/gui`(mt-gui)。模块：config / db(rusqlite bundled) / audio_meta(lofty) / library / import / downloads(UI 隐藏) / serve(axum+手写 Range/206) / log(落 `<曲库>/.mt/app.log`) / app(元信息常量) / lyrics(lrc+内嵌) / progress(导入进度上报)。
-- 配置双文件：app 级 `<exe目录>/kqk-app.toml` + 曲库级 `<曲库>/.mt/config.toml`；`Config::merge/split` 转换，旧配置自动迁移。
-- 配置版本兼容：`[meta]` 含 `config_version`/`min_compatible_version`；兼容→只就地更新 `[meta]`（注释/未知键/键序保留）；冲突→先备份 `*.conflict-<版本>.bak` 再重建并说明原因。**构建/打包绝不删 dist 运行时配置**（`build.rs` 只同步 `dist/frontend/`；`package_gui.bat` 只拷 exe+README，保留 `kqk-app.toml`/`.guest`/`library.db`/`app.log`）。
-- GUI 前端不嵌入 exe：WebView 加载 axum 本地服务；前端由磁盘 `frontend/` 提供 → **`dist/frontend/` 即 GUI 实际前端源**；`build.rs` 编译期自动同步 `app/gui/frontend`→`dist/frontend`。
-- 应用元信息（名称/版本/作者/许可证）唯一数据源 = `app/core/src/app.rs`；注入 `APP_VERSION`；`/api/about`、`/api/status.app_version`、关于面板、标题栏、CLI `--version` 同源展示。
-- 关键机制：`local_id` 自增主键；增量扫描门控 `(file_size, file_mtime)`；`spawn_boot_scan` 后台扫；前端相对路径调 /api 免 CORS。
-- 时间字段：`download_records.imported_at`（首次入库 UNIX 毫秒，UPDATE 不覆盖）/ `created_at`（文件系统创建时间，Windows birth time，取不到退化 mtime）；旧库自动 `ALTER TABLE` + 回填，`refresh_created_at()` 在增量扫描命中时校正。`TrackView`/`PlaylistItemView` 与四个曲目 API 都带；空值渲染空单元格，禁止「—」「暂无」占位。
+## 架构
+- 模块：config / db(rusqlite bundled) / audio_meta(lofty) / library / import / downloads(UI 隐藏) / serve(axum + 手写 Range 206) / log / lyrics / progress / app。
+- 双配置：app 级 `<exe目录>/kqk-app.toml` + 曲库级 `<曲库>/.mt/config.toml`；`Config::merge/split`。`[meta]` 版本兼容→只就地更新 `[meta]`（注释/未知键/键序保留）；冲突→先备份 `*.conflict-<版本>.bak` 再重建并说明原因。
+- **构建/打包绝不删 dist 运行时配置**（build.rs 只同步 `dist/frontend/`；package_gui.bat 只拷 exe+README，保留 kqk-app.toml/.guest/library.db/app.log）。
+- GUI 前端不嵌入 exe：WebView 加载 axum 本地服务 → **`dist/frontend/` 即实际前端源**，build.rs 编译期同步 `app/gui/frontend`→`dist/frontend`。
+- 应用元信息唯一源 `app/core/src/app.rs` → /api/about、/api/status、标题栏、CLI --version 同源。
+- `local_id` 自增主键；增量扫描门控 `(file_size,file_mtime)`；spawn_boot_scan；前端相对路径调 /api 免 CORS。
+- 时间字段 `download_records.imported_at`（首次入库 UNIX 毫秒，UPDATE 不覆盖）/ `created_at`（Windows birth time，取不到退化 mtime）；旧库 ALTER + 回填，`refresh_created_at()` 校正；`TrackView`/`PlaylistItemView` 与四个曲目 API 都带；空值渲染空单元格，禁止「—」「暂无」占位。
 
-## 前端要点（务必遵守，防回归）
-- 原生 HTML/JS + Material 风。外观：`--primary/--surface/--bg` + `[data-theme="dark"]` + `body.skin-active` 玻璃拟态；主题三态 `light/system/dark`（默认 system），所有外观变化汇聚 `applyAppearance()`→末尾 `syncNativeTitlebar()` 上报标题栏。
-- **外观偏好权威源 = app 级 `kqk-app.toml [ui]`**（`theme/accent/skin_type/skin_preset/skin_accent/appearance_saved`），由 `/api/status` + `GET/POST /api/ui-prefs` 读写；`localStorage('kqk_appearance')` 只作首屏缓存与旧偏好迁移来源，**自定义皮肤图片本体（base64）仍只存 localStorage，绝不写 TOML**。`appearance_saved` 区分「旧配置待迁移」与「用户显式设成默认值」。
-- **详情渲染「分视图隔离」（强约束）**：四页各有 `state.viewSelection`；展示唯一来源 `viewDetail(view)`；`renderViewDetail(view)` 只写该页内联条，`renderActiveDetail()` 写全局右侧栏。**绝不要写「把同一份数据灌进所有页面」的函数**（旧 `fillInlineDetails()` 即 bug 源）。
-- **详情区公共组件 `DetailRegion`**：未选中→整区隐藏；封面缺失/失败→隐藏封面（不显示「无封面」）；空名称/空字段→不渲染对应行（不显示「—」）。显隐仲裁唯一入口 `syncDetailVisibility()`。旧的 `fillTrackDetail()`/`fillGroupDetail()` 已删，勿复活。
-- **布局风格 + 列宽**：`UiConfig` 4 个 `layout_*`(1=横向/2=纵向，按页面独立) + **8** 个 `width_*`(f64 占比，和恒 100)；默认 library=1 其余=2，列宽 24/16/18/6/6/8/11/11。落盘 `save_ui_in_place()` 只就地替换 `[ui]` 段（保留注释/未知键）。列宽用累计取整 + `MIN_COL_PX=48`；TOML 须 `doc["ui"].clone().try_into()`。`sanitize()` 需二次下限校正（8 列等比缩放后小列会跌破 4%）。
-- **导入/创建时间列（强约束，易回归）**：`all_track_column_keys()` = 8 列（含 `imported_at`/`created_at`），但 **`default_track_columns()` 只有 7 列——「创建时间」默认不显示，只能由「设置 → 列表 → 歌曲列表显示项」勾选后经 `/api/columns` 打开**。`track_columns_saved` 标志区分「旧配置可迁移（补 imported_at、不补 created_at）」与「用户显式保存过、不得覆盖」。四张歌曲表统一走 `visibleTrackCols()`/`trackHeadHtml()`/`trackCellsHtml()`，勿在子页面里硬编码列。`/api/columns` 必须走 `save_ui_in_place()`（不可用 `save_app()` 整份重写，会抹掉用户注释）。
-- **列宽基准与拖拽写回**：`tableAvailWidth()` 必须用 `table.parentElement` 容器宽度（用已撑宽的表格宽度会形成正反馈，末尾列被挤出可视区）；拖拽 `onUp` **只按像素增量改被拖动的两列占比**，不可按渲染宽度整体重算（窄窗口浏览器最小列宽会把误差永久写进配置）。
-- **测试代码统一在 `demo/`**（勿放 .workbuddy/tmp）：`common.py`/`run_all.py`/`tests/`/`tools/`/`fixtures/library`(持久化，DB 存绝对路径→必须原地复用，勿复制)。服务进程纪律：失败即回收、按 ExecutablePath 精准清理孤儿。`clean_run.py` 用 `onerror` 重试，不可谎报成功。
+## 前端强约束（防回归）
+- 外观：`--primary/--surface/--bg` + `[data-theme=dark]` + `body.skin-active`；三态 light/system/dark，汇聚 `applyAppearance()`→末尾 `syncNativeTitlebar()`。
+- **外观权威源 = app 级 `kqk-app.toml [ui]`**（theme/accent/skin_type/skin_preset/skin_accent/appearance_saved），由 /api/status + GET/POST /api/ui-prefs 读写；`localStorage('kqk_appearance')` 只作首屏缓存与旧偏好迁移来源，**自定义皮肤图片 base64 绝不写 TOML**；appearance_saved 区分「旧配置待迁移」与「用户显式设成默认值」。
+- **详情分视图隔离**：四页各有 `state.viewSelection`；唯一来源 `viewDetail(view)`；`renderViewDetail` 只写本页内联条。**禁止把同一份数据灌进所有页面**（旧 `fillInlineDetails()` 是 bug 源）。
+- **DetailRegion**：未选中→整区隐藏；封面缺失/失败→隐藏封面；空名称/空字段→不渲染对应行。显隐唯一入口 `syncDetailVisibility()`；`fillTrackDetail()`/`fillGroupDetail()` 已删勿复活。CSS 需 `[hidden]{display:none}`（flex 元素原生 hidden 无效）。
+- **布局 + 列宽**：4 个 layout_*(1 横向/2 纵向，默认 library=1 其余=2) + **8** 个 width_*(f64 占比和恒 100，默认 24/16/18/6/6/8/11/11)；`save_ui_in_place()` 只就地替换 `[ui]`（保注释/未知键）；累计取整 + `MIN_COL_PX=48`；TOML 须 `doc["ui"].clone().try_into()`；`sanitize()` 需二次下限校正（8 列等比缩放后小列会跌破 4%）。
+- **导入/创建时间列**：`all_track_column_keys()` = 8 列，但 **`default_track_columns()` 只有 7 列——创建时间默认不显示**，只能由「设置→列表→歌曲列表显示项」勾选经 /api/columns 打开。`track_columns_saved` 区分「旧配置可迁移（补 imported_at、不补 created_at）」与「用户显式保存过、不得覆盖」。四张歌曲表统一 `visibleTrackCols()`/`trackHeadHtml()`/`trackCellsHtml()`，勿硬编码列；**/api/columns 必须 `save_ui_in_place()`**（`save_app()` 整份重写会抹掉用户注释）。
+- **列宽基准与拖拽写回**：`tableAvailWidth()` 必须用 `table.parentElement` 容器宽度（用已撑宽的表格宽度会正反馈挤走末列）；`onUp` **只按像素增量改被拖动的两列占比**，不可按渲染宽度整体重算。
+- **首屏外观注入**：端口动态 → localStorage 按 origin 隔离；`serve.rs::index_handler` 把 `[ui]` 内联注入 `<!--KQK_BOOT_APPEARANCE-->`（no-store，JSON 转义 `<>&`），首屏脚本预设 theme/primary **并回写 localStorage**，否则 `applyAppearance()` 会拿陈旧缓存覆盖首帧；旧前端无占位符则降级。新增外观字段须同步「注入 + 首屏脚本 + applyAppearance」三处。
+- **首帧空窗底色方案已回退（2026-11-06，强约束）**：`visible(false)`→恢复几何→`show()` 之间 WebView2 不绘制，会露出未着色表面（系统深色下纯黑），**这是窗口位置持久化的固有代价，回退不会让它消失**。曾试「注入 `<style>` 兜底底色 + builder `.background_color()` + system 校正」三层，真机仍黑一下，已整体回退（对应单测/断言一并删除），**勿复活、勿再写成「已修复」**。该方案无持续系统消耗（+0.008 ms/次请求、无常驻线程/定时器），回退理由是无效而非消耗。查证：tao 窗口类 `hbrBackground` 为空刷，`WM_ERASEBKGND` 只填父窗口客户区，WebView2 子窗口覆盖后基本被裁掉；wry 的 builder 着色需 `ICoreWebView2ControllerOptions3`，运行时 `set_background_color` 走 `ICoreWebView2Controller2`（更通用），若以后再查这是第一个该试的点。`TODO.md` C-4 记「启动 Logo（原生 splash，优先级极低，仅启动过慢时才提高）」——**HTML/CSS 里的 Logo 遮不住空窗**（页面尚未绘制）。
+- **启动早期单实例（强制、无开关）**：`app/gui/src/single_instance.rs` 在 `run()` 最开头用命名互斥体 `Local\KQK_SINGLE_INSTANCE_com.musicmt.app` 判定，**必须早于配置加载 / DB / axum / `spawn_boot_scan`**（官方 `tauri-plugin-single-instance` 在 `Builder::build()` 才拦，太晚，第二进程已写 DB）。第二进程 `AllowSetForegroundWindow(ASFW_ANY)` → 读 `<exe目录>/kqk-instance.port` → `GET /api/focus`（复用 `set_post_dialog_focus_sink` 置前）→ `exit(0)`。端口文件在服务可响应后原子发布、正常退出由 Guard Drop 删除；互斥体 `bInitialOwner=FALSE` 且从不 wait；创建失败保守放行且不碰端口文件。**不做设置开关**（锁在启动时建立，运行期开关无法同步）。只约束 `mt-gui.exe`，`mt-cli.exe serve` 与 demo 用例不受影响。
+- **窗口位置持久化**：`app/gui/src/window_state.rs` 独占读写 `<exe目录>/kqk-window.state`（物理像素 key=value，临时文件 + rename）；**刻意不写 kqk-app.toml**（/api/ui-prefs 从内存副本整段就地写 [ui]，混写会互相覆盖）。builder 的 position/inner_size 只吃逻辑像素，须 build 后 `set_position(Position::Physical)`/`set_size(Size::Physical)`；最大化跳过几何；恢复前 `available_monitors()` 校验可见性。
 
-- **首屏外观注入（防启动主题闪烁，强约束）**：GUI 端口动态 → `localStorage` 按 origin 隔离、缓存不可靠；`serve.rs::index_handler` 在返回 `/` 与 `/index.html` 时把 `[ui]` 外观内联注入 `index.html` 的 `<!--KQK_BOOT_APPEARANCE-->`（`no-store`，JSON 转义 `<>&`），首屏脚本预设 `data-theme`/`--primary` **并回写 localStorage**，否则 body 末尾 `app.js::applyAppearance()` 会拿陈旧缓存把首帧覆盖回去。旧前端无占位符时原样返回降级。新增外观字段必须同步「注入 + 首屏脚本 + applyAppearance」三处。
-- **首帧空窗底色（防「先整体黑一下」，强约束）**：`visible(false)` 恢复几何后 `show()`，WebView2 从显示到首次绘制之间露出未着色表面（系统深色下纯黑）。三层兜底：① `serve.rs` 注入占位符时同时给 `<style>html{background:...}</style>`（light `#f6f8fc` / dark `#121830` / system 用 `@media (prefers-color-scheme:dark)`），位置必须**早于** `styles.css` 的 `<link>`，后者同等优先级后到覆盖，不影响最终渐变 / 皮肤；② builder `.background_color(tauri::window::Color)` 同时设 HWND 与 WebView2 `DefaultBackgroundColor`；③ `system` 在窗口创建后读 `win.theme()` 校正，`set_background_color` **必须在 `show()` 之前**（两者都是事件循环消息且 FIFO，先改色再显示）。**禁止用「等 DOMContentLoaded 再 show」消黑屏**：会把窗口出现推迟几十～几百 ms；实测注入本身仅 +0.008 ms（中位数 0.303 vs 0.295 ms，keep-alive 300 次）。
-- **窗口位置持久化（GUI 侧，强约束）**：`app/gui/src/window_state.rs` 独占读写 `<exe目录>/kqk-window.state`（物理像素 `key=value`，临时文件 + rename 原子替换）；**刻意不写 `kqk-app.toml`**，因 `/api/ui-prefs` 从服务线程内存副本整段就地写 `[ui]`，混写会互相覆盖。`WebviewWindowBuilder::position/inner_size` 只吃逻辑像素，必须 build 后用 `set_position(Position::Physical)`/`set_size(Size::Physical)` 恢复（`visible(false)`→恢复→`show()`）；最大化期间跳过几何；恢复前用 `available_monitors()` 校验可见性，外接屏拔掉时回退默认居中。
+## 测试与构建
+- 测试统一在 `demo/`（勿放 .workbuddy/tmp）：common.py / run_all.py / tests / tools / fixtures/library（持久化，DB 存绝对路径→原地复用，勿复制）。服务进程纪律：失败即回收、按 ExecutablePath 精准清孤儿；`clean_run.py` 用 onerror 重试，不可谎报成功。
+- `export PATH="/c/Users/kill3/.cargo/bin:$PATH"`；build `cargo build --release -p mt-gui -p mt-cli`；test `cargo test -p mt-core -p mt-gui`(60+9) / `python demo/run_all.py`(9 用例)。**改后端后必须先重编 release，demo 端到端才测到新 exe**。
+- 发布：改版本号(3 处)→release build→拷 exe 到 dist/、README 用 `tools/dist_readme.md`；保留 dist 运行时配置。**改图标后必须重编 mt-gui**。
 
-## 应用图标（v3 横版放大定稿 / v1、v2 备份）
-- **当前正式图标 = v3**（2026-11-06 用户反馈「不如 v1 的横版，但 v1 字有些小」→ 回到横版并把字标等比放大 1.20x）：`app/gui/icons/icon.{svg,png,ico}`。构图完全沿用 v1：低对比圆角方块(`#EEEBE7`→`#DBD6D0`, rx=224)+深灰褐 `#4C4741` Segoe Script Bold 手写单行「K music」(K269/music192, dx=36)+下方细旋律飘带；四角透明。字标 bbox x[91,933] y[407,617]，占幅 82%、边距 L91/R90、包围盒中心精确 (512,512)；飘带 x[146,912] y[638,731]，「字底→飘带顶」间距 21px 与 v1 一致。品红残留 0、四角 alpha=0。
-- **三档放大候选留存** `app/gui/icons/v3-candidates/`：H1-mild(1.12x, K251/music179, 占幅77%, 边距120)、**H2-medium(1.20x, 已采用)**、H3-large(1.28x, K287/music205, 占幅88%, 边距62)。对比图 `docs/screenshots/icon-v3-horizontal.png`（v1 基准 + 三档 + 64/48/32/16px）。**想要更保守/更饱满只需** 复制对应 SVG 为 `icon.svg` → `python tools/icon_pipeline.py` → `touch app/gui/tauri.conf.json && cargo build -p mt-gui`。曾试 1.45x 实测右边距 0（贴边裁切）已废弃；飘带水平范围固定 146~912 不随字放大（否则超画布），故 H3 飘带短于字标、略显托不住。
-- **v1 冻结备份** `app/gui/icons/v1/`（三件套 + README）：K 居中单行(K224/music160, dx=30, 占幅69%)+飘带。**v2 否决备份** `app/gui/icons/v2-backup/`（三件套 + README，含回滚命令）：B 左上方案(K 左上 400 / music 中下 235)，用户看后觉得不如横版；源留存 `v2-candidates/B-left-final.svg`。历史否决：①蓝紫渐变+白双音符(锯齿/粉边/不对齐) ②靛蓝底+Arial 白粗字(对比过高、字体硬)。
-- **生成工具 `tools/icon_pipeline.py`（可复用，勿删）**：`python tools/icon_pipeline.py [svg] [png] [ico]`。Edge 无头渲染到品红键色→软抠图(反混色还原真实色)→面积平均降采样→自写 PNG/ICO。`render_svg` 的 workdir **必须绝对路径**（相对路径生成无效 file:/// URL 且 --screenshot 被忽略）。**字标/飘带几何测量须分层渲染**（分别删 `<g fill="none">` / `<text>` 再测），否则飘带的半透明中灰会混进字标抗锯齿像素导致误判；居中用迭代收敛到包围盒中心 (512,512)。验证：品红残留=0、四角 alpha=0、ICO 6 帧 biSize=40 无重叠；用 v1 复现比对 99.7% 像素一致。
-- `tauri.conf.json` `bundle.icon` 引用；`build.rs` 的 `tauri_build::build()` 编译期嵌入 exe（**改图标后须重编 mt-gui**）。本轮已 `touch tauri.conf.json && cargo build -p mt-gui`（7.9s 通过），用 **256 帧 BMP 字标中部行**(offset 142+127*1024+100*4) 做像素指纹确认 exe 含 v3、不含 v1/v2；注意取背景平坦区做指纹会三版同时命中、无法区分。
+## 应用图标（v3 定稿）
+- 正式 = **v3 横版字标放大 1.20x**（`app/gui/icons/icon.{svg,png,ico}`）；候选 `icons/v3-candidates/`(H1/H2 已采用/H3)，对比图 `docs/screenshots/icon-v3-horizontal.png`；v1 冻结 `icons/v1/`，v2 否决 `icons/v2-backup/`。
+- 工具 `tools/icon_pipeline.py [svg] [png] [ico]`（勿删）：Edge 无头渲染到品红键色→软抠图→面积平均降采样→自写 PNG/ICO；render_svg 的 workdir **必须绝对路径**；字标/飘带几何须分层渲染测量。验证品红残留 0、四角 alpha 0、ICO 6 帧无重叠。
+- `tauri.conf.json` bundle.icon 引用，build.rs 编译期嵌入；改图标须 `touch tauri.conf.json && cargo build -p mt-gui`。
+
+## 播放列表规格（2026-11-06 定稿，**代码未实施**）
+- 权威文档 = `docs/01` FR-16～FR-20；`docs/03` §2.2/§2.3 已按 `db.rs::init_schema()` 实际 schema 校正（旧 songs/playlist_tracks 是未落地设计稿）。**代码侧仍只有 v0.4.0 基础 CRUD，勿据 FR 认为已实现**。
+- 两类统一为「播放上下文」：有名列表持久化（主键 `(playlist_id,local_id)` 禁重复、**不迁移**）；无名列表 = 由触发播放的**来源视图**推导的运行时 `local_id[]` 快照。播放是**全局功能**，非播放列表页专属；仅选中不播放不切换队列，跨 Tab 的 viewSelection 残留不得影响队列。
+- `auto_playlist_count`（app 级 [ui]，默认 20 / 上限 200 / 下限 1）**只约束无名列表生成**，不碰任何列表的 DB/UI 行数/导出内容；有名队列 = 全量。构造：src = state.tracks（受搜索过滤与 LIMIT 2000，按界面顺序），V = 播放瞬间**视口可见行**并冻结 `[start,end]`（播放中不再读 DOM）；queue = src.slice(V[0], V[0]+n)；尾不足从紧邻 V 之前连续段向前补；总数不足就不足，不跨过滤补；|V|>n 以当前曲为锚截 n 首。currentIndex = queue.indexOf(点击曲)，**不从队首播**；只快照 id，不引用 state.tracks。
+- 格式方案 A：**DB 唯一权威**；内部 JSON 无损备份可回读 + M3U8 **单向投影不回读**（UTF-8 Extended M3U，非 HLS），故无双写不一致。一期导出**单个列表全量**，绝不导出播放队列（否则 n 污染文件）。导入匹配：相对路径→绝对路径→文件名+艺人→标签；去重 ① local_id 级（留首次位置）② 文件名+艺人+时长内容级，必须发生在写 DB 前，主键 INSERT OR IGNORE 兜底；未匹配跳过并报告。网易云只兼容**本地导出文件**（不联网不登录）。
+- 实施前先修 P0：`prune_missing()` 不清理 playlist_items 孤儿 → track_count 不符 / 播放到失效 id 中断。**FR-18 的循环模式、切来源、n 变更时机、重启恢复等均为「默认值，可后置调整」，用户尚未逐条拍板**。
 
 ## 待真机验证
-- 歌词浮层、rfd 原生对话框、backdrop-filter 观感、`:has()` 已用 `.is-checked` 兜底。
-- Windows 原生标题栏染色需真机目视（DWM 任意色仅 Win11 21H2+，Win10 仅明暗跟随）。
-- 切换曲库目录后旧曲目仍在 DB（仅文件缺失才孤儿清理）。
-- **启动首帧主题**（2026-11-06）：设置深色 / 换主题色后重启，从第 1 帧起不得出现默认浅色；需连续重启 3 次覆盖端口回退场景。自动化只验 HTML/DOM，真机目视见 `docs/07` P15。
-- **启动首帧空窗底色**（2026-11-06）：从第 1 帧起不得出现整块纯黑 / 纯白空窗；重点验证「系统深色 + 应用显式浅色」组合，以及 `system` 主题在切换系统明暗后重启。见 `docs/07` P15 ⑦。
-- **窗口位置恢复**（2026-11-06）：拖动 / 缩放 / 最大化后关闭再打开，应直接出现在上次位置；重点验证多显示器、拔外接屏、125%/150% DPI 缩放。见 `docs/07` P16。
+- 歌词浮层、rfd 原生对话框、backdrop-filter 观感、`:has()`（已用 .is-checked 兜底）、Windows 标题栏染色（DWM 任意色仅 Win11 21H2+）、切换曲库目录后旧曲目仍在 DB、真实音频内嵌封面显示效果。
+- **启动首帧主题**（连重启 3 次覆盖端口回退）见 docs/07 P15；**首帧空窗底色**三层兜底已回退，黑窗仍是已知问题（重点「系统深色 + 应用浅色」、system 切明暗后重启），见 P15 ⑦ + `TODO.md` C-4；**窗口位置恢复**（多显示器 / 拔外接屏 / 125%·150% DPI）见 P16；**单实例**（重复双击、连续快速双击、最小化后唤起、崩溃残留、`dist` 与 `target` 双副本）见 P17。自动化只验 HTML/DOM 与端口文件，真机目视不可替代。
 
-## 构建与运行
-- 工具链：rustup stable / x86_64-pc-windows-msvc + VS。`export PATH="/c/Users/kill3/.cargo/bin:$PATH"`
-- build：`cargo build --release -p mt-gui -p mt-cli`；test：`cargo test -p mt-core -p mt-gui`（当前 61 + 8 passed）、`python demo/run_all.py`（当前 8 用例）。产物：`target/release/mt-{cli,gui}.exe` → `dist/`。**改后端后必须先重新 build release，demo 端到端用例才会测到新 exe**。
-- 发布流程：改版本号(3 处)→`cargo build --release`→拷 exe 到 `dist/`、README 用 `tools/dist_readme.md`、前端由 build.rs 自动同步；保留 `dist/kqk-app.toml`/`.guest` 运行时配置。**改图标后必须重编 mt-gui**（已验证：旧/新 exe 的 RT_ICON 哈希不同）。
-- 验证：CLI `library <目录> [方案] [名称]`；`/api/about`、`/api/status`(含 app_version)、`/api/lyrics/:id`、`/api/import-progress` 可冒烟。
-
-## 日常开发协作约定（2026-11-06 起）
-- 本会话用于持续报 bug / 改 bug。**修复流程**：复现并定位根因 → 改动前备份到 `.workbuddy/backups/YYYY-MM-DD-<主题>/`（含 MANIFEST.md5）→ 最小范围改动 → 验证（`cargo test -p mt-core`、`demo/run_all.py`、`node --check`、前端源与 `dist/frontend` md5 对齐）→ 追加当日日志 + 同步 `docs/` 与 `VERSION.md`。
-- **版本控制（2026-11-06 起）**：本地 git 仓库已初始化，主分支 `main`，提交身份为**仓库级** `kill33 <kill33@126.com>`（全局身份仍为空）；提交信息用 Conventional Commits。`git status/diff/revert` 现已可用，但**改动前备份保留为第二道保险**。`.gitignore` 排除 `target/` `dist/` 运行时配置/DB/日志 `tools/ncm/{bin,source}` `demo/.run` 可重建夹具 `.workbuddy/{backups,tmp}`；`.gitattributes` 的 `* -text` 禁用行尾转换（保证前端 md5 与 `.bat` CRLF）。改前先对比 md5，改后核对 `dist/frontend` 同步。
-- 防回归强约束即上文各节（详情分视图隔离 / DetailRegion / 配置就地更新 / NCM 规则 / 夹具原地复用），改动前先确认不违反。
-- 收尾清理临时文件与残留服务进程（`demo/.run/` 用 `clean_run.py`，勿留孤儿 mt-cli）；不擅自删除疑似并行会话在用的文件。
-- **多会话共享**：同一项目目录有多个会话并行。`CODEBUDDY.md` 是 IDE 每轮自动注入所有会话的**共享事实入口**；改变项目事实（版本 / 配置结构 / 接口 / 构建命令 / git 与合规规则）必须同步 `CODEBUDDY.md` + 本文件 + 当日日志 + 相关 `docs/`。每轮开工先 `git status --short`；提交时只 `git add <自己改的文件>`，**禁止 `git add -A`** 带走其它会话的中间态。
+## 协作约定
+- 本会话持续报 bug / 改 bug。流程：复现定位 → 改前备份 `.workbuddy/backups/YYYY-MM-DD-<主题>/`（含 MANIFEST.md5）→ 最小改动 → 验证（cargo test -p mt-core、demo/run_all.py、node --check、前端源与 dist/frontend md5 对齐）→ 追加当日日志 + 同步 docs/ 与 VERSION.md。
+- 本地 git 已初始化，分支 main，仓库级身份 kill33 <kill33@126.com>，Conventional Commits；.gitignore 排除 target/、dist/ 运行时配置、`tools/ncm/{bin,source}`、demo/.run、.workbuddy/{backups,tmp}；.gitattributes `* -text`。**每轮开工先 `git status --short`；提交只 `git add <自己改的文件>`，禁止 `git add -A`**（多会话并行，勿带走他人中间态）。
+- **多会话共享**：`CODEBUDDY.md` 是 IDE 每轮注入所有会话的共享事实入口；改变项目事实（版本/配置结构/接口/构建命令/git 与合规规则）必须同步 CODEBUDDY.md + 本文件 + 当日日志 + 相关 docs/。
+- 收尾清理临时文件与残留服务进程（demo/.run 用 clean_run.py，勿留孤儿 mt-cli）；不擅自删除疑似并行会话在用的文件。
+- 冒烟测试务必先把 exe 复制到临时目录再跑（**勿直接用 `dist/` 下的 exe**），否则会改写 `dist/kqk-app.toml` 的 `last_library_dir`、污染用户运行时配置。
 
 ## 文档
-docs/：00 总览 / 01 需求 / 02 架构 / 03 数据模型配置 / 04 技术选型 / 05 曲库目录设计 / 06 进展 / 07 真机验证方案。根 `VERSION.md` = 版本变更记录，与 app 严格同步。
+docs/：00 总览 / 01 需求 / 02 架构 / 03 数据模型配置 / 04 技术选型 / 05 曲库目录 / 06 进展 / 07 真机验证方案；根 VERSION.md = 版本变更记录，与 app 严格同步。
+每日开发日志（`.workbuddy/memory/YYYY-MM-DD.md`）已于 2026-11-06 压缩为极简摘要；详细发布历史见 VERSION.md、设计与架构见 docs/、长期约束见本文件。

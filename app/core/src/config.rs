@@ -429,6 +429,10 @@ pub struct UiConfig {
     /// 静音开关（静音时保留 volume，恢复时回到该音量）。
     #[serde(default)]
     pub muted: bool,
+    /// FR-25：歌曲信息栏（右侧独立详情栏 + 纵向内联详情条，含专辑封面）收起态。
+    /// 与一级 / 二级侧栏同属 app 级偏好；收起后留小图标窄条 + 常驻展开把手。
+    #[serde(default)]
+    pub detail_collapsed: bool,
 }
 
 impl Default for UiConfig {
@@ -461,6 +465,7 @@ impl Default for UiConfig {
             group_collapsed: false,
             volume: default_volume(),
             muted: false,
+            detail_collapsed: false,
         }
     }
 }
@@ -1240,7 +1245,7 @@ pub fn update_meta_in_place(path: &Path, meta: &ConfigMeta) -> Result<()> {
 }
 
 /// `[ui]` 段的字段顺序（新增键按此顺序追加，保证输出稳定可读）。
-pub const UI_FIELD_ORDER: [&str; 27] = [
+pub const UI_FIELD_ORDER: [&str; 28] = [
     "track_columns",
     "track_columns_saved",
     "layout_library",
@@ -1268,6 +1273,7 @@ pub const UI_FIELD_ORDER: [&str; 27] = [
     "group_collapsed",
     "volume",
     "muted",
+    "detail_collapsed",
 ];
 
 /// 计算一行 TOML 中未闭合的括号深度（忽略字符串字面量与行注释内的括号）。
@@ -2441,9 +2447,10 @@ track_columns = ["name", "artist"]
             doc["ui"].clone().try_into().unwrap()
         };
         assert_eq!(back.auto_playlist_count, 33);
-        assert_eq!(UI_FIELD_ORDER.len(), 27);
+        assert_eq!(UI_FIELD_ORDER.len(), 28);
         assert_eq!(UI_FIELD_ORDER[20], "auto_playlist_count");
         assert_eq!(UI_FIELD_ORDER[26], "muted");
+        assert_eq!(UI_FIELD_ORDER[27], "detail_collapsed");
     }
 
     #[test]
@@ -2452,7 +2459,7 @@ track_columns = ["name", "artist"]
         assert_eq!(ui.sidebar_width, SIDEBAR_WIDTH_DEFAULT);
         assert_eq!(ui.group_width, GROUP_WIDTH_DEFAULT);
         assert_eq!(ui.volume, VOLUME_DEFAULT);
-        assert!(!ui.sidebar_collapsed && !ui.group_collapsed && !ui.muted);
+        assert!(!ui.sidebar_collapsed && !ui.group_collapsed && !ui.muted && !ui.detail_collapsed);
 
         let mut changed = UiConfig::default();
         changed.sidebar_width = 200;
@@ -2461,8 +2468,9 @@ track_columns = ["name", "artist"]
         changed.group_collapsed = true;
         changed.volume = 37;
         changed.muted = true;
+        changed.detail_collapsed = true;
         let text = upsert_ui_section("[ui]\n", &changed);
-        for key in ["sidebar_width", "group_width", "sidebar_collapsed", "group_collapsed", "volume", "muted"] {
+        for key in ["sidebar_width", "group_width", "sidebar_collapsed", "group_collapsed", "volume", "muted", "detail_collapsed"] {
             assert!(text.contains(key), "FR-24 字段 {key} 必须写入 [ui] 段：\n{text}");
         }
         let back: UiConfig = {
@@ -2471,7 +2479,7 @@ track_columns = ["name", "artist"]
         };
         assert_eq!(back.sidebar_width, 200);
         assert_eq!(back.group_width, 320);
-        assert!(back.sidebar_collapsed && back.group_collapsed && back.muted);
+        assert!(back.sidebar_collapsed && back.group_collapsed && back.muted && back.detail_collapsed);
         assert_eq!(back.volume, 37);
 
         // 越界回退默认、音量钳到 100，且 8 列占比守恒不受影响。

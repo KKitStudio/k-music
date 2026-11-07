@@ -458,6 +458,8 @@ async fn status_handler(State(st): State<AppState>) -> Response {
     let group_collapsed = cfg_guard.ui.group_collapsed;
     let volume = cfg_guard.ui.volume;
     let muted = cfg_guard.ui.muted;
+    // FR-25：歌曲信息栏收起态（与侧栏 / 音量同属 app 级 [ui]）。
+    let detail_collapsed = cfg_guard.ui.detail_collapsed;
     // 外观 / 主题方案（配置文件为准；自定义皮肤图片本体不入配置，由前端 localStorage 兜底）。
     let appearance = serde_json::json!({
         "theme": cfg_guard.ui.theme,
@@ -511,6 +513,7 @@ async fn status_handler(State(st): State<AppState>) -> Response {
             "group_collapsed": group_collapsed,
             "volume": volume,
             "muted": muted,
+            "detail_collapsed": detail_collapsed,
             "app_version": app::APP_VERSION,
             "min_compatible_version": app::MIN_COMPATIBLE_VERSION,
             "config_version": cs.app_config_version,
@@ -1567,6 +1570,7 @@ async fn ui_prefs_get_handler(State(st): State<AppState>) -> Response {
         "group_collapsed": ui.group_collapsed,
         "volume": ui.volume,
         "muted": ui.muted,
+        "detail_collapsed": ui.detail_collapsed,
     }))
     .into_response()
 }
@@ -1666,6 +1670,10 @@ async fn ui_prefs_post_handler(
     if let Some(v) = body.get("muted").and_then(|v| v.as_bool()) {
         ui.muted = v;
     }
+    // FR-25：详情栏收缩态，部分更新语义（不影响其它 [ui] 键）。
+    if let Some(v) = body.get("detail_collapsed").and_then(|v| v.as_bool()) {
+        ui.detail_collapsed = v;
+    }
     ui.sanitize();
 
     // 写盘（就地更新 [ui] 段）→ 失败则不污染内存状态。
@@ -1686,6 +1694,7 @@ async fn ui_prefs_post_handler(
         "group_collapsed": ui.group_collapsed,
         "volume": ui.volume,
         "muted": ui.muted,
+        "detail_collapsed": ui.detail_collapsed,
     }))
     .into_response()
 }

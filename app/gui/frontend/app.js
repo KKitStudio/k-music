@@ -93,6 +93,8 @@ const state = {
   groupCollapsed: false,
   volume: 100,
   muted: false,
+  // FR-25：歌曲信息栏（含封面）收起态，app 级 [ui] 偏好。
+  detailCollapsed: false,
   // 歌词：{ timed, lines: [{t, text}], plain }；lyricsIndex = 当前高亮行序号。
   lyrics: null,
   lyricsIndex: -1,
@@ -446,6 +448,7 @@ async function refreshStatus() {
     if (typeof data.group_collapsed === 'boolean') state.groupCollapsed = data.group_collapsed;
     if (data.volume !== undefined) state.volume = Math.min(100, Math.max(0, Number(data.volume) || 0));
     if (typeof data.muted === 'boolean') state.muted = data.muted;
+    if (typeof data.detail_collapsed === 'boolean') state.detailCollapsed = data.detail_collapsed;
     applyPaneLayout();
     applyVolume();
     // 启动自动扫描 / 上次扫描发现的散落 .ncm：提示处理（用户已明确忽略的不重复弹）。
@@ -2879,6 +2882,33 @@ function openSettings() {
   $('set-auto-count-hint').textContent = '当前：' + state.autoPlaylistCount + ' 首';
 }
 
+// ---------- FR-25：歌曲列表表头右键 → 设置 → 列表 → 歌曲列表显示项 ----------
+// 四张歌曲表的表头都由 JS 动态重绘（innerHTML），因此用 document 级委托：
+// 重绘后无需重新绑定，表头文字与列宽拖拽手柄上的右键都能命中。
+let colSectionFlashTimer = 0;
+function openSettingsColumns() {
+  openSettings();
+  activateSettingsTab('columns');
+  const content = document.querySelector('#settings-modal .settings-content');
+  const section = $('set-columns-section');
+  if (!content || !section) return;
+  const delta = section.getBoundingClientRect().top - content.getBoundingClientRect().top;
+  content.scrollTop = Math.max(0, content.scrollTop + delta - 8);
+  section.classList.remove('focus-flash');
+  void section.offsetWidth;   // 强制重排，连续右键时动画也能重播。
+  section.classList.add('focus-flash');
+  clearTimeout(colSectionFlashTimer);
+  colSectionFlashTimer = setTimeout(() => section.classList.remove('focus-flash'), 1800);
+}
+document.addEventListener('contextmenu', (e) => {
+  const el = e.target;
+  const th = (el && el.closest) ? el.closest('.track-table thead th') : null;
+  if (!th) return;
+  e.preventDefault();          // 不弹浏览器原生菜单
+  closeTrackContextMenu();     // 表头右键不属于曲目右键菜单
+  openSettingsColumns();
+});
+
 // 渲染「歌曲列表显示项」配置（勾选可见 + ↑/↓ 调整顺序）。
 function renderColConfig() {
   const ul = $('col-config-list');
@@ -3829,6 +3859,13 @@ function applyPaneLayout() {
     const b = sb.querySelector('.pane-collapse-btn[data-collapse="sidebar"]');
     if (b) b.textContent = state.sidebarCollapsed ? '»' : '«';
   }
+  // FR-25：歌曲信息栏收缩态（含封面），与两侧栏共用同一套持久化和把手语义。
+  document.body.classList.toggle('detail-collapsed', !!state.detailCollapsed);
+  const dh = $('handle-detail');
+  if (dh) dh.textContent = state.detailCollapsed ? '‹' : '›';
+  document.querySelectorAll('.pane-collapse-btn[data-collapse="detail"]').forEach((b) => {
+    b.textContent = state.detailCollapsed ? '«' : '»';
+  });
 }
 // 所有 [ui] 写入都走 /api/ui-prefs（后端 save_ui_in_place，绝不 save_app 整份重写）。
 function savePanePrefs(patch) {
@@ -3842,11 +3879,18 @@ function savePanePrefs(patch) {
 }
 function togglePane(which) {
   if (which === 'sidebar') state.sidebarCollapsed = !state.sidebarCollapsed;
-  else state.groupCollapsed = !state.groupCollapsed;
+  else if (which === 'group') state.groupCollapsed = !state.groupCollapsed;
+  else if (which === 'detail') state.detailCollapsed = !state.detailCollapsed;
+  else return;
   applyPaneLayout();
-  savePanePrefs(which === 'sidebar'
+  // 详情栏宽度变化会改变歌曲表格的可用宽度 → 重新按占比分配列宽。
+  if (which === 'detail') scheduleColumnWidths();
+  const patch = which === 'sidebar'
     ? { sidebar_collapsed: state.sidebarCollapsed }
-    : { group_collapsed: state.groupCollapsed });
+    : which === 'group'
+      ? { group_collapsed: state.groupCollapsed }
+      : { detail_collapsed: state.detailCollapsed };
+  savePanePrefs(patch);
 }
 function setupPaneResize() {
   document.querySelectorAll('.pane-resizer').forEach((handle) => {

@@ -241,7 +241,14 @@
       </div>
     </div>
 
+    <!-- FR-25：歌曲信息栏（含专辑封面）可收缩；把手贴在该栏左边界常驻，收起后仍可一键展开。 -->
+    <button class="edge-handle detail-handle" id="handle-detail" data-toggle="detail" type="button" title="收起 / 展开歌曲信息栏" aria-label="收起 / 展开歌曲信息栏">›</button>
     <aside class="detail-pane" id="detail-pane">
+      <div class="detail-pane-head">
+        <span>歌曲信息</span>
+        <button class="pane-collapse-btn" data-collapse="detail" type="button" title="收起歌曲信息栏" aria-label="收起歌曲信息栏">»</button>
+      </div>
+      <div class="pane-mini-icon" aria-hidden="true">ℹ</div>
       <div class="cover" id="detail-cover" hidden></div>
       <div class="detail-fields" id="detail-fields" hidden></div>
     </aside>
@@ -511,9 +518,9 @@
         <div id="layout-style-list" class="layout-style-list"></div>
       </div>
 
-      <div class="settings-section">
+      <div class="settings-section" id="set-columns-section">
         <h4>歌曲列表显示项</h4>
-        <p class="modal-hint">勾选要在列表中显示的列；用 ↑ / ↓ 调整显示顺序。「导入时间」默认显示，「创建时间」默认不显示，勾选后点「应用显示设置」才会出现在列表里。</p>
+        <p class="modal-hint">勾选要在列表中显示的列；用 ↑ / ↓ 调整显示顺序。「导入时间」默认显示，「创建时间」默认不显示，勾选后点「应用显示设置」才会出现在列表里。<br />也可以直接在歌曲列表<b>表头</b>上右键，快速打开本页并定位到这里。</p>
         <ul id="col-config-list" class="col-config-list"></ul>
         <button id="set-apply-columns" class="md-btn primary" type="button">应用显示设置</button>
       </div>

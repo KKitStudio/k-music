@@ -1271,6 +1271,35 @@ body.group-collapsed .pl-sidebar .pl-sidebar-head > *:not(.pane-collapse-btn) { 
 body.group-collapsed .pl-sidebar .pl-list,
 body.group-collapsed .pl-sidebar .pane-resizer { display: none; }
 body.group-collapsed .pl-sidebar .pane-mini-icon { display: block; }
+
+/* ============================================================
+   FR-25：歌曲信息栏收缩（右侧独立栏 + 纵向内联条，含专辑封面）
+   与 FR-24 T2 同口径：收起后该栏留小图标窄条，边界窄把手常驻可展开。
+   ============================================================ */
+.detail-pane-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 12px; font-size: 13px; font-weight: 600; color: var(--text-soft);
+}
+.detail-pane > .pane-mini-icon { display: none; }
+/* 常驻窄把手：负 margin 抵消自身宽度与 .layout gap，避免挤压歌曲列表可用宽度
+   （窄窗下列宽下限 48px 会因少 24px 被触发，拖拽方向随之反转）。 */
+.detail-handle { flex: none; position: relative; z-index: 4; margin-left: -24px; }
+/* 收起态：详情栏压成 44px 图标窄条，封面与字段一起隐藏（不残留孤立图片）。 */
+body.detail-collapsed .detail-pane { width: 44px; padding: 12px 6px; overflow: hidden; }
+body.detail-collapsed .detail-pane .detail-pane-head,
+body.detail-collapsed .detail-pane .cover,
+body.detail-collapsed .detail-pane .detail-fields { display: none; }
+body.detail-collapsed .detail-pane > .pane-mini-icon { display: block; }
+/* 纵向布局的内联详情条同样收起：只留一条小图标窄条，展开仍走常驻边界把手。 */
+body.detail-collapsed .inline-detail { padding: 4px 14px; justify-content: center; }
+body.detail-collapsed .inline-detail > * { display: none; }
+body.detail-collapsed .inline-detail::before { content: "ℹ"; font-size: 16px; color: var(--primary); }
+/* 表头右键定位到「歌曲列表显示项」时的短暂高亮。 */
+#settings-modal .settings-section.focus-flash { animation: settings-focus-flash 1.8s ease-out; }
+@keyframes settings-focus-flash {
+  0%   { border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 30%, transparent); }
+  100% { border-color: var(--divider); box-shadow: var(--shadow-sm); }
+}
 /* 音量条：滑块与静音键均为 flex:none，#seek 保住 min-width:60px 不被挤破 */
 .volume-mute-btn { width: 32px; height: 32px; padding: 0; font-size: 14px; flex: none; }
 #volume { width: 92px; flex: none; accent-color: var(--primary); height: 6px; cursor: pointer; }

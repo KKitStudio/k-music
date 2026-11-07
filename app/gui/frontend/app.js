@@ -709,6 +709,8 @@ function renderActiveDetail() {
 function syncDetailVisibility() {
   const view = state.activeTab;
   const inline = (state.layoutStyles[view] || 1) === 2;
+  // FR-25：纵向布局时右侧详情栏隐藏，列表内图标按钮需贴列表右缘。
+  document.body.classList.toggle('detail-inline', inline);
   // 右侧独立详情栏：纵向时隐藏（宽度让给列表）。
   // 横向时，若当前页没有任何可展示内容 → 同样隐藏，避免留下一条空栏。
   $('detail-pane').hidden = inline || !state.detailShown[view];

@@ -241,8 +241,9 @@
       </div>
     </div>
 
-    <!-- FR-25：歌曲信息栏（含专辑封面）可收缩；把手贴在该栏左边界常驻，收起后仍可一键展开。 -->
-    <button class="edge-handle detail-handle" id="handle-detail" data-toggle="detail" type="button" title="收起 / 展开歌曲信息栏" aria-label="收起 / 展开歌曲信息栏">›</button>
+    <!-- FR-25：歌曲信息栏（含专辑封面）可收缩。展开 / 收起入口做成列表栏内部悬浮的
+         图标按钮（绝对定位，不参与 flex 宽度计算），收起后仍常驻可一键展开。 -->
+    <button class="detail-handle" id="handle-detail" data-toggle="detail" type="button" title="收起 / 展开歌曲信息栏" aria-label="收起 / 展开歌曲信息栏">›</button>
     <aside class="detail-pane" id="detail-pane">
       <div class="detail-pane-head">
         <span>歌曲信息</span>

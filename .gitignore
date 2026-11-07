@@ -52,9 +52,11 @@ CODEBUDDY.md
 /demo/
 
 # --- 第三方工具与打包脚本（合规：NCM 解密工具不内置也不公开分享） ---
-# tools/ 整体不发布，仅保留 package_gui.bat 供贡献者本地一键打包。
+# tools/ 整体不发布，仅保留 package_gui.bat（一键打包）与 dist_readme.md
+# （中文说明，由 package_gui.bat 拷进发布 zip 的 README.md，供贡献者/CI 使用）。
 /tools/*
 !tools/package_gui.bat
+!tools/dist_readme.md
 
 # --- WorkBuddy 会话数据：本地多会话共享用，不发布到远程（含 memory 笔记） ---
 /.workbuddy/

@@ -1886,8 +1886,15 @@ const README_TEXT: &str = r#"K music 曲库数据目录
 存放内容：
 - config.toml   本曲库的配置文件（曲库名称、文件结构方案、目录布局）
 - library.db    本曲库的音频索引数据库（扫描抽取的音质元数据）
-- app.log       运行日志
+- app.log       运行日志（仅 GUI 运行诊断）
 - tools/        NCM 解密工具（ncmdump.exe）存放处，应用会自动检测并使用
+- trash/        待删除区（右键「删除歌曲」移入，可手动取回）
+- pending-duplicates.json / pending-duplicates/
+                重复文件的未决组与挂起文件（FR-22）
+- sync-import.jsonl
+                独立的同步 / 导入操作流水（不复用 app.log，FR-22）
+- playstate.json
+                播放队列跨重启状态
 
 说明：
 - 本目录与音乐文件相互独立。删除本目录【不会】删除你的音乐文件。

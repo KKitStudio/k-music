@@ -2,14 +2,19 @@
 //! - 普通音频：抽取标签 → 按 file_scheme 归位 → 登记（song_id=NULL，与扫描一致）。
 //! - ncm 文件（有工具）：转换后按本地文件入库；原始 .ncm 归档 `download/ncm/`。
 //! - ncm 文件（无工具）：暂存 `download/pendingNcm/`，不入库（待配置工具后转换）。
-use crate::audio_meta::{extract, quality_tier_of};
+//!
+//! FR-22：一次导入任务 = 一个**两阶段批次**（W3-A′）。阶段① 只收集候选（不写 DB、不归位、
+//! 不弹窗），阶段② 由 `duplicates::finalize()` 统一判定「入库 / 静默跳过 / 挂起成重复组」。
+//! `origin` 必须沿调用链**显式传递**：网易云同步与手工导入共用同一个 `import_folder_with_progress()`，
+//! 仅靠 ImportMode 或源目录无法区分来源（P2 按来源分流的实施硬约束）。
 use crate::config::Config;
-use crate::db;
-use crate::library::{convert_ncm, derive_names, file_created_ms, target_path};
+use crate::duplicates::{self, Candidate, Disposition, FileMode, Origin};
+use crate::library::convert_ncm;
 use crate::lyrics;
 use crate::progress::{EntryStatus, ImportAction, ProgressTracker};
 use crate::Result;
 use crate::is_playable_audio;
+use anyhow::anyhow;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 
@@ -26,6 +31,47 @@ pub struct ImportResult {
     /// 导入遇到 .ncm 但本地无 ncm 工具，已暂存到 download/pendingNcm/ 的数量（未入库）。
     pub pending: u32,
     pub failed: u32,
+    /// FR-22：登记为「重复待决策」的文件数（挂起进 `.mt/pending-duplicates*`，等 GUI 批量对比）。
+    pub held: u32,
+}
+
+/// 导入单文件的结果（供 serve / CLI 计数）。
+pub enum ImportOutcome {
+    Imported,
+    Skipped,
+    Pending,
+    /// 重复项已挂起，等待 GUI 批量对比决策（CLI 无 UI 时不就地默认保留第一个）。
+    Held,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceKind {
+    Audio,
+    Ncm,
+}
+
+#[derive(Debug, Clone)]
+struct SourceItem {
+    path: PathBuf,
+    fname: String,
+    kind: SourceKind,
+}
+
+enum Prepared {
+    Candidate {
+        index: usize,
+        temp: bool,
+        fname: String,
+        action: ImportAction,
+    },
+    PendingNcm {
+        fname: String,
+    },
+    Failed {
+        fname: String,
+        message: String,
+        action: ImportAction,
+    },
 }
 
 pub fn import_folder(
@@ -34,49 +80,68 @@ pub fn import_folder(
     src: &Path,
     mode: ImportMode,
 ) -> Result<ImportResult> {
-    import_folder_with_progress(cfg, conn, src, mode, &ProgressTracker::new())
+    import_folder_with_progress(cfg, conn, src, mode, Origin::Manual, &ProgressTracker::new())
 }
 
-/// 带进度上报的导入：向 `tracker` 实时推送「当前处理哪一首、做什么动作」。
+/// 带进度上报的导入（FR-22：`origin` 由入口显式指定）。
 ///
-/// 流程：先递归扫描统计待处理文件总数（用于进度条百分比），再逐个导入。
-/// 每个源文件在处理前后都会写入 tracker，前端据此渲染实时进度。
+/// 流程：先递归收集全部待处理源文件（进度条总数）→ 阶段① 逐个抽取元数据构造候选
+/// （NCM 在此完成转换 / 暂存）→ 阶段② 批次结束统一判定并落地 → 逐文件回写进度与结果计数。
 pub fn import_folder_with_progress(
     cfg: &Config,
     conn: &Connection,
     src: &Path,
     mode: ImportMode,
+    origin: Origin,
     tracker: &ProgressTracker,
 ) -> Result<ImportResult> {
-    let mut res = ImportResult::default();
-    // 先统计总数，前端才能显示百分比进度（否则只能显示不确定态的忙碌动画）。
-    let total = count_importable(src);
-    tracker.set_total(total);
-    import_recursive(cfg, conn, src, mode, &mut res, tracker)?;
-    Ok(res)
+    import_batch(cfg, conn, collect_sources(src), mode, origin, tracker)
 }
 
-/// 递归统计目录下待导入的源文件数（可播放音频 + ncm）。
-fn count_importable(dir: &Path) -> u32 {
-    let mut n = 0u32;
+/// 递归收集源文件夹里的可播放音频与 .ncm。跳过 `.mt` / trash / 挂起目录（避免把曲库
+/// 自身的数据目录当导入源）。排序保证批次内顺序稳定（但判重结果不依赖顺序，见 P4）。
+fn collect_sources(dir: &Path) -> Vec<SourceItem> {
+    let mut out = Vec::new();
+    collect_sources_into(dir, &mut out);
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
+}
+
+fn collect_sources_into(dir: &Path, out: &mut Vec<SourceItem>) {
     let Ok(rd) = std::fs::read_dir(dir) else {
-        return 0;
+        return;
     };
     for entry in rd.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            n += count_importable(&path);
-        } else if is_playable_audio(&path) || is_ncm(&path) {
-            n += 1;
+            let skip = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| matches!(n, ".mt" | "trash" | "pending-duplicates"))
+                .unwrap_or(false);
+            if !skip {
+                collect_sources_into(&path, out);
+            }
+            continue;
         }
+        let kind = if is_playable_audio(&path) {
+            SourceKind::Audio
+        } else if is_ncm(&path) {
+            SourceKind::Ncm
+        } else {
+            continue;
+        };
+        out.push(SourceItem {
+            fname: fname_of(&path).to_string_lossy().to_string(),
+            path,
+            kind,
+        });
     }
-    n
 }
 
 /// 从「本地网易云音乐曲库目录」增量合并到 musicMT 曲库（本地操作，不联网、不登录）。
 /// 单方向、只加不删：仅把曲库中没有的歌曲复制进来，绝不反向删除原曲库文件
-/// （docs/02 FR-12、docs/05 §13）。`cfg.netease.library_dir` 为空时返回错误，提示前端先设置。
-/// 复用 `import_folder` 的 Copy + 去重语义（目标已存在且大小一致则跳过）。
+/// （docs/02 FR-12、docs/05 §13）。`origin=netease-sync` 保留同大小静默跳过的快速通道（P2）。
 pub fn import_netease_library(cfg: &Config, conn: &Connection) -> Result<ImportResult> {
     import_netease_library_with_progress(cfg, conn, &ProgressTracker::new())
 }
@@ -91,149 +156,265 @@ pub fn import_netease_library_with_progress(
     if dir.as_os_str().is_empty() || !dir.is_dir() {
         anyhow::bail!("未设置有效的「本地网易云音乐曲库目录」，请先在设置或初始化向导中指定");
     }
-    import_folder_with_progress(cfg, conn, dir, ImportMode::Copy, tracker)
+    import_folder_with_progress(cfg, conn, dir, ImportMode::Copy, Origin::NeteaseSync, tracker)
 }
 
 /// 处理 pendingNcm 积压：把此前因「无工具」暂存的 .ncm 逐个按下载逻辑转换入库。
 /// 调用时机：指定 NCM 工具成功之后（初始化向导 / 后续设置，任何时序统一走这里）。
-/// 转换失败的文件留在 pendingNcm 原位，下次指定/重试可再处理。
+/// `origin=ncm-backfill` 与网易云同步同属周期性批量场景，保留快速通道（P2）。
 pub fn process_pending_ncm(cfg: &Config, conn: &Connection) -> ImportResult {
     process_pending_ncm_with_progress(cfg, conn, &ProgressTracker::new())
 }
 
-/// 带进度上报的 pendingNcm 回补（见 [`process_pending_ncm`]）。
-///
-/// 这是**批量转换**场景（一次几十上百首），也是终端闪窗最明显的场景，
-/// 因此进度上报与静默执行同样重要。
+/// 带进度上报的 pendingNcm 回补。整批作为**一个批次**交给 `finalize()`（P4）。
 pub fn process_pending_ncm_with_progress(
     cfg: &Config,
     conn: &Connection,
     tracker: &ProgressTracker,
 ) -> ImportResult {
-    let mut res = ImportResult::default();
     let pending_dir = cfg.paths.pending_ncm_dir();
-    let rd = match std::fs::read_dir(&pending_dir) {
-        Ok(rd) => rd,
-        Err(_) => return res, // 目录不存在 = 无积压
+    let Ok(rd) = std::fs::read_dir(&pending_dir) else {
+        return ImportResult::default(); // 目录不存在 = 无积压
     };
-    // 先收集文件列表：既便于统计总数（进度条），也避免在遍历目录时同时修改它。
-    let mut files: Vec<PathBuf> = rd
+    let mut items: Vec<SourceItem> = rd
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.is_file() && is_ncm(p))
+        .map(|p| SourceItem {
+            fname: fname_of(&p).to_string_lossy().to_string(),
+            path: p,
+            kind: SourceKind::Ncm,
+        })
         .collect();
-    files.sort();
-    tracker.set_total(files.len() as u32);
-    for path in files {
-        let fname = fname_of(&path).to_string_lossy().to_string();
-        tracker.begin_file(&fname);
-        match import_ncm_with_progress(cfg, conn, &path, ImportMode::Move, tracker) {
-            Ok(ImportOutcome::Imported) => {
-                res.imported += 1;
-                tracker.end_file(EntryStatus::Imported);
+    items.sort_by(|a, b| a.path.cmp(&b.path));
+    match import_batch(cfg, conn, items, ImportMode::Move, Origin::NcmBackfill, tracker) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("pendingNcm 回补失败：{e}");
+            ImportResult::default()
+        }
+    }
+}
+
+/// 导入一个 .ncm 文件（单文件批次）：有工具则转换后入库，无工具则暂存 pendingNcm。
+pub fn import_ncm(
+    cfg: &Config,
+    conn: &Connection,
+    src: &Path,
+    mode: ImportMode,
+    origin: Origin,
+) -> Result<ImportOutcome> {
+    import_ncm_with_progress(cfg, conn, src, mode, origin, &ProgressTracker::new())
+}
+
+/// 带进度上报的单文件 ncm 导入（见 [`import_ncm`]）。
+pub fn import_ncm_with_progress(
+    cfg: &Config,
+    conn: &Connection,
+    src: &Path,
+    mode: ImportMode,
+    origin: Origin,
+    tracker: &ProgressTracker,
+) -> Result<ImportOutcome> {
+    let kind = if is_ncm(src) {
+        SourceKind::Ncm
+    } else {
+        SourceKind::Audio
+    };
+    let items = vec![SourceItem {
+        path: src.to_path_buf(),
+        fname: fname_of(src).to_string_lossy().to_string(),
+        kind,
+    }];
+    let res = import_batch(cfg, conn, items, mode, origin, tracker)?;
+    if res.held > 0 {
+        Ok(ImportOutcome::Held)
+    } else if res.imported > 0 {
+        Ok(ImportOutcome::Imported)
+    } else if res.pending > 0 {
+        Ok(ImportOutcome::Pending)
+    } else if res.skipped > 0 {
+        Ok(ImportOutcome::Skipped)
+    } else {
+        Err(anyhow!("导入失败"))
+    }
+}
+
+/// 两阶段批次的公共实现：收集 → `duplicates::finalize()` → 进度结算。
+fn import_batch(
+    cfg: &Config,
+    conn: &Connection,
+    items: Vec<SourceItem>,
+    mode: ImportMode,
+    origin: Origin,
+    tracker: &ProgressTracker,
+) -> Result<ImportResult> {
+    let mut res = ImportResult::default();
+    tracker.set_total(items.len() as u32);
+    let default_action = match mode {
+        ImportMode::Copy => ImportAction::Copy,
+        ImportMode::Move => ImportAction::Move,
+    };
+    let mut candidates: Vec<Candidate> = Vec::new();
+    let mut prepared: Vec<Prepared> = Vec::new();
+
+    // ===== 阶段①：只收集，不写 DB / 不归位 / 不弹窗 =====
+    for item in &items {
+        tracker.begin_file(&item.fname);
+        match item.kind {
+            SourceKind::Audio => {
+                tracker.set_action(default_action);
+                match duplicates::candidate_from_audio(cfg, &item.path, mode.into(), origin) {
+                    Ok(c) => {
+                        let index = candidates.len();
+                        candidates.push(c);
+                        prepared.push(Prepared::Candidate {
+                            index,
+                            temp: false,
+                            fname: item.fname.clone(),
+                            action: default_action,
+                        });
+                    }
+                    Err(e) => prepared.push(Prepared::Failed {
+                        fname: item.fname.clone(),
+                        message: e.to_string(),
+                        action: default_action,
+                    }),
+                }
             }
-            Ok(ImportOutcome::Skipped) => {
-                res.skipped += 1;
-                tracker.end_file(EntryStatus::Skipped);
+            SourceKind::Ncm => {
+                if !cfg.ncm.tool_ready() {
+                    tracker.set_action(ImportAction::Stage);
+                    match stage_pending_ncm(cfg, &item.path, mode, &item.fname) {
+                        Ok(()) => prepared.push(Prepared::PendingNcm {
+                            fname: item.fname.clone(),
+                        }),
+                        Err(e) => prepared.push(Prepared::Failed {
+                            fname: item.fname.clone(),
+                            message: e.to_string(),
+                            action: ImportAction::Stage,
+                        }),
+                    }
+                } else {
+                    tracker.set_action(ImportAction::Convert);
+                    match stage_ncm_audio(cfg, &item.path, mode, tracker, &item.fname) {
+                        Ok(audio_out) => {
+                            let out_name = fname_of(&audio_out).to_string_lossy().to_string();
+                            match duplicates::candidate_from_audio(
+                                cfg,
+                                &audio_out,
+                                FileMode::Move,
+                                origin,
+                            ) {
+                                Ok(mut c) => {
+                                    // 转换产物是临时文件：挂起时必须搬进 pending 目录，
+                                    // 否则它会留在 download/ 被下次扫描重新入库。
+                                    c.is_temp = true;
+                                    let index = candidates.len();
+                                    candidates.push(c);
+                                    prepared.push(Prepared::Candidate {
+                                        index,
+                                        temp: true,
+                                        fname: out_name,
+                                        action: ImportAction::Move,
+                                    });
+                                }
+                                Err(e) => {
+                                    let _ = std::fs::remove_file(&audio_out);
+                                    prepared.push(Prepared::Failed {
+                                        fname: item.fname.clone(),
+                                        message: e.to_string(),
+                                        action: ImportAction::Convert,
+                                    });
+                                }
+                            }
+                        }
+                        Err(e) => prepared.push(Prepared::Failed {
+                            fname: item.fname.clone(),
+                            message: e.to_string(),
+                            action: ImportAction::Convert,
+                        }),
+                    }
+                }
             }
-            Ok(ImportOutcome::Pending) => {
-                res.pending += 1; // 无工具时调用：原地保持暂存
+        }
+    }
+
+    // ===== 阶段②：批次结束统一判定并落地 =====
+    let outcome = duplicates::finalize(cfg, conn, &candidates)?;
+    for p in prepared {
+        match p {
+            Prepared::Candidate {
+                index,
+                temp,
+                fname,
+                action,
+            } => {
+                let status = match &outcome.dispositions[index] {
+                    Disposition::Imported | Disposition::Updated => {
+                        res.imported += 1;
+                        tracker.log(action, &fname, EntryStatus::Imported, "");
+                        EntryStatus::Imported
+                    }
+                    Disposition::Skipped => {
+                        res.skipped += 1;
+                        cleanup_temp(&candidates[index], temp);
+                        tracker.log(ImportAction::Skip, &fname, EntryStatus::Skipped, "曲库中已存在");
+                        EntryStatus::Skipped
+                    }
+                    Disposition::Held => {
+                        res.held += 1;
+                        tracker.log(
+                            ImportAction::Stage,
+                            &fname,
+                            EntryStatus::Pending,
+                            "重复文件已挂起，等待对比决策",
+                        );
+                        EntryStatus::Pending
+                    }
+                    Disposition::Failed(msg) => {
+                        res.failed += 1;
+                        cleanup_temp(&candidates[index], temp);
+                        tracker.log(action, &fname, EntryStatus::Failed, msg);
+                        EntryStatus::Failed
+                    }
+                };
+                tracker.end_file(status);
+            }
+            Prepared::PendingNcm { fname } => {
+                res.pending += 1;
+                tracker.log(
+                    ImportAction::Stage,
+                    &fname,
+                    EntryStatus::Pending,
+                    "无 NCM 工具，暂存待转换",
+                );
                 tracker.end_file(EntryStatus::Pending);
             }
-            Err(e) => {
-                eprintln!("pendingNcm 转换失败 {}: {}", path.display(), e);
+            Prepared::Failed {
+                fname,
+                message,
+                action,
+            } => {
                 res.failed += 1;
-                tracker.log(
-                    ImportAction::Convert,
-                    &fname,
-                    EntryStatus::Failed,
-                    &e.to_string(),
-                );
+                eprintln!("导入失败 {fname}: {message}");
+                tracker.log(action, &fname, EntryStatus::Failed, &message);
                 tracker.end_file(EntryStatus::Failed);
             }
         }
     }
-    res
+    Ok(res)
 }
 
-/// 导入单文件的结果（import_ncm 对外返回，serve/CLI 据此计数）。
-pub enum ImportOutcome {
-    Imported,
-    Skipped,
-    Pending,
-}
-
-fn import_recursive(
-    cfg: &Config,
-    conn: &Connection,
-    dir: &Path,
-    mode: ImportMode,
-    res: &mut ImportResult,
-    tracker: &ProgressTracker,
-) -> Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            import_recursive(cfg, conn, &path, mode, res, tracker)?;
-        } else if is_playable_audio(&path) {
-            let fname = fname_of(&path).to_string_lossy().to_string();
-            tracker.begin_file(&fname);
-            // 动作：复制 or 移动（由导入模式决定）。
-            let action = match mode {
-                ImportMode::Copy => ImportAction::Copy,
-                ImportMode::Move => ImportAction::Move,
-            };
-            tracker.set_action(action);
-            match import_one(cfg, conn, &path, mode) {
-                Ok(true) => {
-                    res.imported += 1;
-                    tracker.log(action, &fname, EntryStatus::Imported, "");
-                    tracker.end_file(EntryStatus::Imported);
-                }
-                Ok(false) => {
-                    res.skipped += 1;
-                    tracker.log(
-                        ImportAction::Skip,
-                        &fname,
-                        EntryStatus::Skipped,
-                        "曲库中已存在",
-                    );
-                    tracker.end_file(EntryStatus::Skipped);
-                }
-                Err(e) => {
-                    eprintln!("导入失败 {}: {}", path.display(), e);
-                    res.failed += 1;
-                    tracker.log(action, &fname, EntryStatus::Failed, &e.to_string());
-                    tracker.end_file(EntryStatus::Failed);
-                }
-            }
-        } else if is_ncm(&path) {
-            let fname = fname_of(&path).to_string_lossy().to_string();
-            tracker.begin_file(&fname);
-            match import_ncm_with_progress(cfg, conn, &path, mode, tracker) {
-                Ok(ImportOutcome::Imported) => {
-                    res.imported += 1;
-                    tracker.end_file(EntryStatus::Imported);
-                }
-                Ok(ImportOutcome::Skipped) => {
-                    res.skipped += 1;
-                    tracker.end_file(EntryStatus::Skipped);
-                }
-                Ok(ImportOutcome::Pending) => {
-                    res.pending += 1;
-                    tracker.end_file(EntryStatus::Pending);
-                }
-                Err(e) => {
-                    eprintln!("导入 ncm 失败 {}: {}", path.display(), e);
-                    res.failed += 1;
-                    tracker.log(ImportAction::Convert, &fname, EntryStatus::Failed, &e.to_string());
-                    tracker.end_file(EntryStatus::Failed);
-                }
-            }
-        }
+/// 跳过的转换产物（或抽取失败时的残留）清掉，避免 download/ 里堆垃圾。
+fn cleanup_temp(c: &Candidate, temp: bool) {
+    if !temp {
+        return;
     }
-    Ok(())
+    let _ = std::fs::remove_file(&c.source);
+    if let Some(lrc) = &c.source_lrc {
+        let _ = std::fs::remove_file(lrc);
+    }
 }
 
 fn is_ncm(p: &Path) -> bool {
@@ -258,196 +439,54 @@ fn copy_or_move(mode: ImportMode, src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 导入一个可播放音频文件（普通文件 / ncm 转换产物）到曲库正式位置并入库。
-/// 去重：目标已存在且大小一致 → 跳过（返回 false，不移动源文件）；否则复制/移动并登记。
-/// 返回 Ok(true)=新入库；Ok(false)=已存在跳过。
-fn import_audio_file(cfg: &Config, conn: &Connection, audio: &Path, mode: ImportMode) -> Result<bool> {
-    let meta = extract(audio)?;
-    let tier = quality_tier_of(&meta);
-    let (name, artist, album) = derive_names(audio, &meta);
-    let ext = audio
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    let target = target_path(
-        cfg,
-        &artist.clone().unwrap_or_default(),
-        &album.clone().unwrap_or_default(),
-        &name,
-        &ext,
-    );
-
-    // 同步导入同名 .lrc 歌词文件（若源文件旁存在）：歌词与音频同目录、同 stem。
-    // 必须在移动源音频**之前**定位（移动后源路径已失效）。
-    let sidecar = lyrics::find_sidecar(audio);
-
-    if target.exists() {
-        let existing_size = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
-        let new_size = std::fs::metadata(audio).map(|m| m.len()).unwrap_or(0);
-        if existing_size == new_size {
-            // 已存在且大小一致 → 跳过音频；但若目标缺少歌词文件，仍补齐歌词。
-            if let Some(src) = &sidecar {
-                let dst = target.with_extension("lrc");
-                if !dst.exists() {
-                    let _ = std::fs::copy(src, &dst);
-                }
-            }
-            return Ok(false); // 已存在且大小一致，跳过
-        }
-    }
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    match mode {
-        ImportMode::Copy => {
-            std::fs::copy(audio, &target)?;
-        }
-        ImportMode::Move => {
-            std::fs::rename(audio, &target)?;
-        }
-    }
-    // 歌词文件随音频一起落到曲库（与音频同目录、同 stem）。
-    if let Some(src) = &sidecar {
-        let dst = target.with_extension("lrc");
-        let moved = match mode {
-            ImportMode::Move => std::fs::rename(src, &dst).is_ok(),
-            ImportMode::Copy => false,
-        };
-        if !moved {
-            // 移动失败（如跨卷）时退回复制；复制模式直接复制。
-            let _ = std::fs::copy(src, &dst);
-        }
-    }
-    let size = std::fs::metadata(&target).map(|m| m.len() as i64).unwrap_or(0);
-    let mtime = std::fs::metadata(&target)
-        .ok()
-        .and_then(|m| m.modified().ok())
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    // 归位后的文件创建时间：复制模式会得到「导入时刻」的新 birth time，
-    // 移动（rename）模式则保留源文件的创建时间——这正是两列要区分的信息。
-    let created_ms = file_created_ms(&target);
-    let inserted = db::upsert_local_record(
-        conn,
-        &target.to_string_lossy(),
-        &name,
-        artist.as_deref(),
-        album.as_deref(),
-        meta.duration_ms.map(|v| v as i64),
-        Some(&meta.format),
-        meta.sample_rate.map(|v| v as i64),
-        meta.bit_depth.map(|v| v as i64),
-        meta.bitrate.map(|v| v as i64),
-        meta.channels.map(|v| v as i64),
-        Some(&tier),
-        size,
-        mtime,
-        created_ms,
-    )?;
-    Ok(inserted)
-}
-
-fn import_one(cfg: &Config, conn: &Connection, src: &Path, mode: ImportMode) -> Result<bool> {
-    import_audio_file(cfg, conn, src, mode)
-}
-
-/// 导入一个 .ncm 文件：有工具则转换后入库（song_id=NULL），无工具则暂存 pendingNcm。
-/// 「有工具」的唯一判据 = tool_ready()（指定了工具即自动转换，2026-10-28 与用户确认）。
-pub fn import_ncm(cfg: &Config, conn: &Connection, src: &Path, mode: ImportMode) -> Result<ImportOutcome> {
-    import_ncm_with_progress(cfg, conn, src, mode, &ProgressTracker::new())
-}
-
-/// 带进度上报的 ncm 导入：转换阶段会把「正在转换哪一首」推给前端。
-///
-/// 进度语义：一个 ncm 源文件会产生**两条**动作日志——「转换」（调用外部工具解密）
-/// 与「入库」（把解出的音频归位到曲库）；但结果计数仍只算**一个**源文件。
-pub fn import_ncm_with_progress(
+/// 有工具：把 .ncm 搬到 download/ 暂存 → 调外部工具解密 → 原始 .ncm 归档 download/ncm/，
+/// 返回解出的音频路径（**不入库**，交给批次统一判定）。
+fn stage_ncm_audio(
     cfg: &Config,
-    conn: &Connection,
     src: &Path,
     mode: ImportMode,
     tracker: &ProgressTracker,
-) -> Result<ImportOutcome> {
-    if cfg.ncm.tool_ready() {
-        let fname = fname_of(src).to_string_lossy().to_string();
-        tracker.begin_file(&fname);
-        tracker.set_action(ImportAction::Convert);
-        // 有工具：先把 .ncm 搬运到 download/ 暂存，避免污染用户源目录，且 convert_ncm 在同目录产出音频。
-        let stage = cfg.paths.download_dir.join(&fname);
-        if let Some(p) = stage.parent() {
-            std::fs::create_dir_all(p)?;
-        }
-        let _ = std::fs::remove_file(&stage);
-        // 同名 .lrc 一并搬运到 download/（若源 .ncm 旁有）：转换产出的音频与它同目录同 stem，
-        // 后续 import_audio_file 即可命中歌词。
-        let sidecar = lyrics::find_sidecar(src);
-        copy_or_move(mode, src, &stage)?;
-        if let Some(lrc) = &sidecar {
-            let _ = std::fs::copy(lrc, &stage.with_extension("lrc"));
-        }
-        // 转换（在 download/ 同目录产出解码后的音频文件）。
-        let audio_out = convert_ncm(cfg, &stage)?;
-        tracker.log(
-            ImportAction::Convert,
-            &fname,
-            EntryStatus::Imported,
-            "转换完成",
-        );
-        // 原始 .ncm 归档到 download/ncm/（同名先清，避免占用）。
-        let ncm_archive = cfg.paths.ncm_raw_dir.join(&fname);
-        if let Some(p) = ncm_archive.parent() {
-            std::fs::create_dir_all(p)?;
-        }
-        let _ = std::fs::remove_file(&ncm_archive);
-        std::fs::rename(&stage, &ncm_archive)?;
-        // 转换后音频整理入库（song_id=NULL，与本地扫描/导入一致）。转换产物是临时文件，用 Move 直接移走。
-        tracker.set_action(ImportAction::Move);
-        let out_name = fname_of(&audio_out).to_string_lossy().to_string();
-        let inserted = import_audio_file(cfg, conn, &audio_out, ImportMode::Move)?;
-        tracker.log(
-            ImportAction::Move,
-            &out_name,
-            if inserted {
-                EntryStatus::Imported
-            } else {
-                EntryStatus::Skipped
-            },
-            if inserted { "" } else { "曲库中已存在" },
-        );
-        // 去重跳过时 audio_out 残留 download/，清理以免占用。
-        if !inserted {
-            let _ = std::fs::remove_file(&audio_out);
-        }
-        Ok(if inserted {
-            ImportOutcome::Imported
-        } else {
-            ImportOutcome::Skipped
-        })
-    } else {
-        // 无工具：原 .ncm 暂存到 download/pendingNcm/（不入库，待后续配置工具转换）。
-        // 已在该目录内（例如 process_pending_ncm 重复处理）则直接跳过，避免重命名到自身报错。
-        let pending_dir = cfg.paths.pending_ncm_dir();
-        if src.starts_with(&pending_dir) {
-            return Ok(ImportOutcome::Pending);
-        }
-        let fname = fname_of(src).to_string_lossy().to_string();
-        tracker.set_action(ImportAction::Stage);
-        let pending = pending_dir.join(&fname);
-        if let Some(p) = pending.parent() {
-            std::fs::create_dir_all(p)?;
-        }
-        let _ = std::fs::remove_file(&pending);
-        copy_or_move(mode, src, &pending)?;
-        tracker.log(
-            ImportAction::Stage,
-            &fname,
-            EntryStatus::Pending,
-            "无 NCM 工具，已暂存待转换",
-        );
-        Ok(ImportOutcome::Pending)
+    fname: &str,
+) -> Result<PathBuf> {
+    let stage = cfg.paths.download_dir.join(fname);
+    if let Some(p) = stage.parent() {
+        std::fs::create_dir_all(p)?;
     }
+    let _ = std::fs::remove_file(&stage);
+    // 同名 .lrc 一并搬运到 download/（若源 .ncm 旁有）：转换产出的音频与它同目录同 stem。
+    let sidecar = lyrics::find_sidecar(src);
+    copy_or_move(mode, src, &stage)?;
+    if let Some(lrc) = &sidecar {
+        let _ = std::fs::copy(lrc, &stage.with_extension("lrc"));
+    }
+    let audio_out = convert_ncm(cfg, &stage)?;
+    tracker.log(ImportAction::Convert, fname, EntryStatus::Imported, "转换完成");
+    let ncm_archive = cfg.paths.ncm_raw_dir.join(fname);
+    if let Some(p) = ncm_archive.parent() {
+        std::fs::create_dir_all(p)?;
+    }
+    let _ = std::fs::remove_file(&ncm_archive);
+    std::fs::rename(&stage, &ncm_archive)?;
+    Ok(audio_out)
+}
+
+/// 无工具：原 .ncm 暂存到 download/pendingNcm/（不入库，待后续配置工具转换）。
+/// 已在该目录内（例如 pendingNcm 回补重复处理）则直接算 Pending，避免重命名到自身报错。
+fn stage_pending_ncm(
+    cfg: &Config,
+    src: &Path,
+    mode: ImportMode,
+    fname: &str,
+) -> Result<()> {
+    let pending_dir = cfg.paths.pending_ncm_dir();
+    if src.starts_with(&pending_dir) {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&pending_dir)?;
+    let pending = pending_dir.join(fname);
+    let _ = std::fs::remove_file(&pending);
+    copy_or_move(mode, src, &pending)?;
+    Ok(())
 }
 
 #[cfg(test)]

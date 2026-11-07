@@ -3,9 +3,10 @@
 //! - 内部工具：derive_names / target_path / convert_ncm 同时供 import 模块复用。
 //! 说明：网易云服务端登录与下载已于 2026-10-29 移除；同步能力未来若恢复将基于官方开发者 API
 //! 另起授权模块，本文件不再保留 WEAPI 相关逻辑。
-use crate::audio_meta::{extract, quality_tier_of, AudioMeta};
+use crate::audio_meta::AudioMeta;
 use crate::config::Config;
 use crate::db;
+use crate::duplicates::{self, Candidate, FileMode, Origin};
 use crate::Result;
 use crate::is_playable_audio;
 use anyhow::{anyhow, bail};
@@ -14,15 +15,25 @@ use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
 /// 递归扫描曲库目录，写入 download_records，并清理磁盘上已不存在的孤儿记录。
+///
+/// FR-22 W3-A′ 两阶段：阶段① 只把「新增/变更」文件收集成候选（`(size,mtime)` 门控仍生效），
+/// 阶段② 由 `duplicates::finalize()` 按三元组分桶统一判定「正常入库 / 静默跳过 / 挂起成重复组」。
+/// 启动 boot scan 只静默登记挂起组（P1①），不弹窗；角标由 `/api/status` 读当前曲库的未决组数。
 pub fn scan_library(cfg: &Config, conn: &Connection) -> Result<db::ScanStats> {
     let mut stats = db::ScanStats {
         scanned: 0,
         inserted: 0,
         updated: 0,
         removed: 0,
+        held: 0,
         loose_ncm: Vec::new(),
     };
-    scan_dir(&cfg.paths.download_root, &mut stats, conn)?;
+    let mut batch: Vec<Candidate> = Vec::new();
+    scan_dir(&cfg.paths.download_root, cfg, conn, &mut stats, &mut batch)?;
+    let outcome = duplicates::finalize(cfg, conn, &batch)?;
+    stats.inserted += outcome.imported;
+    stats.updated += outcome.updated;
+    stats.held = outcome.held;
     // 双向对账：删掉磁盘上已不存在的本地文件记录（用户在工具外删除/移动）。
     stats.removed = db::prune_missing(conn)?;
     Ok(stats)
@@ -126,7 +137,7 @@ fn lexical_clean(path: &Path) -> PathBuf {
 }
 
 /// 回收站里同名文件自动避让：`<stem>_1.<ext>`、`<stem>_2.<ext>`……
-fn unique_destination(dir: &Path, name: &OsStr) -> PathBuf {
+pub(crate) fn unique_destination(dir: &Path, name: &OsStr) -> PathBuf {
     let base = Path::new(name);
     let stem = base.file_stem().and_then(|s| s.to_str()).unwrap_or("track");
     let ext = base.extension().and_then(|s| s.to_str()).unwrap_or("");
@@ -155,7 +166,8 @@ fn unique_destination(dir: &Path, name: &OsStr) -> PathBuf {
 ///
 /// `.mt` 里放 config.toml / library.db / playstate.json / trash/，本就不是音乐目录；
 /// 尤其 `trash/` 存的是「已删除」的音频，若不跳过，下次扫描会把它们**重新入库**，
-/// 右键「删除歌曲」就会失效。曲库根即扫描根（`cfg.paths.download_root`），故这层判断是必需的。
+/// 右键「删除歌曲」就会失效。FR-22 的 `pending-duplicates/` 同理（挂起文件不能重新入库）。
+/// 曲库根即扫描根（`cfg.paths.download_root`），故这层判断是必需的。
 fn is_excluded_dir(name: &OsStr) -> bool {
     matches!(
         name.to_str(),
@@ -164,21 +176,28 @@ fn is_excluded_dir(name: &OsStr) -> bool {
             | Some("ing")
             | Some("ncm")
             | Some("pendingNcm")
+            | Some("pending-duplicates")
             | Some("trash")
     )
 }
 
-fn scan_dir(root: &Path, stats: &mut db::ScanStats, conn: &Connection) -> Result<()> {
+fn scan_dir(
+    root: &Path,
+    cfg: &Config,
+    conn: &Connection,
+    stats: &mut db::ScanStats,
+    batch: &mut Vec<Candidate>,
+) -> Result<()> {
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
             if path.file_name().map(is_excluded_dir).unwrap_or(false) {
-                continue; // 暂存 / 元数据 / 回收站目录不参与可播放曲库扫描
+                continue; // 暂存 / 元数据 / 回收站 / 挂起目录不参与可播放曲库扫描
             }
-            scan_dir(&path, stats, conn)?;
+            scan_dir(&path, cfg, conn, stats, batch)?;
         } else if is_playable_audio(&path) {
-            scan_file(&path, stats, conn)?;
+            scan_file(&path, cfg, conn, stats, batch)?;
         } else if path.extension().and_then(|e| e.to_str()) == Some("ncm") {
             // 散落 .ncm（不在 ing/ncm/pendingNcm 暂存目录内）：不作为音频入库，仅记录路径，
             // 由前端扫描完成后弹窗询问是否移入 download 按下载逻辑处理。
@@ -188,7 +207,14 @@ fn scan_dir(root: &Path, stats: &mut db::ScanStats, conn: &Connection) -> Result
     Ok(())
 }
 
-fn scan_file(path: &Path, stats: &mut db::ScanStats, conn: &Connection) -> Result<()> {
+/// 阶段①：只收集候选，不写 DB、不搬文件。判重与入库统一在批次结束后做（P4 / W3-A′）。
+fn scan_file(
+    path: &Path,
+    cfg: &Config,
+    conn: &Connection,
+    stats: &mut db::ScanStats,
+    batch: &mut Vec<Candidate>,
+) -> Result<()> {
     stats.scanned += 1;
     let size = std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0);
     let mtime = mtime_secs(path);
@@ -206,30 +232,9 @@ fn scan_file(path: &Path, stats: &mut db::ScanStats, conn: &Connection) -> Resul
             return Ok(()); // 未变更，无需重抽
         }
     }
-    let meta = extract(path)?;
-    let tier = quality_tier_of(&meta);
-    let (name, artist, album) = derive_names(path, &meta);
-    let inserted = db::upsert_local_record(
-        conn,
-        &path_s,
-        &name,
-        artist.as_deref(),
-        album.as_deref(),
-        meta.duration_ms.map(|v| v as i64),
-        Some(&meta.format),
-        meta.sample_rate.map(|v| v as i64),
-        meta.bit_depth.map(|v| v as i64),
-        meta.bitrate.map(|v| v as i64),
-        meta.channels.map(|v| v as i64),
-        Some(&tier),
-        size,
-        mtime,
-        created_ms,
-    )?;
-    if inserted {
-        stats.inserted += 1;
-    } else {
-        stats.updated += 1;
+    match duplicates::candidate_from_audio(cfg, path, FileMode::Scan, Origin::Scan) {
+        Ok(c) => batch.push(c),
+        Err(e) => eprintln!("扫描抽取元数据失败 {}: {e}", path.display()),
     }
     Ok(())
 }
@@ -370,7 +375,15 @@ mod trash_tests {
 
     #[test]
     fn excluded_dirs_include_metadata_and_trash() {
-        for n in [".mt", "trash", "_ncm_raw", "ing", "ncm", "pendingNcm"] {
+        for n in [
+            ".mt",
+            "trash",
+            "pending-duplicates",
+            "_ncm_raw",
+            "ing",
+            "ncm",
+            "pendingNcm",
+        ] {
             assert!(is_excluded_dir(OsStr::new(n)), "{n} 必须跳过扫描");
         }
         for n in ["artist", "范特西", "download", "周杰伦"] {

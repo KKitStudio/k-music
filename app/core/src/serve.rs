@@ -6,6 +6,7 @@ use crate::app;
 use crate::config::{self, Config};
 use crate::db;
 use crate::downloads::DownloadManager;
+use crate::duplicates::{self, DecisionInput, Origin};
 use crate::import::{self, ImportMode};
 use crate::library;
 use crate::Result;
@@ -311,6 +312,11 @@ fn build_router(
         .route("/api/audio/:id", get(audio_handler))
         .route("/api/cover/:id", get(cover_handler))
         .route("/api/scan", post(scan_handler))
+        // FR-22 重复文件挂起与批量对比决策（W15 角标 / W4 全部未决组一次展示）
+        .route("/api/duplicates", get(duplicates_handler))
+        .route("/api/duplicates/decide", post(duplicates_decide_handler))
+        .route("/api/duplicates/preview/:id", get(duplicates_preview_handler))
+        .route("/api/duplicates/history/clear", post(duplicates_history_clear_handler))
         .route("/api/pick-library-directory", post(pick_library_directory_handler))
         .route("/api/library-directory", post(library_directory_handler))
         .route("/api/library-name", post(library_name_handler))
@@ -457,6 +463,11 @@ async fn status_handler(State(st): State<AppState>) -> Response {
     // 本地网易云曲库目录（导入源）：空 = 未设置。
     let netease_library_dir = cfg_guard.netease.library_dir.to_string_lossy().to_string();
     let pending_dir = cfg_guard.paths.pending_ncm_dir();
+    // FR-22 W15：角标只读当前曲库的未决组数（换库不汇总、不自动清理）。
+    let pending_duplicates = duplicates::pending_count(&cfg_guard);
+    let pending_duplicates_dir = duplicates::pending_dir(&cfg_guard)
+        .to_string_lossy()
+        .to_string();
     drop(cfg_guard);
     // 配置文件版本状态（生成版本 / 最低兼容版本 / 兼容判定 / 冲突原因）。
     let cs = st.config_status.lock().unwrap().clone();
@@ -479,6 +490,8 @@ async fn status_handler(State(st): State<AppState>) -> Response {
             "ncm_tool": ncm_tool,
             "pending_ncm": pending_ncm,
             "loose_ncm": loose_ncm,
+            "pending_duplicates": pending_duplicates,
+            "pending_duplicates_dir": pending_duplicates_dir,
             "track_columns": track_columns,
             "track_columns_saved": track_columns_saved,
             "layout_styles": layout_styles,
@@ -870,72 +883,60 @@ async fn lyrics_handler(State(st): State<AppState>, AxumPath(id): AxumPath<i64>)
 
 /// 音频流：手写 Range/206 支持，满足 <audio> 拖拽进度。按 local_id 检索
 /// （本地文件 song_id 可空，故不以 song_id 作为播放主键）。
-async fn audio_handler(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-    AxumPath(local_id): AxumPath<i64>,
-) -> Response {
-    let range = headers
-        .get(header::RANGE)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+type AudioChunk = (Vec<u8>, u64, bool, u64, u64, &'static str);
 
-    let conn = st.conn.clone();
-    let result = blocking(move || -> Option<(Vec<u8>, u64, bool, u64, u64, &'static str)> {
-        let c = conn.lock().unwrap();
-        let path = db::lookup_path_by_local_id(&c, local_id).ok().flatten()?;
-        drop(c);
-        let pb = PathBuf::from(&path);
-        let meta = std::fs::metadata(&pb).ok()?;
-        let total = meta.len();
-        let ext = pb
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let ctype: &'static str = match ext.as_str() {
-            "flac" => "audio/flac",
-            "mp3" => "audio/mpeg",
-            "m4a" | "aac" => "audio/mp4",
-            "wav" => "audio/wav",
-            "ogg" | "opus" => "audio/ogg",
-            "ape" => "audio/x-ape",
-            "wma" => "audio/x-ms-wma",
-            _ => "application/octet-stream",
-        };
-        let (start, end, partial) = match &range {
-            Some(r) if r.starts_with("bytes=") => {
-                let spec = &r["bytes=".len()..];
-                let (s, e) = spec.split_once('-').unwrap_or(("", ""));
-                let start = if s.is_empty() { None } else { s.trim().parse::<u64>().ok() };
-                let end = if e.is_empty() { None } else { e.trim().parse::<u64>().ok() };
-                match (start, end) {
-                    (Some(s), Some(e)) => (s, e.min(total.saturating_sub(1)), true),
-                    (Some(s), None) => (s, total.saturating_sub(1), true),
-                    (None, Some(e)) => (total.saturating_sub(e), total.saturating_sub(1), true),
-                    (None, None) => (0, total.saturating_sub(1), false),
-                }
+/// 手写 Range/206 读取。播放接口与 FR-22 挂起文件试听共用（见 `duplicates_preview_handler`）。
+fn read_audio_range(pb: &Path, range: Option<&str>) -> Option<AudioChunk> {
+    let meta = std::fs::metadata(pb).ok()?;
+    let total = meta.len();
+    let ext = pb
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let ctype: &'static str = match ext.as_str() {
+        "flac" => "audio/flac",
+        "mp3" => "audio/mpeg",
+        "m4a" | "aac" => "audio/mp4",
+        "wav" => "audio/wav",
+        "ogg" | "opus" => "audio/ogg",
+        "ape" => "audio/x-ape",
+        "wma" => "audio/x-ms-wma",
+        _ => "application/octet-stream",
+    };
+    let (start, end, partial) = match range {
+        Some(r) if r.starts_with("bytes=") => {
+            let spec = &r["bytes=".len()..];
+            let (s, e) = spec.split_once('-').unwrap_or(("", ""));
+            let start = if s.is_empty() { None } else { s.trim().parse::<u64>().ok() };
+            let end = if e.is_empty() { None } else { e.trim().parse::<u64>().ok() };
+            match (start, end) {
+                (Some(s), Some(e)) => (s, e.min(total.saturating_sub(1)), true),
+                (Some(s), None) => (s, total.saturating_sub(1), true),
+                (None, Some(e)) => (total.saturating_sub(e), total.saturating_sub(1), true),
+                (None, None) => (0, total.saturating_sub(1), false),
             }
-            _ => (0, total.saturating_sub(1), false),
-        };
-        if total == 0 || start > end {
-            return None;
         }
-        let len = (end - start + 1) as usize;
-        let mut f = std::fs::File::open(&pb).ok()?;
-        use std::io::{Read, Seek};
-        if start > 0 && f.seek(std::io::SeekFrom::Start(start)).is_err() {
-            return None;
-        }
-        let mut buf = vec![0u8; len];
-        if f.read_exact(&mut buf).is_err() {
-            return None;
-        }
-        Some((buf, total, partial, start, end, ctype))
-    })
-    .await;
+        _ => (0, total.saturating_sub(1), false),
+    };
+    if total == 0 || start > end {
+        return None;
+    }
+    let len = (end - start + 1) as usize;
+    let mut f = std::fs::File::open(pb).ok()?;
+    use std::io::{Read, Seek};
+    if start > 0 && f.seek(std::io::SeekFrom::Start(start)).is_err() {
+        return None;
+    }
+    let mut buf = vec![0u8; len];
+    if f.read_exact(&mut buf).is_err() {
+        return None;
+    }
+    Some((buf, total, partial, start, end, ctype))
+}
 
-    match result {
+fn audio_chunk_response(chunk: Option<AudioChunk>) -> Response {
+    match chunk {
         Some((buf, total, partial, start, end, ctype)) => {
             let body = Body::from(Bytes::from(buf));
             let mut builder = Response::builder()
@@ -956,6 +957,26 @@ async fn audio_handler(
         }
         None => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+async fn audio_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(local_id): AxumPath<i64>,
+) -> Response {
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let conn = st.conn.clone();
+    let result = blocking(move || -> Option<AudioChunk> {
+        let c = conn.lock().unwrap();
+        let path = db::lookup_path_by_local_id(&c, local_id).ok().flatten()?;
+        drop(c);
+        read_audio_range(Path::new(&path), range.as_deref())
+    })
+    .await;
+    audio_chunk_response(result)
 }
 
 /// 专辑封面：优先内嵌封面（lofty 提取），无则 204。按 local_id 检索。
@@ -989,6 +1010,7 @@ async fn cover_handler(State(st): State<AppState>, AxumPath(local_id): AxumPath<
 
 async fn scan_handler(State(st): State<AppState>) -> Response {
     let cfg = st.cfg.lock().unwrap().clone();
+    let cfg_for_count = cfg.clone();
     let conn = st.conn.clone();
     let res = blocking(move || {
         let c = conn.lock().unwrap();
@@ -1002,12 +1024,92 @@ async fn scan_handler(State(st): State<AppState>) -> Response {
             axum::Json(serde_json::json!({
                 "ok": true, "scanned": stats.scanned,
                 "inserted": stats.inserted, "updated": stats.updated, "removed": stats.removed,
+                "held": stats.held,
+                "pending_duplicates": duplicates::pending_count(&cfg_for_count),
                 "ncm_found": stats.loose_ncm
             }))
             .into_response()
         }
         Err(e) => axum::Json(serde_json::json!({ "ok": false, "error": e.to_string() }))
             .into_response(),
+    }
+}
+
+// ---------- FR-22 重复文件挂起与批量对比决策 ----------
+
+/// 当前曲库的**全部未决组**（W4：弹窗一次展示；W15 角标按组数统计）。
+/// 启动 boot scan 只静默登记，不自动弹窗（P1①）。
+async fn duplicates_handler(State(st): State<AppState>) -> Response {
+    let cfg = st.cfg.lock().unwrap().clone();
+    let groups = duplicates::pending_groups(&cfg);
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "count": groups.len(),
+        "groups": groups,
+        "pending_dir": duplicates::pending_dir(&cfg).to_string_lossy(),
+        "log_path": duplicates::sync_log_file(&cfg).to_string_lossy(),
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct DuplicatesDecideRequest {
+    #[serde(default)]
+    decisions: Vec<DecisionInput>,
+}
+
+/// 提交批量决策；未列出的组保持挂起（「稍后处理」/关弹窗 = 不调此接口，W4）。
+async fn duplicates_decide_handler(
+    State(st): State<AppState>,
+    axum::Json(body): axum::Json<DuplicatesDecideRequest>,
+) -> Response {
+    let cfg = st.cfg.lock().unwrap().clone();
+    let conn = st.conn.clone();
+    let decisions = body.decisions;
+    let cfg2 = cfg.clone();
+    let res = blocking(move || {
+        let c = conn.lock().unwrap();
+        duplicates::apply_decisions(&cfg, &c, &decisions)
+    })
+    .await;
+    match res {
+        Ok(o) => axum::Json(serde_json::json!({
+            "ok": true,
+            "applied": o.applied,
+            "failed": o.failed,
+            "pending_duplicates": duplicates::pending_count(&cfg2),
+        }))
+        .into_response(),
+        Err(e) => err_json(&e.to_string()),
+    }
+}
+
+/// 挂起文件试听：只按 candidate id 从挂起组里查路径，不接受请求方传入任意路径；
+/// Range/206 复用播放接口的实现。
+async fn duplicates_preview_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let cfg = st.cfg.lock().unwrap().clone();
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let result = blocking(move || -> Option<AudioChunk> {
+        let p = duplicates::preview_path(&cfg, &id)?;
+        read_audio_range(&p, range.as_deref())
+    })
+    .await;
+    audio_chunk_response(result)
+}
+
+/// 设置面板「清除同步/导入历史」：清空独立的 sync-import.jsonl（决策预选随之失效）。
+async fn duplicates_history_clear_handler(State(st): State<AppState>) -> Response {
+    let cfg = st.cfg.lock().unwrap().clone();
+    match duplicates::clear_history(&cfg) {
+        Ok(()) => axum::Json(serde_json::json!({ "ok": true })).into_response(),
+        Err(e) => err_json(&e.to_string()),
     }
 }
 
@@ -1146,7 +1248,8 @@ async fn ncm_tool_handler(
             "imported": backlog.imported,
             "skipped": backlog.skipped,
             "pending": backlog.pending,
-            "failed": backlog.failed
+            "failed": backlog.failed,
+            "held": backlog.held
         }
     }))
     .into_response()
@@ -1220,7 +1323,14 @@ async fn ncm_organize_handler(
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
             t.begin_file(&fname);
-            match import::import_ncm_with_progress(&cfg, &c, &pb, import::ImportMode::Move, &t) {
+            match import::import_ncm_with_progress(
+                &cfg,
+                &c,
+                &pb,
+                import::ImportMode::Move,
+                Origin::NcmBackfill,
+                &t,
+            ) {
                 Ok(import::ImportOutcome::Imported) => {
                     r.imported += 1;
                     t.end_file(crate::progress::EntryStatus::Imported);
@@ -1231,6 +1341,11 @@ async fn ncm_organize_handler(
                 }
                 Ok(import::ImportOutcome::Pending) => {
                     r.pending += 1;
+                    t.end_file(crate::progress::EntryStatus::Pending);
+                }
+                Ok(import::ImportOutcome::Held) => {
+                    // 重复已挂起：落盘等 GUI 批量对比，不就地默认保留第一个（W7–W13）。
+                    r.held += 1;
                     t.end_file(crate::progress::EntryStatus::Pending);
                 }
                 Err(e) => {
@@ -1257,7 +1372,8 @@ async fn ncm_organize_handler(
         "imported": res.imported,
         "skipped": res.skipped,
         "pending": res.pending,
-        "failed": res.failed
+        "failed": res.failed,
+        "held": res.held
     }))
     .into_response()
 }
@@ -1692,7 +1808,8 @@ async fn import_netease_handler(State(st): State<AppState>) -> Response {
             "imported": r.imported,
             "skipped": r.skipped,
             "pending": r.pending,
-            "failed": r.failed
+            "failed": r.failed,
+            "held": r.held
         }))
         .into_response(),
         Err(e) => axum::Json(serde_json::json!({ "ok": false, "error": e.to_string() }))
@@ -1730,13 +1847,21 @@ async fn import_handler(
     let t = tracker.clone();
     let res = blocking(move || {
         let c = conn.lock().unwrap();
-        import::import_folder_with_progress(&cfg, &c, std::path::Path::new(&src), mode, &t)
+        import::import_folder_with_progress(
+            &cfg,
+            &c,
+            std::path::Path::new(&src),
+            mode,
+            Origin::Manual,
+            &t,
+        )
     })
     .await;
     tracker.finish();
     match res {
         Ok(r) => axum::Json(serde_json::json!({
-            "ok": true, "imported": r.imported, "skipped": r.skipped, "pending": r.pending, "failed": r.failed
+            "ok": true, "imported": r.imported, "skipped": r.skipped,
+            "pending": r.pending, "failed": r.failed, "held": r.held
         }))
         .into_response(),
         Err(e) => axum::Json(serde_json::json!({ "ok": false, "error": e.to_string() }))

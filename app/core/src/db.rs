@@ -39,6 +39,8 @@ pub struct ScanStats {
     pub updated: u32,
     /// 本次扫描清理的孤儿记录数（磁盘上已不存在的文件）。
     pub removed: u32,
+    /// FR-22：本次扫描登记为「重复待决策」的文件数（P1① 静默登记，启动不弹窗）。
+    pub held: u32,
     /// 扫描发现的散落 .ncm 文件（不在 ing/ncm/pendingNcm 等暂存目录内）。
     /// 由前端弹窗询问是否移入 download 按下载逻辑处理（有工具即转换入库）。
     pub loose_ncm: Vec<String>,

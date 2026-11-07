@@ -85,6 +85,11 @@
   <section class="toolbar">
     <input id="search" type="search" placeholder="搜索曲名 / 艺人 / 专辑" />
     <button id="btn-scan" class="md-btn">扫描曲库</button>
+    <!-- FR-22 W15：未决重复组数角标。boot scan 只静默登记，启动不弹窗；点角标或点「扫描曲库」才打开对比窗。 -->
+    <button id="btn-duplicates" class="md-btn dup-badge-btn" type="button" hidden
+            title="查看待处理的重复文件（只统计当前曲库）">
+      待处理重复 <span id="dup-badge" class="dup-badge">0</span>
+    </button>
     <button id="btn-import" class="md-btn">导入</button>
     <button id="btn-import-netease" class="md-btn">从本地网易云曲库更新</button>
     <button id="btn-enqueue" class="md-btn" type="button" title="把最近选中的歌曲插到下一首播放">下一首播放</button>
@@ -466,6 +471,12 @@
         <button id="set-netease-apply" class="md-btn primary" type="button">保存目录</button>
         <button id="set-netease-update" class="md-btn primary" type="button">从本地网易云曲库更新</button>
       </div>
+
+      <div class="settings-section">
+        <h4>同步 / 导入历史</h4>
+        <p class="modal-hint">曲库的同步与导入流水单独记录在 .mt/sync-import.jsonl 中；重复对比窗口会把上次选择作为默认预选项。清除后可重新对比同一首歌。</p>
+        <button id="set-dup-clear-history" class="md-btn" type="button">清除同步/导入历史</button>
+      </div>
           </div><!-- /pane: import -->
 
           <div class="settings-pane" data-pane="columns">
@@ -610,6 +621,28 @@
         <button id="ncm-organize-cancel" class="md-btn" type="button">暂不处理</button>
         <button id="ncm-organize-go" class="md-btn primary" type="button">移入 download 并处理（推荐）</button>
       </div>
+    </div>
+  </div>
+
+  <!-- FR-22 重复文件批量对比决策：全部未决组一次展示，支持试听与音质对比 -->
+  <div class="modal-mask" id="duplicates-modal" hidden>
+    <div class="modal dup-modal">
+      <div class="dup-head">
+        <div class="dup-head-text">
+          <h3>发现重复文件</h3>
+          <p class="modal-hint">逐组选择要保留的版本；可试听并对照格式 / 采样率 / 位深 / 码率 / 文件大小。「稍后处理」不改动任何文件。</p>
+        </div>
+      </div>
+      <div class="dup-body">
+        <div class="dup-count" id="dup-count"></div>
+        <div class="dup-path" id="dup-path"></div>
+        <div id="dup-groups" class="dup-groups"></div>
+      </div>
+      <div class="modal-actions dup-actions">
+        <button id="dup-later" class="md-btn" type="button">稍后处理</button>
+        <button id="dup-apply" class="md-btn primary" type="button">应用所选</button>
+      </div>
+      <audio id="dup-preview-audio" preload="none"></audio>
     </div>
   </div>
 

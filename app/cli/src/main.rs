@@ -60,9 +60,12 @@ fn main() -> anyhow::Result<()> {
             let c = conn.lock().unwrap();
             let stats = library::scan_library(&cfg, &c)?;
             println!(
-                "扫描完成：scanned={} inserted={} updated={} removed={}",
-                stats.scanned, stats.inserted, stats.updated, stats.removed
+                "扫描完成：scanned={} inserted={} updated={} removed={} held={}",
+                stats.scanned, stats.inserted, stats.updated, stats.removed, stats.held
             );
+            if stats.held > 0 {
+                println!("有 {} 个重复文件已挂起等待决策，请在 GUI 中点顶栏角标处理（CLI 不自动取舍）", stats.held);
+            }
             if !stats.loose_ncm.is_empty() {
                 println!("发现曲库内散落的 .ncm 文件（不在 download 体系）：");
                 for p in &stats.loose_ncm {
@@ -86,10 +89,14 @@ fn main() -> anyhow::Result<()> {
                 &c,
                 PathBuf::from(src).as_path(),
                 mode,
+                mt_core::duplicates::Origin::Manual,
                 &tracker,
             )?;
             tracker.finish();
             println!("导入完成：{:?}", res);
+            if res.held > 0 {
+                println!("有 {} 个重复文件已挂起等待决策，请在 GUI 中点顶栏角标处理", res.held);
+            }
         }
         "serve" => {
             // 启动本地 HTTP 服务（REST + 静态前端 + Range 音频流）。
@@ -116,8 +123,8 @@ fn main() -> anyhow::Result<()> {
             tracker.finish();
             match r {
                 Ok(res) => println!(
-                    "从本地网易云曲库合并完成：入库 {}，跳过 {}，待转换 {}，失败 {}",
-                    res.imported, res.skipped, res.pending, res.failed
+                    "从本地网易云曲库合并完成：入库 {}，跳过 {}，待转换 {}，失败 {}，重复挂起 {}",
+                    res.imported, res.skipped, res.pending, res.failed, res.held
                 ),
                 Err(e) => {
                     eprintln!("导入失败：{e}");
@@ -129,9 +136,9 @@ fn main() -> anyhow::Result<()> {
             // 处理曲库内散落的 .ncm（移入 download 按下载逻辑处理）+ download/pendingNcm 积压。
             let res = cli_ncm_organize(&cfg, &*conn)?;
             println!(
-                "散落 .ncm 处理完成：入库 {}，跳过 {}，待转换 {}，失败 {}",
-                res.imported, res.skipped, res.pending, res.failed
-            );
+            "散落 .ncm 处理完成：入库 {}，跳过 {}，待转换 {}，失败 {}，重复挂起 {}",
+            res.imported, res.skipped, res.pending, res.failed, res.held
+        );
         }
         _ => {
             print_help();
@@ -222,6 +229,7 @@ fn cli_ncm_organize(
     res.skipped += backlog.skipped;
     res.pending += backlog.pending;
     res.failed += backlog.failed;
+    res.held += backlog.held;
     // 2) 再处理曲库内散落的 .ncm：移入 download 体系（有工具→转换入库，无工具→暂存 pendingNcm）。
     //    放在积压之后，避免刚移入 pendingNcm 的松散文件被本函数二次计数。
     let loose = library::scan_library(cfg, &c)?.loose_ncm;
@@ -231,10 +239,17 @@ fn cli_ncm_organize(
             res.skipped += 1;
             continue;
         }
-        match import::import_ncm(cfg, &c, &pb, import::ImportMode::Move) {
+        match import::import_ncm(
+            cfg,
+            &c,
+            &pb,
+            import::ImportMode::Move,
+            mt_core::duplicates::Origin::NcmBackfill,
+        ) {
             Ok(import::ImportOutcome::Imported) => res.imported += 1,
             Ok(import::ImportOutcome::Skipped) => res.skipped += 1,
             Ok(import::ImportOutcome::Pending) => res.pending += 1,
+            Ok(import::ImportOutcome::Held) => res.held += 1,
             Err(e) => {
                 eprintln!("散落 ncm 处理失败 {}: {}", pb.display(), e);
                 res.failed += 1;

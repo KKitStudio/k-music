@@ -6,6 +6,7 @@ pub mod audio_meta;
 pub mod config;
 pub mod db;
 pub mod downloads;
+pub mod duplicates;
 pub mod import;
 pub mod library;
 pub mod log;

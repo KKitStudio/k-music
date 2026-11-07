@@ -45,6 +45,11 @@ const state = {
   ncm_ready: false,
   ncm_tool: '',
   pending_ncm: 0,
+  // FR-22：未决重复组数（W15 只统计当前曲库、按组数）与挂起目录 / 独立日志路径。
+  pendingDuplicates: 0,
+  duplicatesDir: '',
+  duplicatesLogPath: '',
+  duplicateGroups: [],
   tracks: [],
   current: null,
   // 分视图选中态：四个页面各自的「曲级选中」互不干扰。
@@ -378,6 +383,9 @@ async function refreshStatus() {
     state.ncm_ready = !!data.ncm_ready;
     state.ncm_tool = data.ncm_tool || '';
     state.pending_ncm = data.pending_ncm || 0;
+    state.pendingDuplicates = Number(data.pending_duplicates) || 0;
+    state.duplicatesDir = data.pending_duplicates_dir || '';
+    updateDupBadge(state.pendingDuplicates);
     // 配置文件版本状态（生成版本 / 最低兼容版本 / 兼容判定 / 冲突原因）。
     state.config_version = data.config_version || '';
     state.config_min_version = data.config_min_compatible_version || '';
@@ -1945,10 +1953,237 @@ $('btn-enqueue').addEventListener('click', () => {
 $('btn-scan').addEventListener('click', async () => {
   setHint('扫描中…');
   const { data } = await api('/api/scan', { method: 'POST' });
-  setHint(data && data.ok ? `扫描完成：新增 ${data.inserted}，更新 ${data.updated}，移除 ${data.removed}` : '扫描失败');
+  setHint(data && data.ok ? `扫描完成：新增 ${data.inserted}，更新 ${data.updated}，移除 ${data.removed}${data.held ? `，重复挂起 ${data.held}` : ''}` : '扫描失败');
   // 手动扫描是新决策点：即使之前忽略过，发现散落 .ncm 仍再次询问。
   maybeShowNcmOrganize((data && data.ncm_found) || [], true);
+  // FR-22 P1①：手动「扫描曲库」才打开批量对比窗；boot scan 只静默登记角标。
+  if (data && data.ok && (data.pending_duplicates || 0) > 0) {
+    updateDupBadge(data.pending_duplicates);
+    await openDuplicatesDialog();
+  } else {
+    await refreshDuplicateBadge();
+  }
   loadTracks($('search').value);
+});
+
+// ==========================================================================
+// FR-22 重复文件挂起与批量对比决策（W15 角标 / W4 全部未决组一次展示 / C 语义预选）
+// 交互范式复用 loose_ncm：状态里带数据 + 用户主动点才弹窗，启动不打断。
+// ==========================================================================
+const DUP_ORIGIN_LABELS = {
+  'netease-sync': '网易云同步', 'ncm-backfill': 'NCM 回补',
+  manual: '手工导入', scan: '曲库扫描',
+};
+
+function updateDupBadge(n) {
+  const count = Number(n) || 0;
+  state.pendingDuplicates = count;
+  const btn = $('btn-duplicates');
+  if (!btn) return;
+  $('dup-badge').textContent = String(count);
+  btn.hidden = count === 0;
+  btn.title = count ? `查看 ${count} 组待处理重复文件（只统计当前曲库）` : '暂无待处理重复文件';
+}
+
+/** 轻量刷新：只读 /api/status 的角标字段，不重置外观 / 列表 / 选中态。
+ *  boot scan 在后台跑，启动瞬间的 status 可能还没登记完，故定时补拉。 */
+async function refreshDuplicateBadge() {
+  const { data } = await api('/api/status');
+  if (data) {
+    state.duplicatesDir = data.pending_duplicates_dir || state.duplicatesDir;
+    updateDupBadge(data.pending_duplicates);
+  }
+}
+
+function dupAttrsHtml(m) {
+  const rows = [
+    ['格式', m.format ? String(m.format).toUpperCase() : ''],
+    ['采样率', m.sample_rate ? (Number(m.sample_rate) / 1000).toFixed(1) + ' kHz' : ''],
+    ['位深', m.bit_depth ? m.bit_depth + ' bit' : ''],
+    ['码率', m.bitrate ? Math.round(Number(m.bitrate) / 1000) + ' kbps' : ''],
+    ['大小', (m.file_size || m.size) ? fmtSize(m.file_size || m.size) : ''],
+    ['来源', m.origin ? (DUP_ORIGIN_LABELS[m.origin] || m.origin) : ''],
+  ].filter(([, v]) => v !== '' && v != null);
+  if (!rows.length) return '';
+  return '<div class="dup-option-attrs">' +
+    rows.map(([k, v]) => `<span>${k}</span><b>${esc(v)}</b>`).join('') + '</div>';
+}
+
+function dupOptionHtml(g, choice, name, meta, previewUrl, checked) {
+  const origin = meta.origin || g.origin;
+  return `<label class="dup-option${checked ? ' is-selected' : ''}">` +
+    `<span class="dup-option-top">` +
+      `<input type="radio" name="dup-${esc(g.id)}" value="${esc(choice)}" data-group-id="${esc(g.id)}"${checked ? ' checked' : ''} />` +
+      `<span class="dup-option-name">${esc(name)}</span>` +
+    `</span>` +
+    dupAttrsHtml(Object.assign({}, meta, { origin })) +
+    `<button type="button" class="md-btn sm dup-preview-btn" data-preview-url="${esc(previewUrl)}">▶ 试听</button>` +
+  `</label>`;
+}
+
+function renderDuplicateGroups(list) {
+  const box = $('dup-groups');
+  box.innerHTML = '';
+  if (!list.length) {
+    box.innerHTML = '<div class="dup-empty">没有待处理的重复组</div>';
+    return;
+  }
+  list.forEach((g, gi) => {
+    const choices = [];
+    if (g.existing) choices.push('existing');
+    (g.candidates || []).forEach((c) => choices.push(c.id));
+    // C 语义：命中历史决策 → 默认预选（仍弹窗、仍可改选），否则默认保留库内那份。
+    let selected = g.suggested;
+    if (!choices.includes(selected)) selected = g.existing ? 'existing' : choices[0];
+    const options = [];
+    if (g.existing) {
+      options.push(dupOptionHtml(
+        g, 'existing', '曲库内的版本', g.existing,
+        `/api/audio/${encodeURIComponent(g.existing.local_id)}`, selected === 'existing'
+      ));
+    }
+    (g.candidates || []).forEach((c, ci) => {
+      const label = (c.source || '').split(/[\\/]/).pop() || `新文件 ${ci + 1}`;
+      options.push(dupOptionHtml(
+        g, c.id, `新文件 ${ci + 1} · ${label}`, c,
+        `/api/duplicates/preview/${encodeURIComponent(c.id)}`, selected === c.id
+      ));
+    });
+    const div = document.createElement('div');
+    div.className = 'dup-group';
+    div.innerHTML =
+      `<div class="dup-group-title">${gi + 1}. ${esc(g.title || '未知曲目')}</div>` +
+      `<div class="dup-group-meta">${esc(g.artist || '')} · ${esc((g.format || '').toUpperCase())} · ${options.length} 个版本 · ${esc(DUP_ORIGIN_LABELS[g.origin] || g.origin || '')}</div>` +
+      (g.last_choice ? `<div class="dup-last">${esc(g.last_choice)}（已为你预选，可改）</div>` : '') +
+      (!g.existing ? '<div class="dup-last">该组均为新文件，默认选中第一份</div>' : '') +
+      `<div class="dup-options">${options.join('')}</div>`;
+    box.appendChild(div);
+  });
+}
+
+let dupPreviewBtn = null;
+function previewDuplicate(url, btn) {
+  const a = $('dup-preview-audio');
+  if (!a) return;
+  if (dupPreviewBtn && dupPreviewBtn !== btn) dupPreviewBtn.textContent = '▶ 试听';
+  if (!a.paused && a.dataset.url === url) {
+    a.pause();
+    btn.textContent = '▶ 试听';
+    dupPreviewBtn = null;
+    return;
+  }
+  a.dataset.url = url;
+  a.src = url;
+  dupPreviewBtn = btn;
+  btn.textContent = '⏸ 停止试听';
+  const played = a.play();
+  if (played && typeof played.catch === 'function') {
+    played.catch(() => { btn.textContent = '▶ 试听'; dupPreviewBtn = null; });
+  }
+}
+
+function stopDuplicatePreview() {
+  const a = $('dup-preview-audio');
+  if (a) { a.pause(); a.removeAttribute('src'); a.load(); delete a.dataset.url; }
+  if (dupPreviewBtn) dupPreviewBtn.textContent = '▶ 试听';
+  dupPreviewBtn = null;
+}
+
+async function openDuplicatesDialog() {
+  const { data } = await api('/api/duplicates');
+  if (!data || !data.ok) {
+    setHint((data && data.error) || '读取重复组失败');
+    return;
+  }
+  const list = data.groups || [];
+  state.duplicateGroups = list;
+  state.duplicatesDir = data.pending_dir || state.duplicatesDir;
+  state.duplicatesLogPath = data.log_path || '';
+  updateDupBadge(data.count == null ? list.length : data.count);
+  if (!list.length) {
+    setHint('暂无待处理的重复文件');
+    return;
+  }
+  $('dup-count').textContent = `共 ${list.length} 组待处理（全部未决组一次展示）`;
+  $('dup-path').textContent = state.duplicatesDir
+    ? `挂起文件：${state.duplicatesDir}（稍后处理不会移动文件；换曲库时随曲库保留）` : '';
+  renderDuplicateGroups(list);
+  $('duplicates-modal').hidden = false;
+}
+
+function closeDuplicatesDialog() {
+  stopDuplicatePreview();
+  $('duplicates-modal').hidden = true;
+}
+
+async function submitDuplicateDecisions() {
+  const inputs = Array.from(document.querySelectorAll('#dup-groups input[type="radio"]:checked'));
+  const decisions = inputs.map((el) => ({ group_id: el.dataset.groupId, choice: el.value }))
+    .filter((d) => d.group_id && d.choice);
+  if (!decisions.length) { setHint('请先为每组选择要保留的版本'); return; }
+  const btn = $('dup-apply');
+  btn.disabled = true;
+  stopDuplicatePreview();
+  const { data } = await api('/api/duplicates/decide', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decisions }),
+  });
+  btn.disabled = false;
+  if (!data || !data.ok) {
+    setHint((data && data.error) || '提交决策失败');
+    return;
+  }
+  const failed = data.failed || [];
+  if (failed.length) setHint(`部分决策未生效：${failed.join('；')}`);
+  else setHint(`已处理 ${data.applied} 组重复文件`);
+  updateDupBadge(data.pending_duplicates);
+  if ((Number(data.pending_duplicates) || 0) > 0) {
+    // 仍有未决组（决策失败 / 别的批次）：保留窗口并重新拉取。
+    await openDuplicatesDialog();
+  } else {
+    closeDuplicatesDialog();
+  }
+  await refreshDuplicateBadge();
+  loadTracks($('search').value);
+}
+
+$('btn-duplicates').addEventListener('click', () => openDuplicatesDialog());
+$('dup-later').addEventListener('click', () => {
+  // W4：稍后处理不提交决策，挂起文件保持留在 .mt/pending-duplicates/。
+  closeDuplicatesDialog();
+  setHint(state.pendingDuplicates
+    ? `已保留 ${state.pendingDuplicates} 组待处理重复文件，可随时点顶栏角标继续` : '已关闭对比窗口');
+});
+$('dup-apply').addEventListener('click', () => submitDuplicateDecisions());
+$('dup-groups').addEventListener('change', (e) => {
+  const input = e.target;
+  if (!input.matches || !input.matches('input[type="radio"]')) return;
+  const wrap = input.closest('.dup-options');
+  if (!wrap) return;
+  wrap.querySelectorAll('.dup-option').forEach((el) =>
+    el.classList.toggle('is-selected', el.contains(input)));
+});
+$('dup-groups').addEventListener('click', (e) => {
+  const btn = e.target.closest && e.target.closest('[data-preview-url]');
+  if (btn) { e.preventDefault(); previewDuplicate(btn.dataset.previewUrl, btn); }
+});
+$('dup-preview-audio').addEventListener('ended', () => {
+  if (dupPreviewBtn) dupPreviewBtn.textContent = '▶ 试听';
+  dupPreviewBtn = null;
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('duplicates-modal').hidden) closeDuplicatesDialog();
+});
+$('set-dup-clear-history').addEventListener('click', async () => {
+  const yes = await showDialog({
+    title: '清除同步/导入历史',
+    text: '将清空本曲库 .mt/sync-import.jsonl 的同步与导入流水，重复对比窗口不再给出「上次你选择了…」预选。挂起中的重复组不受影响。',
+    okText: '清除',
+  });
+  if (!yes) return;
+  const { data } = await api('/api/duplicates/history/clear', { method: 'POST' });
+  setHint(data && data.ok ? '同步/导入历史已清除' : ((data && data.error) || '清除历史失败'));
 });
 
 // ---------- 散落 .ncm 处理（扫描发现 → 询问 → 移入 download 按下载逻辑处理）----------
@@ -2804,6 +3039,7 @@ async function saveLibraryDirectory() {
   if (scan.data && scan.data.ok) {
     setHint(`曲库目录已更新：${state.library_dir}（新增 ${scan.data.inserted}，更新 ${scan.data.updated}，移除 ${scan.data.removed}）`);
     maybeShowNcmOrganize(scan.data.ncm_found || [], true);
+    if ((scan.data.pending_duplicates || 0) > 0) await openDuplicatesDialog();
   } else {
     setHint(`目录已保存，但扫描失败：${(scan.data && scan.data.error) || '请稍后重试'}`);
   }
@@ -2840,7 +3076,10 @@ async function runImportNetease() {
     if (data.skipped) parts.push(`跳过 ${data.skipped}`);
     if (data.pending) parts.push(`待转换 ${data.pending}`);
     if (data.failed) parts.push(`失败 ${data.failed}`);
+    if (data.held) parts.push(`重复挂起 ${data.held}`);
     setHint(`从本地网易云曲库更新完成：${parts.join('，')}`);
+    await refreshDuplicateBadge();
+    if (data.held) await openDuplicatesDialog();
     loadTracks($('search').value);
   } else {
     setHint((data && data.error) || '从本地网易云曲库更新失败');
@@ -2887,8 +3126,11 @@ $('import-run').addEventListener('click', async () => {
   });
   stopProgressPolling();
   setHint(data && data.ok
-    ? `导入完成：新增 ${data.imported}，跳过 ${data.skipped}${data.pending ? `，待转换 ${data.pending}` : ''}，失败 ${data.failed}`
+    ? `导入完成：新增 ${data.imported}，跳过 ${data.skipped}${data.pending ? `，待转换 ${data.pending}` : ''}${data.held ? `，重复挂起 ${data.held}` : ''}，失败 ${data.failed}`
     : (data && data.error) || '导入失败');
+  // FR-22 P4：批量结束后一起弹对比选择窗（全部未决组一次展示）。
+  await refreshDuplicateBadge();
+  if (data && data.ok && data.held) await openDuplicatesDialog();
   loadTracks($('search').value);
 });
 
@@ -3544,3 +3786,6 @@ initAppearanceEvents();
 applyAppearance();
 loadAbout();
 refreshStatus().then(() => { restorePlaystate(); }).catch(() => {});
+// FR-22 P1①：boot scan 在后台静默登记未决组，启动后补拉角标计数（**只更新角标，绝不自动弹窗**）。
+[1500, 5000, 12000].forEach((ms) => setTimeout(refreshDuplicateBadge, ms));
+setInterval(refreshDuplicateBadge, 30000);

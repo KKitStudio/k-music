@@ -23,11 +23,11 @@ pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 或其最低兼容版本高于当前程序版本（当前程序太老）时判为**冲突**，需要重建配置。
 pub const MIN_COMPATIBLE_VERSION: &str = "0.2.0";
 /// 作者。
-pub const APP_AUTHOR: &str = "kill33";
-/// 作者联系方式（邮箱）。
-pub const APP_EMAIL: &str = "kill33@126.com";
-/// 开源许可证。
-pub const APP_LICENSE: &str = "MIT";
+pub const APP_AUTHOR: &str = "KKitStudio";
+/// 项目主页（GitHub 仓库）。
+pub const APP_HOMEPAGE: &str = "https://github.com/KKitStudio/k-music";
+/// 开源许可证（自定义非商业许可）。
+pub const APP_LICENSE: &str = "KKitStudio 非商业许可（商用需授权）";
 /// 一句话简介。
 pub const APP_DESCRIPTION: &str = "本地曲库管理 + 桌面播放器";
 /// 技术栈摘要（关于面板展示用）。

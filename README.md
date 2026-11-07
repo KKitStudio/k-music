@@ -71,5 +71,6 @@ cargo run -p mt-cli -- import-netease          # 从本地网易云曲库目录�
 
 ## 许可证与作者
 
-- 许可证：MIT
-- 作者：kill33 · kill33@126.com
+- 许可证：KKitStudio 非商业许可（个人 / 非商业免费，商用需书面授权，详见仓库 `LICENSE`）
+- 作者：KKitStudio
+- 项目主页：https://github.com/KKitStudio/k-music

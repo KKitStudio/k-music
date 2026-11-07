@@ -12,7 +12,8 @@ fn main() -> anyhow::Result<()> {
     // 版本信息：与 GUI 窗口标题、「关于」面板同源（mt_core::app 常量）。
     if cmd == "--version" || cmd == "-V" || cmd == "version" {
         println!("{}", app::full_name());
-        println!("作者：{} <{}>", app::APP_AUTHOR, app::APP_EMAIL);
+        println!("作者：{}", app::APP_AUTHOR);
+        println!("项目主页：{}", app::APP_HOMEPAGE);
         println!("许可证：{}", app::APP_LICENSE);
         return Ok(());
     }

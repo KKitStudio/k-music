@@ -747,14 +747,14 @@ function renderAbout() {
   set('about-license', a.license || '—');
   set('about-tech', a.tech || '—');
   set('about-desc', a.description || '—');
-  const mail = $('about-email');
-  if (mail) {
-    if (a.email) {
-      mail.textContent = a.email;
-      mail.href = 'mailto:' + a.email;
+  const home = $('about-homepage');
+  if (home) {
+    if (a.homepage) {
+      home.textContent = a.homepage;
+      home.href = a.homepage;
     } else {
-      mail.textContent = '—';
-      mail.removeAttribute('href');
+      home.textContent = '—';
+      home.removeAttribute('href');
     }
   }
 }

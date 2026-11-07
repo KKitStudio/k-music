@@ -674,7 +674,7 @@ async fn pick_playlist_file_handler(State(st): State<AppState>) -> Response {
     resp
 }
 
-/// 「关于」信息：应用名称 / 版本号 / 作者 / 联系方式 / 许可证 / 技术栈。
+/// 「关于」信息：应用名称 / 版本号 / 作者 / 项目主页 / 许可证 / 技术栈。
 /// 数据源为 `crate::app` 常量（编译期注入），与窗口标题、顶栏徽标同源，保证显示一致。
 async fn about_handler() -> Response {
     axum::Json(serde_json::json!({
@@ -682,7 +682,7 @@ async fn about_handler() -> Response {
         "legacy_name": app::APP_LEGACY_NAME,
         "version": app::APP_VERSION,
         "author": app::APP_AUTHOR,
-        "email": app::APP_EMAIL,
+        "homepage": app::APP_HOMEPAGE,
         "license": app::APP_LICENSE,
         "description": app::APP_DESCRIPTION,
         "tech": app::APP_TECH,

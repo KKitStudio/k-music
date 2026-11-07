@@ -5,7 +5,9 @@ members = ["app/core", "app/cli", "app/gui"]
 [workspace.package]
 version = "0.6.0"
 edition = "2021"
-license = "MIT"
+license = "LicenseRef-KKitStudio"
+homepage = "https://github.com/KKitStudio/k-music"
+authors = ["KKitStudio"]
 
 # 产物体积优化（瘦身）：以体积优先的发布配置。
 # - opt-level="z"  按尺寸优化代码生成（比默认 "3" 更小，扫描性能影响有限）

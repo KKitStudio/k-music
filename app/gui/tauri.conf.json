@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "K music",
+  "version": "0.7.6",
+  "identifier": "com.musicmt.app",
+  "build": {
+    "frontendDist": "frontend",
+    "devUrl": "http://127.0.0.1:59637",
+    "beforeDevCommand": "echo '开发模式：请先单独运行 `cargo run -p mt-cli -- serve` 启动后端，或直接使用 release 构建'",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ]
+  }
+}

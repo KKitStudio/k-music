@@ -86,6 +86,13 @@ const state = {
   columnWidths: { name: 24, artist: 16, album: 18, quality_tier: 6, duration_ms: 6, file_size: 8, imported_at: 11, created_at: 11 },
   // 自动播放列表上限（由 /api/status 读回；设置 → 播放 可改）。
   autoPlaylistCount: 20,
+  // FR-24：侧栏宽度（px）/ 收缩态 / 播放器音量，均为 app 级 [ui] 偏好（换曲库不变）。
+  sidebarWidth: 144,
+  groupWidth: 230,
+  sidebarCollapsed: false,
+  groupCollapsed: false,
+  volume: 100,
+  muted: false,
   // 歌词：{ timed, lines: [{t, text}], plain }；lyricsIndex = 当前高亮行序号。
   lyrics: null,
   lyricsIndex: -1,
@@ -432,6 +439,15 @@ async function refreshStatus() {
       });
     }
     applyLayoutStyle();
+    // FR-24：读回侧栏宽度 / 收缩态 / 音量（app 级 [ui]，坏值由后端 sanitize 挡掉，这里再兜一层）。
+    if (data.sidebar_width !== undefined) state.sidebarWidth = clampPaneWidth(Number(data.sidebar_width), 'sidebar');
+    if (data.group_width !== undefined) state.groupWidth = clampPaneWidth(Number(data.group_width), 'group');
+    if (typeof data.sidebar_collapsed === 'boolean') state.sidebarCollapsed = data.sidebar_collapsed;
+    if (typeof data.group_collapsed === 'boolean') state.groupCollapsed = data.group_collapsed;
+    if (data.volume !== undefined) state.volume = Math.min(100, Math.max(0, Number(data.volume) || 0));
+    if (typeof data.muted === 'boolean') state.muted = data.muted;
+    applyPaneLayout();
+    applyVolume();
     // 启动自动扫描 / 上次扫描发现的散落 .ncm：提示处理（用户已明确忽略的不重复弹）。
     maybeShowNcmOrganize(data.loose_ncm || [], false);
   }
@@ -1173,16 +1189,18 @@ function buildQueue(view, clickedId, named) {
 }
 
 function queueTitle(view, named) {
+  // FR-23：智能三视图（全部曲库 / 专辑 / 歌手）统一「智能播放列表 · …」前缀；
+  // 有名播放列表仍属手工维护列表，标题不变。
   if (view === 'playlists' && state.currentPlaylist) {
     return '播放列表 · ' + state.currentPlaylist.name;
   }
   if (view === 'albums') {
-    return '专辑 · ' + (state.currentAlbum ? state.currentAlbum.name : '未知专辑');
+    return '智能播放列表 · 专辑：' + (state.currentAlbum ? state.currentAlbum.name : '未知专辑');
   }
   if (view === 'artists') {
-    return '歌手 · ' + (state.currentArtist ? state.currentArtist.name : '未知艺人');
+    return '智能播放列表 · 艺人：' + (state.currentArtist ? state.currentArtist.name : '未知艺人');
   }
-  return named ? '播放列表' : '自动播放列表 · 全部曲库';
+  return named ? '播放列表' : '智能播放列表 · 全部曲库';
 }
 
 // 洗牌一次并固定顺序（S2）：整个队列 Fisher-Yates，随后把当前曲重新定位。
@@ -1209,11 +1227,15 @@ function restoreOriginalOrder() {
 }
 
 // 播放入口：所有来源（曲库 / 播放列表 / 专辑 / 歌手）都走这里重建上下文。
-function startPlayback(t, view) {
+function startPlayback(t, view, opts) {
   const v = view || state.activeTab;
   if (!t || !Number(t.local_id)) return;
   const named = (v === 'playlists' && !!state.currentPlaylist);
-  const built = buildQueue(v, Number(t.local_id), named);
+  // FR-24 T1：双击二级列表整组播放是**独立新入口**，队列 = 来源视图当前全集。
+  // 单曲双击 / 右键播放仍完全由 buildQueue() 决定（n / 视口段 V / 点击曲锚点），算法一行不改。
+  const built = (opts && opts.fullGroup)
+    ? { queue: sourceTracks(v).map((x) => Number(x.local_id)).filter((n) => n > 0), n: null }
+    : buildQueue(v, Number(t.local_id), named);
   if (!built || !built.queue.length) { setHint('当前列表没有可播放的歌曲'); return; }
 
   // 只快照显示摘要，不引用来源数组（搜索 / 扫描 / 导入不会改写队列）。
@@ -2638,7 +2660,7 @@ function renderAlbums() {
   renderGroupList(
     'al-list',
     state.albums,
-    '暂无专辑',
+    '暂无智能播放列表 · 专辑',
     'name',
     state.currentAlbum ? state.currentAlbum.name : null,
   );
@@ -2673,7 +2695,7 @@ async function loadAlbumTracks(name) {
   const { data } = await api('/api/albums/tracks?name=' + encodeURIComponent(name));
   if (seq !== albumReq) return;
   state.albumTracks = (data && data.tracks) || [];
-  renderBrowseTracks('al-content', state.albumTracks, '该专辑暂无歌曲。');
+  renderBrowseTracks('al-content', state.albumTracks, '该智能播放列表暂无歌曲。');
 }
 
 // ---------- 歌手 ----------
@@ -2687,7 +2709,7 @@ function renderArtists() {
   renderGroupList(
     'ar-list',
     state.artists,
-    '暂无歌手',
+    '暂无智能播放列表 · 歌手',
     'name',
     state.currentArtist ? state.currentArtist.name : null,
   );
@@ -2722,7 +2744,7 @@ async function loadArtistTracks(name) {
   const { data } = await api('/api/artists/tracks?name=' + encodeURIComponent(name));
   if (seq !== artistReq) return;
   state.artistTracks = (data && data.tracks) || [];
-  renderBrowseTracks('ar-content', state.artistTracks, '该歌手暂无歌曲。');
+  renderBrowseTracks('ar-content', state.artistTracks, '该智能播放列表暂无歌曲。');
 }
 
 $('btn-settings').addEventListener('click', openSettings);
@@ -3779,12 +3801,160 @@ function initAppearanceEvents() {
   }
 }
 
+// ---------- FR-24：侧栏宽度 / 收缩 / 音量 / 双击整组播放 ----------
+const PANE_WIDTH_LIMITS = {
+  sidebar: { min: 96, max: 320, fallback: 144 },
+  group: { min: 160, max: 480, fallback: 230 },
+};
+function clampPaneWidth(v, which) {
+  const L = PANE_WIDTH_LIMITS[which];
+  return (isFinite(v) && v >= L.min && v <= L.max) ? Math.round(v) : L.fallback;
+}
+// 统一把内存状态投射到 DOM：宽度用 CSS 变量（body class 决定收起态），把手常驻可展开。
+function applyPaneLayout() {
+  document.documentElement.style.setProperty('--sidebar-w', state.sidebarWidth + 'px');
+  document.documentElement.style.setProperty('--group-w', state.groupWidth + 'px');
+  document.body.classList.toggle('sidebar-collapsed', !!state.sidebarCollapsed);
+  document.body.classList.toggle('group-collapsed', !!state.groupCollapsed);
+  const sh = $('handle-sidebar');
+  if (sh) sh.textContent = state.sidebarCollapsed ? '›' : '‹';
+  document.querySelectorAll('.edge-handle.group-handle').forEach((b) => {
+    b.textContent = state.groupCollapsed ? '›' : '‹';
+  });
+  document.querySelectorAll('.pane-collapse-btn[data-collapse="group"]').forEach((b) => {
+    b.textContent = state.groupCollapsed ? '»' : '«';
+  });
+  const sb = $('sidebar');
+  if (sb) {
+    const b = sb.querySelector('.pane-collapse-btn[data-collapse="sidebar"]');
+    if (b) b.textContent = state.sidebarCollapsed ? '»' : '«';
+  }
+}
+// 所有 [ui] 写入都走 /api/ui-prefs（后端 save_ui_in_place，绝不 save_app 整份重写）。
+function savePanePrefs(patch) {
+  api('/api/ui-prefs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  }).then(({ data }) => {
+    if (!data || !data.ok) setHint((data && data.error) || '保存界面偏好失败');
+  }).catch(() => {});
+}
+function togglePane(which) {
+  if (which === 'sidebar') state.sidebarCollapsed = !state.sidebarCollapsed;
+  else state.groupCollapsed = !state.groupCollapsed;
+  applyPaneLayout();
+  savePanePrefs(which === 'sidebar'
+    ? { sidebar_collapsed: state.sidebarCollapsed }
+    : { group_collapsed: state.groupCollapsed });
+}
+function setupPaneResize() {
+  document.querySelectorAll('.pane-resizer').forEach((handle) => {
+    handle.addEventListener('mousedown', (e) => {
+      const which = handle.dataset.resize;
+      const L = PANE_WIDTH_LIMITS[which];
+      if (!L) return;
+      const startX = e.clientX;
+      const startW = which === 'sidebar' ? state.sidebarWidth : state.groupWidth;
+      e.preventDefault();
+      document.body.classList.add('pane-resizing');
+      const cssVar = which === 'sidebar' ? '--sidebar-w' : '--group-w';
+      const onMove = (ev) => {
+        const w = Math.min(L.max, Math.max(L.min, startW + (ev.clientX - startX)));
+        if (which === 'sidebar') state.sidebarWidth = w; else state.groupWidth = w;
+        document.documentElement.style.setProperty(cssVar, Math.round(w) + 'px');
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.classList.remove('pane-resizing');
+        const w = Math.round(which === 'sidebar' ? state.sidebarWidth : state.groupWidth);
+        savePanePrefs(which === 'sidebar' ? { sidebar_width: w } : { group_width: w });
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
+  document.querySelectorAll('[data-toggle], [data-collapse]').forEach((b) => {
+    b.addEventListener('click', () => togglePane(b.dataset.toggle || b.dataset.collapse));
+  });
+}
+// 音量：直接读写 audio.volume / audio.muted，持久化在 app 级 [ui]（不放 playstate.json）。
+function applyVolume() {
+  const v = Math.min(100, Math.max(0, Number(state.volume) || 0));
+  audio.volume = v / 100;
+  audio.muted = !!state.muted;
+  const slider = $('volume');
+  if (slider) slider.value = String(v);
+  const btn = $('btn-mute');
+  if (btn) {
+    btn.textContent = (state.muted || v === 0) ? '🔇' : '🔊';
+    btn.classList.toggle('is-active', !!state.muted);
+  }
+}
+function setupVolume() {
+  const slider = $('volume');
+  if (slider) {
+    // 拖动过程中防抖写盘：避免每个 input 事件都就地重写一次 kqk-app.toml。
+    let volTimer = null;
+    slider.addEventListener('input', () => {
+      state.volume = Math.min(100, Math.max(0, Number(slider.value) || 0));
+      if (state.volume > 0 && state.muted) state.muted = false;
+      applyVolume();
+      clearTimeout(volTimer);
+      volTimer = setTimeout(() => {
+        savePanePrefs({ volume: Math.round(state.volume), muted: state.muted });
+      }, 150);
+    });
+  }
+  const btn = $('btn-mute');
+  if (btn) {
+    btn.addEventListener('click', () => {
+      state.muted = !state.muted;
+      if (!state.muted && state.volume === 0) state.volume = 100;
+      applyVolume();
+      savePanePrefs({ muted: state.muted, volume: Math.round(state.volume) });
+    });
+  }
+}
+// 双击二级列表项 → 播放该列表整组全量（T1）。单击委托会先跑两次 selectXxx，
+// 这里显式 await 最后一次，并发守卫只认最后一次请求，保证曲目加载完成后才有队列。
+async function playGroupFromList(view, li) {
+  const keyField = view === 'playlists' ? 'id' : 'name';
+  const key = li.dataset[keyField];
+  if (key === undefined || key === '') return;
+  if (view === 'playlists') await selectPlaylist(Number(key));
+  else if (view === 'albums') await selectAlbum(key);
+  else if (view === 'artists') await selectArtist(key);
+  const first = sourceTracks(view).find((x) => Number(x.local_id) > 0);
+  if (!first) { setHint('该列表暂无可播放的歌曲'); return; }
+  startPlayback(first, view, { fullGroup: true });
+}
+function bindGroupDoubleClick(listId, view) {
+  const ul = $(listId);
+  if (!ul) return;
+  ul.addEventListener('dblclick', (e) => {
+    const li = e.target.closest('li[data-id], li[data-name]');
+    if (!li || li.classList.contains('pl-empty')) return;
+    e.preventDefault();
+    playGroupFromList(view, li);
+  });
+}
+
 // ---------- 初始化 ----------
 // 启动只调一次：refreshStatus() 在曲库已配置时会自行 loadTracks()，未配置则进入向导；
 // 向导完成（finishInit）也会加载。无需在此重复 loadTracks。
 initAppearanceEvents();
 applyAppearance();
 loadAbout();
+// FR-24：侧栏 / 音量交互绑定与初始状态（refreshStatus 读回配置后会再投射一次）。
+setupPaneResize();
+setupVolume();
+bindGroupDoubleClick('pl-list', 'playlists');
+bindGroupDoubleClick('al-list', 'albums');
+bindGroupDoubleClick('ar-list', 'artists');
+applyPaneLayout();
+applyVolume();
 refreshStatus().then(() => { restorePlaystate(); }).catch(() => {});
 // FR-22 P1①：boot scan 在后台静默登记未决组，启动后补拉角标计数（**只更新角标，绝不自动弹窗**）。
 [1500, 5000, 12000].forEach((ms) => setTimeout(refreshDuplicateBadge, ms));

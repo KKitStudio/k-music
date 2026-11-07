@@ -114,12 +114,18 @@
   </div>
 
   <main class="layout">
-    <nav class="sidebar">
-      <button class="tab-btn active" id="tab-library" type="button">全部曲库</button>
-      <button class="tab-btn" id="tab-playlists" type="button">播放列表</button>
-      <button class="tab-btn" id="tab-albums" type="button">专辑</button>
-      <button class="tab-btn" id="tab-artists" type="button">歌手</button>
+    <nav class="sidebar" id="sidebar">
+      <div class="sidebar-head">
+        <span class="sidebar-head-label">导航</span>
+        <button class="pane-collapse-btn" data-collapse="sidebar" type="button" title="收起一级菜单" aria-label="收起一级菜单">«</button>
+      </div>
+      <button class="tab-btn active" id="tab-library" type="button" data-icon="♪"><span>全部曲库</span></button>
+      <button class="tab-btn" id="tab-playlists" type="button" data-icon="☰"><span>播放列表</span></button>
+      <button class="tab-btn" id="tab-albums" type="button" data-icon="◉"><span>专辑</span></button>
+      <button class="tab-btn" id="tab-artists" type="button" data-icon="♫"><span>歌手</span></button>
+      <div class="pane-resizer" data-resize="sidebar" title="拖动调整一级菜单宽度"></div>
     </nav>
+    <button class="edge-handle" id="handle-sidebar" data-toggle="sidebar" type="button" title="收起 / 展开一级菜单" aria-label="收起 / 展开一级菜单">‹</button>
 
     <div class="list-pane" id="library-pane">
       <!-- 纵向：曲目详情内联到歌曲列表上方（把宽度让给列表），横向时隐藏 -->
@@ -142,11 +148,15 @@
         <div class="pl-sidebar-head">
           <span>播放列表</span>
           <button id="pl-new" class="md-btn primary" type="button">＋ 新建</button>
+          <button class="pane-collapse-btn" data-collapse="group" type="button" title="收起二级列表" aria-label="收起二级列表">«</button>
         </div>
         <ul id="pl-list" class="pl-list">
           <li class="pl-empty">暂无播放列表</li>
         </ul>
+        <div class="pane-mini-icon" aria-hidden="true">☰</div>
+        <div class="pane-resizer" data-resize="group" title="拖动调整二级列表宽度"></div>
       </div>
+      <button class="edge-handle group-handle" data-toggle="group" type="button" title="收起 / 展开二级列表" aria-label="收起 / 展开二级列表">‹</button>
       <div class="pl-main">
         <div class="pl-main-head" id="pl-main-head">
           <span id="pl-title">播放列表内容</span>
@@ -174,11 +184,15 @@
       <div class="pl-sidebar">
         <div class="pl-sidebar-head">
           <span>专辑</span>
+          <button class="pane-collapse-btn" data-collapse="group" type="button" title="收起二级列表" aria-label="收起二级列表">«</button>
         </div>
         <ul id="al-list" class="pl-list">
-          <li class="pl-empty">暂无专辑</li>
+          <li class="pl-empty">暂无智能播放列表 · 专辑</li>
         </ul>
+        <div class="pane-mini-icon" aria-hidden="true">◉</div>
+        <div class="pane-resizer" data-resize="group" title="拖动调整二级列表宽度"></div>
       </div>
+      <button class="edge-handle group-handle" data-toggle="group" type="button" title="收起 / 展开二级列表" aria-label="收起 / 展开二级列表">‹</button>
       <div class="pl-main">
         <div class="pl-main-head" id="al-main-head">
           <span id="al-title">专辑内容</span>
@@ -189,7 +203,7 @@
           <div class="inline-fields" id="al-detail-fields" hidden></div>
         </div>
         <div id="al-content" class="pl-content">
-          <div class="placeholder">选择一个专辑以查看歌曲，或点击左侧列表浏览全部专辑。</div>
+          <div class="placeholder">智能播放列表 · 请从左侧选择一个专辑</div>
         </div>
       </div>
     </div>
@@ -199,11 +213,15 @@
       <div class="pl-sidebar">
         <div class="pl-sidebar-head">
           <span>歌手</span>
+          <button class="pane-collapse-btn" data-collapse="group" type="button" title="收起二级列表" aria-label="收起二级列表">«</button>
         </div>
         <ul id="ar-list" class="pl-list">
-          <li class="pl-empty">暂无歌手</li>
+          <li class="pl-empty">暂无智能播放列表 · 歌手</li>
         </ul>
+        <div class="pane-mini-icon" aria-hidden="true">♫</div>
+        <div class="pane-resizer" data-resize="group" title="拖动调整二级列表宽度"></div>
       </div>
+      <button class="edge-handle group-handle" data-toggle="group" type="button" title="收起 / 展开二级列表" aria-label="收起 / 展开二级列表">‹</button>
       <div class="pl-main">
         <div class="pl-main-head" id="ar-main-head">
           <span id="ar-title">歌手内容</span>
@@ -218,7 +236,7 @@
           <div class="inline-fields ar-detail-fields" id="ar-detail-fields" hidden></div>
         </div>
         <div id="ar-content" class="pl-content">
-          <div class="placeholder">选择一个歌手以查看歌曲，或点击左侧列表浏览全部歌手。</div>
+          <div class="placeholder">智能播放列表 · 请从左侧选择一个歌手</div>
         </div>
       </div>
     </div>
@@ -245,6 +263,8 @@
       <span id="cur-time" class="time">0:00</span>
       <input id="seek" type="range" min="0" max="1000" value="0" />
       <span id="dur-time" class="time">0:00</span>
+      <button id="btn-mute" class="md-btn sm volume-mute-btn" type="button" title="静音 / 恢复" aria-label="静音 / 恢复">🔊</button>
+      <input id="volume" type="range" min="0" max="100" value="100" title="音量" aria-label="音量" />
     </div>
     <audio id="audio"></audio>
   </footer>
@@ -519,7 +539,8 @@
           最多列入 <b>n</b> 首（默认 20，范围 1–200）。<br />
           该数值<b>只影响自动生成的播放队列</b>：不会改动任何播放列表的内容、列表行数或导出文件；
           用户自己创建的有名播放列表始终按其全量曲目播放。<br />
-          修改后，<b>下一次</b>触发播放时才生效，当前正在播放的队列不变。
+          修改后，<b>下一次</b>触发播放时才生效，当前正在播放的队列不变。<br />
+          <b>双击左侧二级列表（专辑 / 歌手 / 播放列表）会播放该列表全量曲目，不受此上限约束</b>（FR-24 新增入口）。
         </p>
         <div class="playback-count-row">
           <label for="set-auto-count">最多列入</label>

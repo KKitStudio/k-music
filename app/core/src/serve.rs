@@ -451,6 +451,13 @@ async fn status_handler(State(st): State<AppState>) -> Response {
     let layout_styles = cfg_guard.ui.layout_styles_map();
     let column_widths = cfg_guard.ui.widths_map();
     let auto_playlist_count = cfg_guard.ui.auto_playlist_count;
+    // FR-24：侧栏宽度 / 收缩态 / 播放器音量（app 级 [ui]，不随曲库切换）。
+    let sidebar_width = cfg_guard.ui.sidebar_width;
+    let group_width = cfg_guard.ui.group_width;
+    let sidebar_collapsed = cfg_guard.ui.sidebar_collapsed;
+    let group_collapsed = cfg_guard.ui.group_collapsed;
+    let volume = cfg_guard.ui.volume;
+    let muted = cfg_guard.ui.muted;
     // 外观 / 主题方案（配置文件为准；自定义皮肤图片本体不入配置，由前端 localStorage 兜底）。
     let appearance = serde_json::json!({
         "theme": cfg_guard.ui.theme,
@@ -498,6 +505,12 @@ async fn status_handler(State(st): State<AppState>) -> Response {
             "column_widths": column_widths,
             "appearance": appearance,
             "auto_playlist_count": auto_playlist_count,
+            "sidebar_width": sidebar_width,
+            "group_width": group_width,
+            "sidebar_collapsed": sidebar_collapsed,
+            "group_collapsed": group_collapsed,
+            "volume": volume,
+            "muted": muted,
             "app_version": app::APP_VERSION,
             "min_compatible_version": app::MIN_COMPATIBLE_VERSION,
             "config_version": cs.app_config_version,
@@ -1548,6 +1561,12 @@ async fn ui_prefs_get_handler(State(st): State<AppState>) -> Response {
         "column_widths": ui.widths_map(),
         "appearance": appearance_json(&ui),
         "auto_playlist_count": ui.auto_playlist_count,
+        "sidebar_width": ui.sidebar_width,
+        "group_width": ui.group_width,
+        "sidebar_collapsed": ui.sidebar_collapsed,
+        "group_collapsed": ui.group_collapsed,
+        "volume": ui.volume,
+        "muted": ui.muted,
     }))
     .into_response()
 }
@@ -1628,6 +1647,25 @@ async fn ui_prefs_post_handler(
         };
         ui.auto_playlist_count = config::clamp_auto_playlist_count(n);
     }
+    // FR-24：侧栏宽度 / 收缩态 / 音量，部分更新语义；越界值由 ui.sanitize() 回退。
+    if let Some(v) = body.get("sidebar_width").and_then(|v| v.as_u64()) {
+        ui.sidebar_width = v.min(u32::MAX as u64) as u32;
+    }
+    if let Some(v) = body.get("group_width").and_then(|v| v.as_u64()) {
+        ui.group_width = v.min(u32::MAX as u64) as u32;
+    }
+    if let Some(v) = body.get("sidebar_collapsed").and_then(|v| v.as_bool()) {
+        ui.sidebar_collapsed = v;
+    }
+    if let Some(v) = body.get("group_collapsed").and_then(|v| v.as_bool()) {
+        ui.group_collapsed = v;
+    }
+    if let Some(v) = body.get("volume").and_then(|v| v.as_u64()) {
+        ui.volume = v.min(u32::MAX as u64) as u32;
+    }
+    if let Some(v) = body.get("muted").and_then(|v| v.as_bool()) {
+        ui.muted = v;
+    }
     ui.sanitize();
 
     // 写盘（就地更新 [ui] 段）→ 失败则不污染内存状态。
@@ -1642,6 +1680,12 @@ async fn ui_prefs_post_handler(
         "column_widths": ui.widths_map(),
         "appearance": appearance_json(&ui),
         "auto_playlist_count": ui.auto_playlist_count,
+        "sidebar_width": ui.sidebar_width,
+        "group_width": ui.group_width,
+        "sidebar_collapsed": ui.sidebar_collapsed,
+        "group_collapsed": ui.group_collapsed,
+        "volume": ui.volume,
+        "muted": ui.muted,
     }))
     .into_response()
 }

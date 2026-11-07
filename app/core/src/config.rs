@@ -220,6 +220,50 @@ pub const LAYOUT_STYLE_VERTICAL: u8 = 2;
 /// 四个导航视图（对应左侧栏四个入口）。
 pub const VIEW_KEYS: [&str; 4] = ["library", "playlists", "albums", "artists"];
 
+// ---- FR-24：侧栏宽度 / 收缩 / 音量（app 级 [ui]，不随曲库切换）----
+pub const SIDEBAR_WIDTH_MIN: u32 = 96;
+pub const SIDEBAR_WIDTH_MAX: u32 = 320;
+pub const SIDEBAR_WIDTH_DEFAULT: u32 = 144;
+pub const GROUP_WIDTH_MIN: u32 = 160;
+pub const GROUP_WIDTH_MAX: u32 = 480;
+pub const GROUP_WIDTH_DEFAULT: u32 = 230;
+pub const VOLUME_DEFAULT: u32 = 100;
+
+fn default_sidebar_width() -> u32 { SIDEBAR_WIDTH_DEFAULT }
+fn default_group_width() -> u32 { GROUP_WIDTH_DEFAULT }
+fn default_volume() -> u32 { VOLUME_DEFAULT }
+
+/// u32 字段宽容反序列化：配置文件手写坏值（负数 / 字符串 / 布尔）不会让整份配置加载失败；
+/// 越界值统一交给 `UiConfig::sanitize()` 回退到各字段默认值。
+fn de_ui_u32<'de, D>(de: D) -> std::result::Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, Visitor};
+    use std::fmt;
+    struct U32Visitor;
+    impl<'de> Visitor<'de> for U32Visitor {
+        type Value = u32;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result { f.write_str("非负整数") }
+        fn visit_i64<E: Error>(self, v: i64) -> std::result::Result<u32, E> {
+            Ok(if v <= 0 { 0 } else { v.min(u32::MAX as i64) as u32 })
+        }
+        fn visit_u64<E: Error>(self, v: u64) -> std::result::Result<u32, E> {
+            Ok(v.min(u32::MAX as u64) as u32)
+        }
+        fn visit_f64<E: Error>(self, v: f64) -> std::result::Result<u32, E> {
+            Ok(if v.is_finite() && v > 0.0 { v.round().min(u32::MAX as f64) as u32 } else { 0 })
+        }
+        fn visit_str<E: Error>(self, v: &str) -> std::result::Result<u32, E> {
+            Ok(v.trim().parse::<f64>().map(|n| if n.is_finite() && n > 0.0 { n.round().min(u32::MAX as f64) as u32 } else { 0 }).unwrap_or(0))
+        }
+        fn visit_bool<E: Error>(self, _v: bool) -> std::result::Result<u32, E> { Ok(0) }
+        fn visit_none<E: Error>(self) -> std::result::Result<u32, E> { Ok(0) }
+        fn visit_unit<E: Error>(self) -> std::result::Result<u32, E> { Ok(0) }
+    }
+    de.deserialize_any(U32Visitor)
+}
+
 // ---- 自动播放列表（无名播放列表）生成上限 n（FR-17，属应用设置，不随曲库切换）----
 pub const AUTO_PLAYLIST_COUNT_MIN: u32 = 1;
 pub const AUTO_PLAYLIST_COUNT_MAX: u32 = 200;
@@ -366,6 +410,25 @@ pub struct UiConfig {
         deserialize_with = "de_auto_playlist_count"
     )]
     pub auto_playlist_count: u32,
+    // ---- FR-24：侧栏宽度 / 收缩态 / 播放器音量（app 级偏好，与布局列宽同落 [ui]）----
+    /// 一级 tab 栏宽度（px），默认 144，允许 [96, 320]。
+    #[serde(default = "default_sidebar_width", deserialize_with = "de_ui_u32")]
+    pub sidebar_width: u32,
+    /// 二级分组栏宽度（px），默认 230，允许 [160, 480]。
+    #[serde(default = "default_group_width", deserialize_with = "de_ui_u32")]
+    pub group_width: u32,
+    /// 一级栏收起态（收起后保留小图标窄条 + 常驻展开把手）。
+    #[serde(default)]
+    pub sidebar_collapsed: bool,
+    /// 二级栏收起态。
+    #[serde(default)]
+    pub group_collapsed: bool,
+    /// 播放音量 0–100（app 级，跨重启、换曲库不变；不写 playstate.json）。
+    #[serde(default = "default_volume", deserialize_with = "de_ui_u32")]
+    pub volume: u32,
+    /// 静音开关（静音时保留 volume，恢复时回到该音量）。
+    #[serde(default)]
+    pub muted: bool,
 }
 
 impl Default for UiConfig {
@@ -392,6 +455,12 @@ impl Default for UiConfig {
             skin_accent: String::new(),
             appearance_saved: false,
             auto_playlist_count: default_auto_playlist_count(),
+            sidebar_width: default_sidebar_width(),
+            group_width: default_group_width(),
+            sidebar_collapsed: false,
+            group_collapsed: false,
+            volume: default_volume(),
+            muted: false,
         }
     }
 }
@@ -571,6 +640,14 @@ impl UiConfig {
             .auto_playlist_count
             .min(AUTO_PLAYLIST_COUNT_MAX)
             .max(AUTO_PLAYLIST_COUNT_MIN);
+        // FR-24：侧栏宽度 / 音量。独立 px 与 0–100 音量，**不参与 8 列占比守恒归一化**。
+        if !(SIDEBAR_WIDTH_MIN..=SIDEBAR_WIDTH_MAX).contains(&self.sidebar_width) {
+            self.sidebar_width = default_sidebar_width();
+        }
+        if !(GROUP_WIDTH_MIN..=GROUP_WIDTH_MAX).contains(&self.group_width) {
+            self.group_width = default_group_width();
+        }
+        self.volume = self.volume.min(100);
     }
 }
 
@@ -1163,7 +1240,7 @@ pub fn update_meta_in_place(path: &Path, meta: &ConfigMeta) -> Result<()> {
 }
 
 /// `[ui]` 段的字段顺序（新增键按此顺序追加，保证输出稳定可读）。
-pub const UI_FIELD_ORDER: [&str; 21] = [
+pub const UI_FIELD_ORDER: [&str; 27] = [
     "track_columns",
     "track_columns_saved",
     "layout_library",
@@ -1185,6 +1262,12 @@ pub const UI_FIELD_ORDER: [&str; 21] = [
     "skin_accent",
     "appearance_saved",
     "auto_playlist_count",
+    "sidebar_width",
+    "group_width",
+    "sidebar_collapsed",
+    "group_collapsed",
+    "volume",
+    "muted",
 ];
 
 /// 计算一行 TOML 中未闭合的括号深度（忽略字符串字面量与行注释内的括号）。
@@ -2358,8 +2441,50 @@ track_columns = ["name", "artist"]
             doc["ui"].clone().try_into().unwrap()
         };
         assert_eq!(back.auto_playlist_count, 33);
-        assert_eq!(UI_FIELD_ORDER.len(), 21);
+        assert_eq!(UI_FIELD_ORDER.len(), 27);
         assert_eq!(UI_FIELD_ORDER[20], "auto_playlist_count");
+        assert_eq!(UI_FIELD_ORDER[26], "muted");
+    }
+
+    #[test]
+    fn fr24_pane_and_volume_prefs_roundtrip_and_clamp() {
+        let ui = UiConfig::default();
+        assert_eq!(ui.sidebar_width, SIDEBAR_WIDTH_DEFAULT);
+        assert_eq!(ui.group_width, GROUP_WIDTH_DEFAULT);
+        assert_eq!(ui.volume, VOLUME_DEFAULT);
+        assert!(!ui.sidebar_collapsed && !ui.group_collapsed && !ui.muted);
+
+        let mut changed = UiConfig::default();
+        changed.sidebar_width = 200;
+        changed.group_width = 320;
+        changed.sidebar_collapsed = true;
+        changed.group_collapsed = true;
+        changed.volume = 37;
+        changed.muted = true;
+        let text = upsert_ui_section("[ui]\n", &changed);
+        for key in ["sidebar_width", "group_width", "sidebar_collapsed", "group_collapsed", "volume", "muted"] {
+            assert!(text.contains(key), "FR-24 字段 {key} 必须写入 [ui] 段：\n{text}");
+        }
+        let back: UiConfig = {
+            let doc: toml::Value = toml::from_str(&text).unwrap();
+            doc["ui"].clone().try_into().unwrap()
+        };
+        assert_eq!(back.sidebar_width, 200);
+        assert_eq!(back.group_width, 320);
+        assert!(back.sidebar_collapsed && back.group_collapsed && back.muted);
+        assert_eq!(back.volume, 37);
+
+        // 越界回退默认、音量钳到 100，且 8 列占比守恒不受影响。
+        let mut bad = UiConfig::default();
+        bad.sidebar_width = 1;
+        bad.group_width = 9999;
+        bad.volume = 250;
+        bad.sanitize();
+        assert_eq!(bad.sidebar_width, SIDEBAR_WIDTH_DEFAULT);
+        assert_eq!(bad.group_width, GROUP_WIDTH_DEFAULT);
+        assert_eq!(bad.volume, 100);
+        let sum: f64 = all_track_column_keys().iter().map(|k| bad.width_for(k)).sum();
+        assert!((sum - 100.0).abs() < 0.01, "8 列占比和仍须为 100：{sum}");
     }
 
     #[test]

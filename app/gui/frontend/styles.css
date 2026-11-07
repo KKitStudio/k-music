@@ -266,7 +266,7 @@ body, .topbar, .toolbar, .sidebar, .detail-pane, .player, .modal,
 
 /* 左侧 tab 选择栏（卡片化） */
 .sidebar {
-  width: 144px; flex: none; display: flex; flex-direction: column; gap: 6px;
+  width: var(--sidebar-w, 144px); flex: none; display: flex; flex-direction: column; gap: 6px; position: relative;
   padding: 12px 10px; background: var(--surface); border-radius: var(--radius);
   border: 1px solid var(--divider); box-shadow: var(--shadow-sm);
 }
@@ -295,7 +295,7 @@ body, .topbar, .toolbar, .sidebar, .detail-pane, .player, .modal,
 /* ---------- 播放列表面板 ---------- */
 .playlists-pane { flex: 1; display: flex; min-height: 0; gap: 12px; background: transparent; border: none; box-shadow: none; padding: 0; }
 .pl-sidebar {
-  width: 230px; flex: none; display: flex; flex-direction: column;
+  width: var(--group-w, 230px); flex: none; display: flex; flex-direction: column; position: relative;
   border-radius: var(--radius); background: var(--surface);
   border: 1px solid var(--divider); box-shadow: var(--shadow-sm); min-height: 0;
 }
@@ -1235,5 +1235,52 @@ body.skin-active .init-wizard .modal-actions {
 .dup-actions { margin: 0; padding: 14px 24px; border-top: 1px solid var(--divider); }
 @media (max-height: 620px) {
   .dup-body { max-height: 52vh; }
+}
+
+/* ============================================================
+   FR-24：一级 / 二级菜单宽度可调 + 收缩、底部音量条
+   ============================================================ */
+:root { --sidebar-w: 144px; --group-w: 230px; }
+.sidebar-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 4px 2px; }
+.sidebar-head-label { font-size: 11px; font-weight: 400; color: var(--text-soft); }
+.pane-collapse-btn {
+  width: 24px; height: 24px; padding: 0; flex: none; border: 1px solid var(--divider);
+  border-radius: 6px; background: transparent; color: var(--text-soft);
+  font-size: 13px; line-height: 1; cursor: pointer;
+}
+.pane-collapse-btn:hover { background: var(--chip-bg); color: var(--text); }
+.pane-resizer { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 3; }
+.pane-resizer:hover { background: color-mix(in srgb, var(--primary) 35%, transparent); }
+body.pane-resizing { cursor: col-resize; user-select: none; }
+.edge-handle {
+  width: 12px; flex: none; padding: 0; border: 1px solid var(--divider); border-radius: 6px;
+  background: var(--surface); color: var(--text-soft); font-size: 12px; line-height: 1; cursor: pointer;
+}
+.edge-handle:hover { color: var(--primary); border-color: var(--primary); }
+.pane-mini-icon { display: none; font-size: 20px; text-align: center; color: var(--primary); padding: 10px 0; }
+/* 收起态：该列保留小图标（一级四 tab 用 data-icon，二级用 pane-mini-icon），边界把手常驻可展开 */
+body.sidebar-collapsed .sidebar { width: 44px; padding: 12px 6px; }
+body.sidebar-collapsed .sidebar .sidebar-head,
+body.sidebar-collapsed .sidebar .tab-btn span,
+body.sidebar-collapsed .sidebar .pane-resizer { display: none; }
+body.sidebar-collapsed .sidebar .tab-btn { text-align: center; justify-content: center; padding: 0; font-size: 18px; }
+body.sidebar-collapsed .sidebar .tab-btn::before { content: attr(data-icon); }
+body.group-collapsed .pl-sidebar { width: 44px; }
+body.group-collapsed .pl-sidebar .pl-sidebar-head { padding: 10px 4px; justify-content: center; }
+body.group-collapsed .pl-sidebar .pl-sidebar-head > *:not(.pane-collapse-btn) { display: none; }
+body.group-collapsed .pl-sidebar .pl-list,
+body.group-collapsed .pl-sidebar .pane-resizer { display: none; }
+body.group-collapsed .pl-sidebar .pane-mini-icon { display: block; }
+/* 音量条：滑块与静音键均为 flex:none，#seek 保住 min-width:60px 不被挤破 */
+.volume-mute-btn { width: 32px; height: 32px; padding: 0; font-size: 14px; flex: none; }
+#volume { width: 92px; flex: none; accent-color: var(--primary); height: 6px; cursor: pointer; }
+@media (max-width: 1000px) {
+  .player-info { width: 180px; }
+  .controls { gap: 8px; }
+  #volume { width: 64px; }
+}
+@media (max-height: 620px) {
+  .player { height: 64px; }
+  #volume { width: 64px; }
 }
 

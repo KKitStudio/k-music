@@ -14,3 +14,14 @@
 如需完整、机器可生成的依赖许可证清单，可在具备网络的环境中运行：
     cargo install cargo-license && cargo license
 查看。
+
+## 合规与使用声明
+
+本项目以 “KKitStudio 非商业许可” 发布，遵循以下合规原则：
+
+- 不内置任何盗版资源；
+- 不存储第三方平台音频；
+- 仅做本地播放与接口调用示例；
+- 商用需自行替换音源授权。
+
+如需商用，请通过项目主页（https://github.com/KKitStudio/k-music）的 Issues 申请书面授权。

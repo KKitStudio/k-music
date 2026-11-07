@@ -719,6 +719,8 @@ function syncDetailVisibility() {
     const el = $(LAYOUT_VIEWS[v].wrap);
     if (el) el.hidden = !(inline && v === view && state.detailShown[v]);
   });
+  // 布局方向变了 → 详情栏按钮的箭头方向跟着切（横向左右 / 纵向上下）。
+  updatePaneHandleArrows();
 }
 
 // 同步表格高亮：清除所有表格的选中态，再把当前页的选中项标回去。
@@ -3842,32 +3844,31 @@ function clampPaneWidth(v, which) {
   const L = PANE_WIDTH_LIMITS[which];
   return (isFinite(v) && v >= L.min && v <= L.max) ? Math.round(v) : L.fallback;
 }
-// 统一把内存状态投射到 DOM：宽度用 CSS 变量（body class 决定收起态），把手常驻可展开。
+// 每栏唯一的图标按钮：横向布局用左右箭头；纵向布局的内联详情条是水平条，改上下方向。
+// 按钮坐标由 CSS 常量决定、折叠态不重定位 → 折叠前后位置不变。
+function updatePaneHandleArrows() {
+  const sh = $('handle-sidebar');
+  if (sh) sh.textContent = state.sidebarCollapsed ? '›' : '‹';
+  document.querySelectorAll('.pane-handle.group-handle').forEach((b) => {
+    b.textContent = state.groupCollapsed ? '›' : '‹';
+  });
+  const dh = $('handle-detail');
+  if (dh) {
+    const inline = document.body.classList.contains('detail-inline');
+    dh.textContent = inline
+      ? (state.detailCollapsed ? '⌄' : '⌃')
+      : (state.detailCollapsed ? '‹' : '›');
+  }
+}
+// 统一把内存状态投射到 DOM：宽度用 CSS 变量（body class 决定收起态），按钮常驻可展开。
 function applyPaneLayout() {
   document.documentElement.style.setProperty('--sidebar-w', state.sidebarWidth + 'px');
   document.documentElement.style.setProperty('--group-w', state.groupWidth + 'px');
   document.body.classList.toggle('sidebar-collapsed', !!state.sidebarCollapsed);
   document.body.classList.toggle('group-collapsed', !!state.groupCollapsed);
-  const sh = $('handle-sidebar');
-  if (sh) sh.textContent = state.sidebarCollapsed ? '›' : '‹';
-  document.querySelectorAll('.edge-handle.group-handle').forEach((b) => {
-    b.textContent = state.groupCollapsed ? '›' : '‹';
-  });
-  document.querySelectorAll('.pane-collapse-btn[data-collapse="group"]').forEach((b) => {
-    b.textContent = state.groupCollapsed ? '»' : '«';
-  });
-  const sb = $('sidebar');
-  if (sb) {
-    const b = sb.querySelector('.pane-collapse-btn[data-collapse="sidebar"]');
-    if (b) b.textContent = state.sidebarCollapsed ? '»' : '«';
-  }
-  // FR-25：歌曲信息栏收缩态（含封面），与两侧栏共用同一套持久化和把手语义。
+  // FR-25：歌曲信息栏收缩态（含封面），与两侧栏共用同一套持久化语义。
   document.body.classList.toggle('detail-collapsed', !!state.detailCollapsed);
-  const dh = $('handle-detail');
-  if (dh) dh.textContent = state.detailCollapsed ? '‹' : '›';
-  document.querySelectorAll('.pane-collapse-btn[data-collapse="detail"]').forEach((b) => {
-    b.textContent = state.detailCollapsed ? '«' : '»';
-  });
+  updatePaneHandleArrows();
 }
 // 所有 [ui] 写入都走 /api/ui-prefs（后端 save_ui_in_place，绝不 save_app 整份重写）。
 function savePanePrefs(patch) {

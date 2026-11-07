@@ -117,7 +117,6 @@
     <nav class="sidebar" id="sidebar">
       <div class="sidebar-head">
         <span class="sidebar-head-label">导航</span>
-        <button class="pane-collapse-btn" data-collapse="sidebar" type="button" title="收起一级菜单" aria-label="收起一级菜单">«</button>
       </div>
       <button class="tab-btn active" id="tab-library" type="button" data-icon="♪"><span>全部曲库</span></button>
       <button class="tab-btn" id="tab-playlists" type="button" data-icon="☰"><span>播放列表</span></button>
@@ -125,7 +124,7 @@
       <button class="tab-btn" id="tab-artists" type="button" data-icon="♫"><span>歌手</span></button>
       <div class="pane-resizer" data-resize="sidebar" title="拖动调整一级菜单宽度"></div>
     </nav>
-    <button class="edge-handle" id="handle-sidebar" data-toggle="sidebar" type="button" title="收起 / 展开一级菜单" aria-label="收起 / 展开一级菜单">‹</button>
+    <button class="pane-handle" id="handle-sidebar" data-toggle="sidebar" type="button" title="收起 / 展开一级菜单" aria-label="收起 / 展开一级菜单">‹</button>
 
     <div class="list-pane" id="library-pane">
       <!-- 纵向：曲目详情内联到歌曲列表上方（把宽度让给列表），横向时隐藏 -->
@@ -148,7 +147,6 @@
         <div class="pl-sidebar-head">
           <span>播放列表</span>
           <button id="pl-new" class="md-btn primary" type="button">＋ 新建</button>
-          <button class="pane-collapse-btn" data-collapse="group" type="button" title="收起二级列表" aria-label="收起二级列表">«</button>
         </div>
         <ul id="pl-list" class="pl-list">
           <li class="pl-empty">暂无播放列表</li>
@@ -156,7 +154,7 @@
         <div class="pane-mini-icon" aria-hidden="true">☰</div>
         <div class="pane-resizer" data-resize="group" title="拖动调整二级列表宽度"></div>
       </div>
-      <button class="edge-handle group-handle" data-toggle="group" type="button" title="收起 / 展开二级列表" aria-label="收起 / 展开二级列表">‹</button>
+      <button class="pane-handle group-handle" data-toggle="group" type="button" title="收起 / 展开二级列表" aria-label="收起 / 展开二级列表">‹</button>
       <div class="pl-main">
         <div class="pl-main-head" id="pl-main-head">
           <span id="pl-title">播放列表内容</span>
@@ -184,7 +182,6 @@
       <div class="pl-sidebar">
         <div class="pl-sidebar-head">
           <span>专辑</span>
-          <button class="pane-collapse-btn" data-collapse="group" type="button" title="收起二级列表" aria-label="收起二级列表">«</button>
         </div>
         <ul id="al-list" class="pl-list">
           <li class="pl-empty">暂无智能播放列表 · 专辑</li>
@@ -192,7 +189,7 @@
         <div class="pane-mini-icon" aria-hidden="true">◉</div>
         <div class="pane-resizer" data-resize="group" title="拖动调整二级列表宽度"></div>
       </div>
-      <button class="edge-handle group-handle" data-toggle="group" type="button" title="收起 / 展开二级列表" aria-label="收起 / 展开二级列表">‹</button>
+      <button class="pane-handle group-handle" data-toggle="group" type="button" title="收起 / 展开二级列表" aria-label="收起 / 展开二级列表">‹</button>
       <div class="pl-main">
         <div class="pl-main-head" id="al-main-head">
           <span id="al-title">专辑内容</span>
@@ -213,7 +210,6 @@
       <div class="pl-sidebar">
         <div class="pl-sidebar-head">
           <span>歌手</span>
-          <button class="pane-collapse-btn" data-collapse="group" type="button" title="收起二级列表" aria-label="收起二级列表">«</button>
         </div>
         <ul id="ar-list" class="pl-list">
           <li class="pl-empty">暂无智能播放列表 · 歌手</li>
@@ -221,7 +217,7 @@
         <div class="pane-mini-icon" aria-hidden="true">♫</div>
         <div class="pane-resizer" data-resize="group" title="拖动调整二级列表宽度"></div>
       </div>
-      <button class="edge-handle group-handle" data-toggle="group" type="button" title="收起 / 展开二级列表" aria-label="收起 / 展开二级列表">‹</button>
+      <button class="pane-handle group-handle" data-toggle="group" type="button" title="收起 / 展开二级列表" aria-label="收起 / 展开二级列表">‹</button>
       <div class="pl-main">
         <div class="pl-main-head" id="ar-main-head">
           <span id="ar-title">歌手内容</span>
@@ -241,13 +237,12 @@
       </div>
     </div>
 
-    <!-- FR-25：歌曲信息栏（含专辑封面）可收缩。展开 / 收起入口做成列表栏内部悬浮的
-         图标按钮（绝对定位，不参与 flex 宽度计算），收起后仍常驻可一键展开。 -->
-    <button class="detail-handle" id="handle-detail" data-toggle="detail" type="button" title="收起 / 展开歌曲信息栏" aria-label="收起 / 展开歌曲信息栏">›</button>
+    <!-- FR-25 / FR-26：每栏唯一的收缩 / 展开图标按钮（absolute，不参与 flex 宽度计算）；
+         竖栏垂直居中、纵向布局的横条水平居中；坐标只依赖固定常量，折叠前后位置不变。 -->
+    <button class="pane-handle detail-handle" id="handle-detail" data-toggle="detail" type="button" title="收起 / 展开歌曲信息栏" aria-label="收起 / 展开歌曲信息栏">›</button>
     <aside class="detail-pane" id="detail-pane">
       <div class="detail-pane-head">
         <span>歌曲信息</span>
-        <button class="pane-collapse-btn" data-collapse="detail" type="button" title="收起歌曲信息栏" aria-label="收起歌曲信息栏">»</button>
       </div>
       <div class="pane-mini-icon" aria-hidden="true">ℹ</div>
       <div class="cover" id="detail-cover" hidden></div>

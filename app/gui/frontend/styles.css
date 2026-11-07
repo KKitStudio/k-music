@@ -1243,22 +1243,21 @@ body.skin-active .init-wizard .modal-actions {
 :root { --sidebar-w: 144px; --group-w: 230px; }
 .sidebar-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 4px 2px; }
 .sidebar-head-label { font-size: 11px; font-weight: 400; color: var(--text-soft); }
-.pane-collapse-btn {
-  width: 24px; height: 24px; padding: 0; flex: none; border: 1px solid var(--divider);
-  border-radius: 6px; background: transparent; color: var(--text-soft);
-  font-size: 13px; line-height: 1; cursor: pointer;
-}
-.pane-collapse-btn:hover { background: var(--chip-bg); color: var(--text); }
 .pane-resizer { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 3; }
 .pane-resizer:hover { background: color-mix(in srgb, var(--primary) 35%, transparent); }
 body.pane-resizing { cursor: col-resize; user-select: none; }
-.edge-handle {
-  width: 12px; flex: none; padding: 0; border: 1px solid var(--divider); border-radius: 6px;
-  background: var(--surface); color: var(--text-soft); font-size: 12px; line-height: 1; cursor: pointer;
+/* FR-26：每栏唯一的列表内图标按钮。absolute 不参与 flex；竖栏垂直居中，
+   横坐标只依赖不随折叠变化的常量 → 折叠前后位置不变。 */
+.pane-handle {
+  position: absolute; top: 50%; transform: translateY(-50%); z-index: 5;
+  width: 28px; height: 28px; padding: 0;
+  border: 1px solid var(--divider); border-radius: 8px;
+  background: var(--surface); color: var(--text-soft);
+  font-size: 14px; line-height: 1; cursor: pointer; box-shadow: var(--shadow-sm);
 }
-.edge-handle:hover { color: var(--primary); border-color: var(--primary); }
+.pane-handle:hover { color: var(--primary); border-color: var(--primary); }
 .pane-mini-icon { display: none; font-size: 20px; text-align: center; color: var(--primary); padding: 10px 0; }
-/* 收起态：该列保留小图标（一级四 tab 用 data-icon，二级用 pane-mini-icon），边界把手常驻可展开 */
+/* 收起态：该列保留小图标（一级四 tab 用 data-icon，二级用 pane-mini-icon），列表内图标按钮常驻可展开 */
 body.sidebar-collapsed .sidebar { width: 44px; padding: 12px 6px; }
 body.sidebar-collapsed .sidebar .sidebar-head,
 body.sidebar-collapsed .sidebar .tab-btn span,
@@ -1266,15 +1265,14 @@ body.sidebar-collapsed .sidebar .pane-resizer { display: none; }
 body.sidebar-collapsed .sidebar .tab-btn { text-align: center; justify-content: center; padding: 0; font-size: 18px; }
 body.sidebar-collapsed .sidebar .tab-btn::before { content: attr(data-icon); }
 body.group-collapsed .pl-sidebar { width: 44px; }
-body.group-collapsed .pl-sidebar .pl-sidebar-head { padding: 10px 4px; justify-content: center; }
-body.group-collapsed .pl-sidebar .pl-sidebar-head > *:not(.pane-collapse-btn) { display: none; }
+body.group-collapsed .pl-sidebar .pl-sidebar-head { display: none; }
 body.group-collapsed .pl-sidebar .pl-list,
 body.group-collapsed .pl-sidebar .pane-resizer { display: none; }
 body.group-collapsed .pl-sidebar .pane-mini-icon { display: block; }
 
 /* ============================================================
-   FR-25：歌曲信息栏收缩（右侧独立栏 + 纵向内联条，含专辑封面）
-   收起后该栏留小图标窄条；展开 / 收起入口是**列表栏内部悬浮的图标按钮**
+   FR-25 / FR-26：歌曲信息栏收缩（右侧独立栏 + 纵向内联条，含专辑封面）
+   收起后该栏留小图标窄条；每栏唯一入口是列表栏内部悬浮的图标按钮
    （absolute 定位，不参与 flex 宽度计算，也不占布局栏）。
    ============================================================ */
 .detail-pane-head {
@@ -1282,18 +1280,15 @@ body.group-collapsed .pl-sidebar .pane-mini-icon { display: block; }
   margin-bottom: 12px; font-size: 13px; font-weight: 600; color: var(--text-soft);
 }
 .detail-pane > .pane-mini-icon { display: none; }
-/* 列表栏右上内部的常驻图标按钮：absolute 不占布局宽度。
-   right 按详情栏宽度切三态：展开 300px / 收起 44px / 纵向布局（右侧栏隐藏）贴列表右缘。 */
-.detail-handle {
-  position: absolute; top: 20px; right: 336px; z-index: 5;
-  width: 28px; height: 28px; padding: 0;
-  border: 1px solid var(--divider); border-radius: 8px;
-  background: var(--surface); color: var(--text-soft);
-  font-size: 14px; line-height: 1; cursor: pointer; box-shadow: var(--shadow-sm);
+/* 各栏按钮横坐标只依赖固定常量（--sidebar-w / --group-w / 固定 gap），不随折叠态变化。
+   .playlists-pane 保持 static，其内部 .pane-handle 的包含块就是 .layout。 */
+#handle-sidebar { left: calc(var(--sidebar-w) + 4px); }
+.pane-handle.group-handle { left: calc(var(--sidebar-w) + var(--group-w) + 16px); }
+.detail-handle { right: 336px; }
+/* 纵向布局：内联详情条是水平条 → 按钮水平居中，箭头方向由 app.js 切成上下。 */
+body.detail-inline .detail-handle {
+  right: auto; left: 50%; top: 20px; transform: translateX(-50%);
 }
-.detail-handle:hover { color: var(--primary); border-color: var(--primary); }
-body.detail-collapsed .detail-handle { right: 80px; }
-body.detail-inline .detail-handle { right: 20px; }
 /* 收起态：详情栏压成 44px 图标窄条，封面与字段一起隐藏（不残留孤立图片）。 */
 body.detail-collapsed .detail-pane { width: 44px; padding: 12px 6px; overflow: hidden; }
 body.detail-collapsed .detail-pane .detail-pane-head,

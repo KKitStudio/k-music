@@ -440,6 +440,9 @@ async function refreshStatus() {
         if (isFinite(w) && w > 0) state.columnWidths[k] = w;
       });
     }
+    // FR-27：detail_collapsed 必须在布局仲裁之前读回，syncDetailVisibility() 靠它决定
+    // 收起态详情栏 / 内联窄条是否常驻（否则已持久化的收起态会在启动时被误隐藏）。
+    if (typeof data.detail_collapsed === 'boolean') state.detailCollapsed = data.detail_collapsed;
     applyLayoutStyle();
     // FR-24：读回侧栏宽度 / 收缩态 / 音量（app 级 [ui]，坏值由后端 sanitize 挡掉，这里再兜一层）。
     if (data.sidebar_width !== undefined) state.sidebarWidth = clampPaneWidth(Number(data.sidebar_width), 'sidebar');
@@ -448,7 +451,6 @@ async function refreshStatus() {
     if (typeof data.group_collapsed === 'boolean') state.groupCollapsed = data.group_collapsed;
     if (data.volume !== undefined) state.volume = Math.min(100, Math.max(0, Number(data.volume) || 0));
     if (typeof data.muted === 'boolean') state.muted = data.muted;
-    if (typeof data.detail_collapsed === 'boolean') state.detailCollapsed = data.detail_collapsed;
     applyPaneLayout();
     applyVolume();
     // 启动自动扫描 / 上次扫描发现的散落 .ncm：提示处理（用户已明确忽略的不重复弹）。
@@ -712,13 +714,20 @@ function syncDetailVisibility() {
   // FR-25：纵向布局时右侧详情栏隐藏，列表内图标按钮需贴列表右缘。
   document.body.classList.toggle('detail-inline', inline);
   // 右侧独立详情栏：纵向时隐藏（宽度让给列表）。
-  // 横向时，若当前页没有任何可展示内容 → 同样隐藏，避免留下一条空栏。
-  $('detail-pane').hidden = inline || !state.detailShown[view];
-  // 内联详情条：仅当前页 + 纵向 + 该页确有内容时显示。
+  // 横向且已收起时窄条必须常驻（图标按钮就在这里，是唯一的展开入口），
+  // 只有「展开态 + 该页无任何内容」才整体隐藏，避免留下一条空栏。
+  $('detail-pane').hidden = inline || (!state.detailShown[view] && !state.detailCollapsed);
+  // 内联详情条：仅当前页 + 纵向 +（有内容 或 处于收起态）时显示。
   VIEW_KEYS.forEach((v) => {
     const el = $(LAYOUT_VIEWS[v].wrap);
-    if (el) el.hidden = !(inline && v === view && state.detailShown[v]);
+    if (el) el.hidden = !(inline && v === view && (state.detailShown[v] || state.detailCollapsed));
   });
+  // FR-27：详情按钮始终跟着「当前真正可见的详情区」走，成为该区列表的一项。
+  const dh = $('handle-detail');
+  if (dh) {
+    const host = inline ? $(LAYOUT_VIEWS[view].wrap) : $('detail-pane');
+    if (host && dh.parentNode !== host) host.appendChild(dh);
+  }
   // 布局方向变了 → 详情栏按钮的箭头方向跟着切（横向左右 / 纵向上下）。
   updatePaneHandleArrows();
 }
@@ -3844,8 +3853,8 @@ function clampPaneWidth(v, which) {
   const L = PANE_WIDTH_LIMITS[which];
   return (isFinite(v) && v >= L.min && v <= L.max) ? Math.round(v) : L.fallback;
 }
-// 每栏唯一的图标按钮：横向布局用左右箭头；纵向布局的内联详情条是水平条，改上下方向。
-// 按钮坐标由 CSS 常量决定、折叠态不重定位 → 折叠前后位置不变。
+// 每栏唯一的列表项图标：横向布局用左右箭头；纵向布局的内联详情条是水平条，改上下方向。
+// 按钮是所属栏的静态 flex 子项、贴固定边缘 → 折叠前后水平位置不变。
 function updatePaneHandleArrows() {
   const sh = $('handle-sidebar');
   if (sh) sh.textContent = state.sidebarCollapsed ? '›' : '‹';
@@ -3923,7 +3932,10 @@ function setupPaneResize() {
     });
   });
   document.querySelectorAll('[data-toggle], [data-collapse]').forEach((b) => {
-    b.addEventListener('click', () => togglePane(b.dataset.toggle || b.dataset.collapse));
+    b.addEventListener('click', (e) => {
+      e.stopPropagation(); // 图标只是列表里的一个项，点击不得触发该栏其它项的选中 / 切页
+      togglePane(b.dataset.toggle || b.dataset.collapse);
+    });
   });
 }
 // 音量：直接读写 audio.volume / audio.muted，持久化在 app 级 [ui]（不放 playstate.json）。

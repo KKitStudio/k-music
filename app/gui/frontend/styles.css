@@ -267,7 +267,7 @@ body, .topbar, .toolbar, .sidebar, .detail-pane, .player, .modal,
 /* 左侧 tab 选择栏（卡片化） */
 .sidebar {
   width: var(--sidebar-w, 144px); flex: none; display: flex; flex-direction: column; gap: 6px; position: relative;
-  padding: 12px 10px; background: var(--surface); border-radius: var(--radius);
+  padding: 12px 8px; background: var(--surface); border-radius: var(--radius);
   border: 1px solid var(--divider); box-shadow: var(--shadow-sm);
 }
 .tab-btn {
@@ -287,8 +287,11 @@ body, .topbar, .toolbar, .sidebar, .detail-pane, .player, .modal,
 .detail-pane {
   width: 300px; flex: none; border-radius: var(--radius);
   background: var(--surface); border: 1px solid var(--divider);
-  padding: 16px; overflow: auto; box-shadow: var(--shadow-sm);
+  padding: 16px 8px; overflow: hidden; box-shadow: var(--shadow-sm);
+  display: flex; flex-direction: column; position: relative;
 }
+/* FR-27：滚动条只在内容区出现，不占头部图标的水平空间。 */
+.detail-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 /* 详情内联到内容区上方的页面（歌手页）隐藏独立右侧详情栏，把 300px 宽度让给列表。 */
 .detail-pane[hidden] { display: none; }
 
@@ -397,7 +400,7 @@ body.col-resizing * { cursor: col-resize !important; }
    .inline-detail 为四个页面共用的通用类；.ar-detail 为歌手页的历史类名（保留兼容）。 */
 .inline-detail,
 .ar-detail {
-  flex: none; display: flex; align-items: center; gap: 16px;
+  flex: none; display: flex; align-items: center; gap: 16px; position: relative;
   padding: 12px 18px; border-bottom: 1px solid var(--divider);
   background: var(--surface-2);
 }
@@ -1246,58 +1249,60 @@ body.skin-active .init-wizard .modal-actions {
 .pane-resizer { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 3; }
 .pane-resizer:hover { background: color-mix(in srgb, var(--primary) 35%, transparent); }
 body.pane-resizing { cursor: col-resize; user-select: none; }
-/* FR-26：每栏唯一的列表内图标按钮。absolute 不参与 flex；竖栏垂直居中，
-   横坐标只依赖不随折叠变化的常量 → 折叠前后位置不变。 */
+/* FR-27：每栏唯一的伸缩图标 = 该栏列表的一个项（静态 flex 子项，不再 absolute 悬浮）。
+   贴所属栏的固定边缘：左栏 align-self:flex-start、右侧详情栏 align-self:flex-end，
+   栏的统一 8px 内边距使折叠前后按钮的屏幕水平坐标严格不变。
+   反馈只作用于这个 28px 圆角块本身，绝不铺满整行、也不给父项加 active/selected。 */
 .pane-handle {
-  position: absolute; top: 50%; transform: translateY(-50%); z-index: 5;
-  width: 28px; height: 28px; padding: 0;
+  position: relative; flex: none; align-self: flex-start;
+  width: 28px; height: 28px; min-width: 28px; padding: 0;
   border: 1px solid var(--divider); border-radius: 8px;
   background: var(--surface); color: var(--text-soft);
   font-size: 14px; line-height: 1; cursor: pointer; box-shadow: var(--shadow-sm);
 }
-.pane-handle:hover { color: var(--primary); border-color: var(--primary); }
+.pane-handle:hover { color: var(--primary); border-color: var(--primary); background: var(--chip-bg); }
+.pane-handle:active { color: var(--on-primary); background: var(--primary); border-color: var(--primary); }
+.pane-handle:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .pane-mini-icon { display: none; font-size: 20px; text-align: center; color: var(--primary); padding: 10px 0; }
 /* 收起态：该列保留小图标（一级四 tab 用 data-icon，二级用 pane-mini-icon），列表内图标按钮常驻可展开 */
-body.sidebar-collapsed .sidebar { width: 44px; padding: 12px 6px; }
+body.sidebar-collapsed .sidebar { width: 48px; padding: 12px 8px; }
 body.sidebar-collapsed .sidebar .sidebar-head,
 body.sidebar-collapsed .sidebar .tab-btn span,
 body.sidebar-collapsed .sidebar .pane-resizer { display: none; }
 body.sidebar-collapsed .sidebar .tab-btn { text-align: center; justify-content: center; padding: 0; font-size: 18px; }
 body.sidebar-collapsed .sidebar .tab-btn::before { content: attr(data-icon); }
-body.group-collapsed .pl-sidebar { width: 44px; }
+body.group-collapsed .pl-sidebar { width: 48px; }
 body.group-collapsed .pl-sidebar .pl-sidebar-head { display: none; }
 body.group-collapsed .pl-sidebar .pl-list,
 body.group-collapsed .pl-sidebar .pane-resizer { display: none; }
 body.group-collapsed .pl-sidebar .pane-mini-icon { display: block; }
 
 /* ============================================================
-   FR-25 / FR-26：歌曲信息栏收缩（右侧独立栏 + 纵向内联条，含专辑封面）
-   收起后该栏留小图标窄条；每栏唯一入口是列表栏内部悬浮的图标按钮
-   （absolute 定位，不参与 flex 宽度计算，也不占布局栏）。
+   FR-25 / FR-27：歌曲信息栏收缩（右侧独立栏 + 纵向内联条，含专辑封面）
+   收起后该栏留小图标窄条；每栏唯一入口是该栏列表里的一个 28px 图标项，
+   收起态依然常驻可见可点（直接解决「收起后找不到展开入口」）。
    ============================================================ */
 .detail-pane-head {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   margin-bottom: 12px; font-size: 13px; font-weight: 600; color: var(--text-soft);
 }
 .detail-pane > .pane-mini-icon { display: none; }
-/* 各栏按钮横坐标只依赖固定常量（--sidebar-w / --group-w / 固定 gap），不随折叠态变化。
-   .playlists-pane 保持 static，其内部 .pane-handle 的包含块就是 .layout。 */
-#handle-sidebar { left: calc(var(--sidebar-w) + 4px); }
-.pane-handle.group-handle { left: calc(var(--sidebar-w) + var(--group-w) + 16px); }
-.detail-handle { right: 336px; }
-/* 纵向布局：内联详情条是水平条 → 按钮水平居中，箭头方向由 app.js 切成上下。 */
-body.detail-inline .detail-handle {
-  right: auto; left: 50%; top: 20px; transform: translateX(-50%);
-}
-/* 收起态：详情栏压成 44px 图标窄条，封面与字段一起隐藏（不残留孤立图片）。 */
-body.detail-collapsed .detail-pane { width: 44px; padding: 12px 6px; overflow: hidden; }
+/* 各栏列表项的对齐：左栏贴左缘、二级栏留 8px 与列表文字对齐、详情栏贴右缘。
+   不再有任何基于 --sidebar-w / 折叠态的横向坐标 → 按钮不会飘到歌曲表格里。 */
+#handle-sidebar { align-self: flex-start; }
+.pane-handle.group-handle { align-self: flex-start; margin-left: 8px; }
+.detail-handle { align-self: flex-end; margin-left: auto; }
+/* 纵向布局：按钮被移到当前页内联详情条，作为横条最右的一项（贴条右缘，水平位置仍固定）。 */
+body.detail-inline .detail-handle { align-self: center; margin-left: auto; }
+/* 收起态：详情栏压成 48px 图标窄条（28px 列表项 + 对称 8px 内边距），封面与字段一起隐藏。 */
+body.detail-collapsed .detail-pane { width: 48px; padding: 12px 8px; overflow: hidden; }
 body.detail-collapsed .detail-pane .detail-pane-head,
 body.detail-collapsed .detail-pane .cover,
 body.detail-collapsed .detail-pane .detail-fields { display: none; }
 body.detail-collapsed .detail-pane > .pane-mini-icon { display: block; }
 /* 纵向布局的内联详情条同样收起：只留一条小图标窄条，展开仍走列表内图标按钮。 */
-body.detail-collapsed .inline-detail { padding: 4px 14px; justify-content: center; }
-body.detail-collapsed .inline-detail > * { display: none; }
+body.detail-collapsed .inline-detail { padding: 4px 18px; justify-content: center; }
+body.detail-collapsed .inline-detail > *:not(.pane-handle) { display: none; }
 body.detail-collapsed .inline-detail::before { content: "ℹ"; font-size: 16px; color: var(--primary); }
 /* 表头右键定位到「歌曲列表显示项」时的短暂高亮。 */
 #settings-modal .settings-section.focus-flash { animation: settings-focus-flash 1.8s ease-out; }

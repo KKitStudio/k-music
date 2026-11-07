@@ -122,9 +122,9 @@
       <button class="tab-btn" id="tab-playlists" type="button" data-icon="☰"><span>播放列表</span></button>
       <button class="tab-btn" id="tab-albums" type="button" data-icon="◉"><span>专辑</span></button>
       <button class="tab-btn" id="tab-artists" type="button" data-icon="♫"><span>歌手</span></button>
+      <button class="pane-handle" id="handle-sidebar" data-toggle="sidebar" type="button" title="收起 / 展开一级菜单" aria-label="收起 / 展开一级菜单">‹</button>
       <div class="pane-resizer" data-resize="sidebar" title="拖动调整一级菜单宽度"></div>
     </nav>
-    <button class="pane-handle" id="handle-sidebar" data-toggle="sidebar" type="button" title="收起 / 展开一级菜单" aria-label="收起 / 展开一级菜单">‹</button>
 
     <div class="list-pane" id="library-pane">
       <!-- 纵向：曲目详情内联到歌曲列表上方（把宽度让给列表），横向时隐藏 -->
@@ -151,10 +151,10 @@
         <ul id="pl-list" class="pl-list">
           <li class="pl-empty">暂无播放列表</li>
         </ul>
+        <button class="pane-handle group-handle" data-toggle="group" type="button" title="收起 / 展开二级列表" aria-label="收起 / 展开二级列表">‹</button>
         <div class="pane-mini-icon" aria-hidden="true">☰</div>
         <div class="pane-resizer" data-resize="group" title="拖动调整二级列表宽度"></div>
       </div>
-      <button class="pane-handle group-handle" data-toggle="group" type="button" title="收起 / 展开二级列表" aria-label="收起 / 展开二级列表">‹</button>
       <div class="pl-main">
         <div class="pl-main-head" id="pl-main-head">
           <span id="pl-title">播放列表内容</span>
@@ -186,10 +186,10 @@
         <ul id="al-list" class="pl-list">
           <li class="pl-empty">暂无智能播放列表 · 专辑</li>
         </ul>
+        <button class="pane-handle group-handle" data-toggle="group" type="button" title="收起 / 展开二级列表" aria-label="收起 / 展开二级列表">‹</button>
         <div class="pane-mini-icon" aria-hidden="true">◉</div>
         <div class="pane-resizer" data-resize="group" title="拖动调整二级列表宽度"></div>
       </div>
-      <button class="pane-handle group-handle" data-toggle="group" type="button" title="收起 / 展开二级列表" aria-label="收起 / 展开二级列表">‹</button>
       <div class="pl-main">
         <div class="pl-main-head" id="al-main-head">
           <span id="al-title">专辑内容</span>
@@ -214,10 +214,10 @@
         <ul id="ar-list" class="pl-list">
           <li class="pl-empty">暂无智能播放列表 · 歌手</li>
         </ul>
+        <button class="pane-handle group-handle" data-toggle="group" type="button" title="收起 / 展开二级列表" aria-label="收起 / 展开二级列表">‹</button>
         <div class="pane-mini-icon" aria-hidden="true">♫</div>
         <div class="pane-resizer" data-resize="group" title="拖动调整二级列表宽度"></div>
       </div>
-      <button class="pane-handle group-handle" data-toggle="group" type="button" title="收起 / 展开二级列表" aria-label="收起 / 展开二级列表">‹</button>
       <div class="pl-main">
         <div class="pl-main-head" id="ar-main-head">
           <span id="ar-title">歌手内容</span>
@@ -237,16 +237,21 @@
       </div>
     </div>
 
-    <!-- FR-25 / FR-26：每栏唯一的收缩 / 展开图标按钮（absolute，不参与 flex 宽度计算）；
-         竖栏垂直居中、纵向布局的横条水平居中；坐标只依赖固定常量，折叠前后位置不变。 -->
-    <button class="pane-handle detail-handle" id="handle-detail" data-toggle="detail" type="button" title="收起 / 展开歌曲信息栏" aria-label="收起 / 展开歌曲信息栏">›</button>
+    <!-- FR-27：每栏唯一的收缩 / 展开图标，内嵌为该栏列表的一个项（不是浮在歌曲表格上的悬浮按钮）。
+         左栏贴左缘、详情栏贴右缘 → 折叠前后水平位置不变；选中/悬停反馈只作用于 28px 图标块本身。
+         纵向布局时 app.js 会把它移到当前页的内联详情条里，保证入口常驻。 -->
     <aside class="detail-pane" id="detail-pane">
       <div class="detail-pane-head">
         <span>歌曲信息</span>
       </div>
+      <button class="pane-handle detail-handle" id="handle-detail" data-toggle="detail" type="button" title="收起 / 展开歌曲信息栏" aria-label="收起 / 展开歌曲信息栏">›</button>
       <div class="pane-mini-icon" aria-hidden="true">ℹ</div>
-      <div class="cover" id="detail-cover" hidden></div>
-      <div class="detail-fields" id="detail-fields" hidden></div>
+      <!-- 内容独立滚动：头部（标题 + 伸缩图标）不随滚动条宽度变化，
+           折叠前后图标右缘始终贴栏内固定 padding，水平位置不变。 -->
+      <div class="detail-scroll">
+        <div class="cover" id="detail-cover" hidden></div>
+        <div class="detail-fields" id="detail-fields" hidden></div>
+      </div>
     </aside>
   </main>
 

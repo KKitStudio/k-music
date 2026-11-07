@@ -1244,8 +1244,6 @@ body.skin-active .init-wizard .modal-actions {
    FR-24：一级 / 二级菜单宽度可调 + 收缩、底部音量条
    ============================================================ */
 :root { --sidebar-w: 144px; --group-w: 230px; }
-.sidebar-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 4px 2px; }
-.sidebar-head-label { font-size: 11px; font-weight: 400; color: var(--text-soft); }
 .pane-resizer { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 3; }
 .pane-resizer:hover { background: color-mix(in srgb, var(--primary) 35%, transparent); }
 body.pane-resizing { cursor: col-resize; user-select: none; }
@@ -1266,7 +1264,6 @@ body.pane-resizing { cursor: col-resize; user-select: none; }
 .pane-mini-icon { display: none; font-size: 20px; text-align: center; color: var(--primary); padding: 10px 0; }
 /* 收起态：该列保留小图标（一级四 tab 用 data-icon，二级用 pane-mini-icon），列表内图标按钮常驻可展开 */
 body.sidebar-collapsed .sidebar { width: 48px; padding: 12px 8px; }
-body.sidebar-collapsed .sidebar .sidebar-head,
 body.sidebar-collapsed .sidebar .tab-btn span,
 body.sidebar-collapsed .sidebar .pane-resizer { display: none; }
 body.sidebar-collapsed .sidebar .tab-btn { text-align: center; justify-content: center; padding: 0; font-size: 18px; }

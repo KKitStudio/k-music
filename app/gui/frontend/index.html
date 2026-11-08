@@ -10,8 +10,10 @@
   // 才应用外观，浏览器会先画出一帧默认浅色再切换（可见闪烁）。
   // 权威源是后端注入的 kqk-app.toml [ui] 段（见 serve.rs::index_handler）；GUI 本地服务
   // 端口是动态的，而 localStorage 按 origin 隔离（含端口），端口回退时缓存必然失效，
-  // 因此不能只依赖本地缓存。此处仅做「明暗 + 强调色」最小预置，完整外观仍由
+  // 因此不能只依赖本地缓存。此处仅做「明暗 + 歌词透明度 / 皮肤模糊」最小预置，完整外观仍由
   // app.js 的 applyAppearance() 应用（同一套值，覆盖时不会产生可见变化）。
+  // FR-29 起主题色固定由 styles.css 的明暗变量给出，首屏脚本不再写 --primary / --primary-dark；
+  // 注入 JSON 里的 accent / skin_accent 是废弃遗留字段，绝不消费。
   (function () {
     var boot = window.__KQK_BOOT_APPEARANCE__, local = null;
     try { local = JSON.parse(localStorage.getItem('kqk_appearance') || 'null'); } catch (e) {}
@@ -24,22 +26,16 @@
     var root = document.documentElement;
     root.setAttribute('data-theme', dark ? 'dark' : 'light');
     root.setAttribute('data-theme-mode', theme);
-    var accent = src.skin_accent ||
-      (local && local.skin && local.skin.enabled && local.skin.accent) ||
-      src.accent || (dark ? '#6e92ff' : '#4F7CFF');
-    try {
-      var hex = String(accent).replace('#', '');
-      if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
-      if (!/^[0-9a-fA-F]{6}$/.test(hex)) return;
-      var n = parseInt(hex, 16);
-      var f = dark ? 0.72 : 0.78;
-      var hx = function (v) {
-        return ('0' + Math.round(Math.max(0, Math.min(255, v))).toString(16)).slice(-2);
-      };
-      root.style.setProperty('--primary', '#' + hex);
-      root.style.setProperty('--primary-dark',
-        '#' + hx(((n >> 16) & 255) * f) + hx(((n >> 8) & 255) * f) + hx((n & 255) * f));
-    } catch (e) { /* 非法颜色交给 applyAppearance() 兜底 */ }
+    // 新增外观字段必须在这里同步预设 CSS 变量，否则 styles.css 的默认值会先画一帧再跳变。
+    // 配置注入用下划线键名；旧版 localStorage 缓存用驼峰键名，两者都兼容。
+    var pct = Number(src.lyrics_opacity === undefined || src.lyrics_opacity === null
+      ? (local && local.lyricsOpacity) : src.lyrics_opacity);
+    if (!isFinite(pct) || pct < 40 || pct > 100) pct = 82;
+    root.style.setProperty('--lyrics-alpha', Math.round(pct) + '%');
+    var blur = Number(src.skin_blur === undefined || src.skin_blur === null
+      ? (local && local.skinBlur) : src.skin_blur);
+    if (!isFinite(blur) || blur < 0 || blur > 40) blur = 18;
+    root.style.setProperty('--skin-blur', Math.round(blur) + 'px');
 
     // 让 body 末尾 app.js 的 applyAppearance() 读到同一份权威值：否则它会拿
     // 陈旧的 localStorage 缓存把刚设好的主题覆盖回去，仍会闪一下。
@@ -52,13 +48,13 @@
       try {
         localStorage.setItem('kqk_appearance', JSON.stringify({
           theme: theme,
-          accent: boot.accent || null,
+          lyricsOpacity: Math.round(pct),
+          skinBlur: Math.round(blur),
           skin: {
             enabled: enabled,
             type: type || null,
             src: enabled ? (prevSkin.src || null) : null,
             gradient: enabled ? (prevSkin.gradient || null) : null,
-            accent: enabled ? (boot.skin_accent || null) : null,
             name: enabled ? (prevSkin.name || null) : null
           }
         }));
@@ -92,7 +88,6 @@
     </button>
     <button id="btn-import" class="md-btn">导入</button>
     <button id="btn-import-netease" class="md-btn">从本地网易云曲库更新</button>
-    <button id="btn-enqueue" class="md-btn" type="button" title="把最近选中的歌曲插到下一首播放">下一首播放</button>
     <span id="track-count" class="track-count">共 0 首</span>
     <button id="btn-refresh" class="md-btn">刷新</button>
   </section>
@@ -380,7 +375,7 @@
         <nav class="settings-nav" aria-label="设置分类">
           <button class="settings-tab active" type="button" data-tab="appearance">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 3v18M12 3a9 9 0 0 1 0 18" /></svg>
-            <span><strong>外观</strong><small>主题 · 换肤 · 主题色</small></span>
+            <span><strong>外观</strong><small>主题 · 换肤 · 歌词</small></span>
           </button>
           <button class="settings-tab" type="button" data-tab="library">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7" /></svg>
@@ -406,10 +401,10 @@
 
         <div class="settings-content">
           <div class="settings-pane active" data-pane="appearance">
-            <div class="settings-pane-head"><h4>界面外观</h4><p>主题模式、主题色与皮肤背景</p></div>
+            <div class="settings-pane-head"><h4>界面外观</h4><p>主题模式、皮肤背景与歌词面板</p></div>
 
             <div class="settings-section">
-        <h4>外观（主题 / 换肤）</h4>
+        <h4>外观（主题 / 换肤 / 歌词）</h4>
         <div class="appearance-block">
           <div class="ap-label">主题模式</div>
           <div class="seg" id="ap-theme-seg">
@@ -420,14 +415,7 @@
           <div class="ap-subhint" id="ap-theme-hint"></div>
         </div>
         <div class="appearance-block">
-          <div class="ap-label">主题色</div>
-          <div class="accent-row">
-            <div class="swatches" id="ap-accent-swatches"></div>
-            <label class="custom-color"><input type="color" id="ap-accent-custom" /> 自定义</label>
-          </div>
-        </div>
-        <div class="appearance-block">
-          <div class="ap-label">皮肤背景（换肤：选图后自动提取主题色）</div>
+          <div class="ap-label">皮肤背景（在界面底部绘制并模糊所选图片）</div>
           <div class="skins" id="ap-skins"></div>
           <div class="skin-actions">
             <button id="ap-skin-pick" class="md-btn" type="button">选择本地图片…</button>
@@ -435,6 +423,23 @@
           </div>
           <input type="file" id="ap-skin-file" accept="image/*" hidden />
           <div class="skin-current" id="ap-skin-current"></div>
+        </div>
+        <!-- FR-29：两个数值滑块都落 app 级 [ui]，走既有的 appearance 200ms 防抖链路。 -->
+        <div class="appearance-block">
+          <div class="ap-label">歌词面板不透明度</div>
+          <div class="ap-range-row">
+            <input id="ap-lyrics-opacity" type="range" min="40" max="100" step="5" value="82" />
+            <output id="ap-lyrics-opacity-value" class="ap-range-value" for="ap-lyrics-opacity">82%</output>
+          </div>
+          <div class="ap-subhint">只调整歌词面板底色，文字始终不透明；40% 最透、100% 完全不透明。</div>
+        </div>
+        <div class="appearance-block">
+          <div class="ap-label">皮肤背景模糊</div>
+          <div class="ap-range-row">
+            <input id="ap-skin-blur" type="range" min="0" max="40" step="2" value="18" />
+            <output id="ap-skin-blur-value" class="ap-range-value" for="ap-skin-blur">18px</output>
+          </div>
+          <div class="ap-subhint">数值越大底层背景图越柔和；0px 为原图直出，不影响界面文字与面板。</div>
         </div>
       </div>
           </div><!-- /pane: appearance -->

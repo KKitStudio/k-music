@@ -229,9 +229,31 @@ pub const GROUP_WIDTH_MAX: u32 = 480;
 pub const GROUP_WIDTH_DEFAULT: u32 = 230;
 pub const VOLUME_DEFAULT: u32 = 100;
 
+// ---- FR-29：歌词面板不透明度 / 皮肤背景模糊（app 级 [ui]，不随曲库切换）----
+/// 歌词面板不透明度（%）：下限 40（低于此值文字不可读）、上限 100（完全不透明）、默认 82。
+pub const LYRICS_OPACITY_MIN: u32 = 40;
+pub const LYRICS_OPACITY_MAX: u32 = 100;
+pub const LYRICS_OPACITY_DEFAULT: u32 = 82;
+/// 皮肤背景图模糊半径（px）：0 = 不模糊、上限 40（再大已无视觉收益且徒增 GPU 开销）、默认 18。
+pub const SKIN_BLUR_MIN: u32 = 0;
+pub const SKIN_BLUR_MAX: u32 = 40;
+pub const SKIN_BLUR_DEFAULT: u32 = 18;
+
 fn default_sidebar_width() -> u32 { SIDEBAR_WIDTH_DEFAULT }
 fn default_group_width() -> u32 { GROUP_WIDTH_DEFAULT }
 fn default_volume() -> u32 { VOLUME_DEFAULT }
+fn default_lyrics_opacity() -> u32 { LYRICS_OPACITY_DEFAULT }
+fn default_skin_blur() -> u32 { SKIN_BLUR_DEFAULT }
+
+/// FR-29：把前端滑块 / 接口的数值钳到合法区间；非有限值回退默认。
+pub fn clamp_lyrics_opacity(v: f64) -> u32 {
+    if !v.is_finite() { return LYRICS_OPACITY_DEFAULT; }
+    (v.round() as i64).clamp(LYRICS_OPACITY_MIN as i64, LYRICS_OPACITY_MAX as i64) as u32
+}
+pub fn clamp_skin_blur(v: f64) -> u32 {
+    if !v.is_finite() { return SKIN_BLUR_DEFAULT; }
+    (v.round() as i64).clamp(SKIN_BLUR_MIN as i64, SKIN_BLUR_MAX as i64) as u32
+}
 
 /// u32 字段宽容反序列化：配置文件手写坏值（负数 / 字符串 / 布尔）不会让整份配置加载失败；
 /// 越界值统一交给 `UiConfig::sanitize()` 回退到各字段默认值。
@@ -384,7 +406,9 @@ pub struct UiConfig {
     /// 主题模式：light(浅色) / system(跟随系统) / dark(暗色)。默认 system。
     #[serde(default = "default_theme")]
     pub theme: String,
-    /// 主题色（#RRGGBB）；空串 = 用明暗主题的默认派生色。
+    /// 【FR-29 已废弃 · 兼容遗留字段】原「主题色」（#RRGGBB）。前端自 v0.7.8 起不再消费，
+    /// 主题色固定由 styles.css 的明暗主题变量给出；字段保留只为不改动配置 schema / 不写迁移。
+    /// **勿复活**：不要重新读取它去设置 `--primary`，也不要恢复取色器。
     #[serde(default)]
     pub accent: String,
     /// 皮肤类型：""(无皮肤) / preset(预设渐变) / custom(自定义图片)。
@@ -393,7 +417,8 @@ pub struct UiConfig {
     /// 预设皮肤 id（仅 skin_type=preset 有效，如 aurora / sakura / mint / purple / ocean）。
     #[serde(default)]
     pub skin_preset: String,
-    /// 皮肤派生强调色（#RRGGBB）；皮肤激活时优先于 accent。
+    /// 【FR-29 已废弃 · 兼容遗留字段】原「从皮肤背景图提取的强调色」（#RRGGBB）。
+    /// 皮肤现在只画底层模糊背景图，不再解码取色；字段保留只为兼容旧配置与既有接口契约。
     #[serde(default)]
     pub skin_accent: String,
     /// 是否曾由前端显式保存过外观方案。
@@ -433,6 +458,13 @@ pub struct UiConfig {
     /// 与一级 / 二级侧栏同属 app 级偏好；收起后留小图标窄条 + 常驻展开把手。
     #[serde(default)]
     pub detail_collapsed: bool,
+    // ---- FR-29：歌词半透明 + 皮肤底层模糊（两项均可在「设置 → 外观」拖动滑块）----
+    /// 歌词面板背景不透明度（%），[40, 100]，默认 82。只影响面板底色，不影响文字。
+    #[serde(default = "default_lyrics_opacity", deserialize_with = "de_ui_u32")]
+    pub lyrics_opacity: u32,
+    /// 皮肤背景图模糊半径（px），[0, 40]，默认 18。0 = 原图直出。
+    #[serde(default = "default_skin_blur", deserialize_with = "de_ui_u32")]
+    pub skin_blur: u32,
 }
 
 impl Default for UiConfig {
@@ -466,6 +498,8 @@ impl Default for UiConfig {
             volume: default_volume(),
             muted: false,
             detail_collapsed: false,
+            lyrics_opacity: default_lyrics_opacity(),
+            skin_blur: default_skin_blur(),
         }
     }
 }
@@ -653,6 +687,14 @@ impl UiConfig {
             self.group_width = default_group_width();
         }
         self.volume = self.volume.min(100);
+        // FR-29：两个滑块值越界（含配置文件手写的坏值）一律回退默认，
+        // 与侧栏宽度的宽容策略一致；运行期接口写入则由 clamp_* 先钳制，不会走到这里。
+        if !(LYRICS_OPACITY_MIN..=LYRICS_OPACITY_MAX).contains(&self.lyrics_opacity) {
+            self.lyrics_opacity = LYRICS_OPACITY_DEFAULT;
+        }
+        if !(SKIN_BLUR_MIN..=SKIN_BLUR_MAX).contains(&self.skin_blur) {
+            self.skin_blur = SKIN_BLUR_DEFAULT;
+        }
     }
 }
 
@@ -1245,7 +1287,7 @@ pub fn update_meta_in_place(path: &Path, meta: &ConfigMeta) -> Result<()> {
 }
 
 /// `[ui]` 段的字段顺序（新增键按此顺序追加，保证输出稳定可读）。
-pub const UI_FIELD_ORDER: [&str; 28] = [
+pub const UI_FIELD_ORDER: [&str; 30] = [
     "track_columns",
     "track_columns_saved",
     "layout_library",
@@ -1274,6 +1316,8 @@ pub const UI_FIELD_ORDER: [&str; 28] = [
     "volume",
     "muted",
     "detail_collapsed",
+    "lyrics_opacity",
+    "skin_blur",
 ];
 
 /// 计算一行 TOML 中未闭合的括号深度（忽略字符串字面量与行注释内的括号）。
@@ -2447,10 +2491,12 @@ track_columns = ["name", "artist"]
             doc["ui"].clone().try_into().unwrap()
         };
         assert_eq!(back.auto_playlist_count, 33);
-        assert_eq!(UI_FIELD_ORDER.len(), 28);
+        assert_eq!(UI_FIELD_ORDER.len(), 30);
         assert_eq!(UI_FIELD_ORDER[20], "auto_playlist_count");
         assert_eq!(UI_FIELD_ORDER[26], "muted");
         assert_eq!(UI_FIELD_ORDER[27], "detail_collapsed");
+        assert_eq!(UI_FIELD_ORDER[28], "lyrics_opacity");
+        assert_eq!(UI_FIELD_ORDER[29], "skin_blur");
     }
 
     #[test]
@@ -2459,6 +2505,8 @@ track_columns = ["name", "artist"]
         assert_eq!(ui.sidebar_width, SIDEBAR_WIDTH_DEFAULT);
         assert_eq!(ui.group_width, GROUP_WIDTH_DEFAULT);
         assert_eq!(ui.volume, VOLUME_DEFAULT);
+        assert_eq!(ui.lyrics_opacity, LYRICS_OPACITY_DEFAULT);
+        assert_eq!(ui.skin_blur, SKIN_BLUR_DEFAULT);
         assert!(!ui.sidebar_collapsed && !ui.group_collapsed && !ui.muted && !ui.detail_collapsed);
 
         let mut changed = UiConfig::default();
@@ -2469,8 +2517,10 @@ track_columns = ["name", "artist"]
         changed.volume = 37;
         changed.muted = true;
         changed.detail_collapsed = true;
+        changed.lyrics_opacity = 55;
+        changed.skin_blur = 30;
         let text = upsert_ui_section("[ui]\n", &changed);
-        for key in ["sidebar_width", "group_width", "sidebar_collapsed", "group_collapsed", "volume", "muted", "detail_collapsed"] {
+        for key in ["sidebar_width", "group_width", "sidebar_collapsed", "group_collapsed", "volume", "muted", "detail_collapsed", "lyrics_opacity", "skin_blur"] {
             assert!(text.contains(key), "FR-24 字段 {key} 必须写入 [ui] 段：\n{text}");
         }
         let back: UiConfig = {
@@ -2481,16 +2531,27 @@ track_columns = ["name", "artist"]
         assert_eq!(back.group_width, 320);
         assert!(back.sidebar_collapsed && back.group_collapsed && back.muted && back.detail_collapsed);
         assert_eq!(back.volume, 37);
+        assert_eq!(back.lyrics_opacity, 55);
+        assert_eq!(back.skin_blur, 30);
+        assert_eq!(clamp_lyrics_opacity(12.0), LYRICS_OPACITY_MIN);
+        assert_eq!(clamp_lyrics_opacity(180.0), LYRICS_OPACITY_MAX);
+        assert_eq!(clamp_skin_blur(-4.0), SKIN_BLUR_MIN);
+        assert_eq!(clamp_skin_blur(99.0), SKIN_BLUR_MAX);
+        assert_eq!(clamp_lyrics_opacity(f64::NAN), LYRICS_OPACITY_DEFAULT);
 
         // 越界回退默认、音量钳到 100，且 8 列占比守恒不受影响。
         let mut bad = UiConfig::default();
         bad.sidebar_width = 1;
         bad.group_width = 9999;
         bad.volume = 250;
+        bad.lyrics_opacity = 9;
+        bad.skin_blur = 999;
         bad.sanitize();
         assert_eq!(bad.sidebar_width, SIDEBAR_WIDTH_DEFAULT);
         assert_eq!(bad.group_width, GROUP_WIDTH_DEFAULT);
         assert_eq!(bad.volume, 100);
+        assert_eq!(bad.lyrics_opacity, LYRICS_OPACITY_DEFAULT);
+        assert_eq!(bad.skin_blur, SKIN_BLUR_DEFAULT);
         let sum: f64 = all_track_column_keys().iter().map(|k| bad.width_for(k)).sum();
         assert!((sum - 100.0).abs() < 0.01, "8 列占比和仍须为 100：{sum}");
     }

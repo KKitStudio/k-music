@@ -1,7 +1,8 @@
 /* ============================================================
    K music 前端样式
    设计系统：浅色 / 暗色主题（data-theme） + 换肤玻璃拟态（body.skin-active）
-   主题色通过 --primary / --primary-dark 控制，可由设置或背景图自动派生。
+   FR-29：主题色固定为 --primary / --primary-dark（浅 #4f7cff / 暗 #6e92ff），不可由设置或背景图派生；
+   皮肤只在界面底层画一张模糊背景图；歌词面板半透明且透明度可调。
    ============================================================ */
 
 /* ---------- 浅色主题（默认） ---------- */
@@ -33,6 +34,10 @@
   --radius-sm: 8px;
   --glass-blur: 20px;
   --th-bg: #f3f5fa;
+  /* FR-29：两个可调外观数值。JS 会把配置值写到 :root 行内覆盖这两个默认值；
+     首屏脚本先预设同值，避免 styles.css 默认帧与配置帧之间可见跳变。 */
+  --lyrics-alpha: 82%;
+  --skin-blur: 18px;
 }
 
 /* ---------- 暗色主题 ---------- */
@@ -546,7 +551,13 @@ body.col-resizing * { cursor: col-resize !important; }
   position: fixed; right: 18px; bottom: 86px; z-index: 40;
   width: min(420px, calc(100vw - 36px)); max-height: 46vh;
   display: flex; flex-direction: column; overflow: hidden;
-  background: var(--surface); border: 1px solid var(--divider);
+  /* FR-29：底色半透明（--lyrics-alpha 由设置页滑块控制），再叠一层毛玻璃保证文字可读。
+     先写不透明兜底，老 WebView2 不支持 color-mix 时退回实心面板而不是透明到看不清。 */
+  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) var(--lyrics-alpha, 82%), transparent);
+  backdrop-filter: blur(14px) saturate(130%);
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
+  border: 1px solid var(--divider);
   border-radius: var(--radius); box-shadow: var(--shadow-lg);
 }
 .lyrics-drawer[hidden] { display: none; }
@@ -859,27 +870,17 @@ input[type="radio"], input[type="checkbox"] {
 .seg-btn:hover { color: var(--text); }
 .seg-btn.active { background: var(--primary); color: var(--on-primary); font-weight: 600; box-shadow: 0 2px 6px color-mix(in srgb, var(--primary) 40%, transparent); }
 
-/* 主题色：色板与「自定义」同处第一行，垂直居中、两端对齐 */
-.accent-row { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
-.accent-row .swatches { flex: 0 1 auto; min-width: 0; }
-.accent-row .custom-color { flex: 0 0 auto; margin-left: 0; }
-.swatches { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-.swatch {
-  width: 30px; height: 30px; border-radius: 50%; border: 2px solid transparent; cursor: pointer;
-  box-shadow: var(--shadow-sm); transition: transform .12s, border-color .12s; position: relative;
+/* FR-29：主题色色板 / 自定义取色器（.accent-row / .swatch / .custom-color）已整体删除，勿复活。
+   歌词不透明度与皮肤模糊两个数值滑块共用这一行布局。 */
+.ap-range-row { display: flex; align-items: center; gap: 12px; }
+.ap-range-row input[type="range"] {
+  flex: 1 1 auto; min-width: 120px; max-width: 320px;
+  accent-color: var(--primary); cursor: pointer;
 }
-.swatch:hover { transform: scale(1.12); }
-.swatch.active { border-color: var(--text); transform: scale(1.12); }
-.swatch.active::after {
-  content: "✓"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  color: #fff; font-size: 14px; text-shadow: 0 1px 2px rgba(0,0,0,.4);
+.ap-range-value {
+  flex: none; width: 52px; text-align: right; font-size: 13px;
+  color: var(--text); font-variant-numeric: tabular-nums;
 }
-.custom-color { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-soft); cursor: pointer; margin-left: 4px; }
-.custom-color input[type="color"] {
-  width: 30px; height: 30px; border: none; border-radius: 50%; padding: 0; background: none; cursor: pointer;
-}
-.custom-color input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
-.custom-color input[type="color"]::-webkit-color-swatch { border: 2px solid var(--divider); border-radius: 50%; }
 
 /* 皮肤缩略图 */
 .skins { display: flex; flex-wrap: wrap; gap: 10px; }
@@ -894,22 +895,28 @@ input[type="radio"], input[type="checkbox"] {
 .skin-current { margin-top: 10px; font-size: 12px; color: var(--text-soft); }
 
 /* ============================================================
-   换肤：玻璃拟态（body.skin-active）
-   背景图铺满，主面板变为半透明毛玻璃；--surface 在皮肤激活时改为玻璃色。
+   换肤：底层模糊背景 + 玻璃拟态（body.skin-active）
+   FR-29：背景图不再直接铺在 body 上，改由独立 ::before 承载并先模糊/缩放，
+   避免图片细节透过上层玻璃面板干扰文字；模糊半径由 --skin-blur（设置页可调）控制。
+   body 自身背景必须设为 transparent，否则负 z-index 的 ::before 会被 body 背景盖住。
    ============================================================ */
-body.skin-active { --surface: var(--surface-glass); }
-body.skin-active {
+body.skin-active { --surface: var(--surface-glass); background: transparent; }
+body.skin-active::before {
+  content: ""; position: fixed; inset: -32px; z-index: -2; pointer-events: none;
   background-image: var(--skin-image);
   background-size: cover; background-position: center; background-repeat: no-repeat;
-  background-attachment: fixed;
+  /* inset 负值 + 轻微放大，抵消 blur 在视口边缘露出的半透明白边 */
+  filter: blur(var(--skin-blur, 18px)) saturate(115%);
+  transform: scale(1.06);
 }
-/* 皮肤激活时的可读性蒙版（随主题深浅自适应） */
+/* 皮肤激活时的可读性蒙版（随主题深浅自适应）。
+   暗色规则必须写在亮色之后：两条选择器特异性相同，后写者生效（旧版写反，暗色蒙版其实没生效）。 */
 body.skin-active::after {
   content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
-  background: var(--skin-scrim, rgba(255, 255, 255, 0.0));
+  background: var(--skin-scrim, rgba(255, 255, 255, 0.22));
 }
-[data-theme="dark"] body.skin-active::after { --skin-scrim: rgba(10, 14, 26, 0.28); }
-body.skin-active::after { --skin-scrim: rgba(255, 255, 255, 0.10); }
+body.skin-active::after { --skin-scrim: rgba(255, 255, 255, 0.22); }
+[data-theme="dark"] body.skin-active::after { --skin-scrim: rgba(10, 14, 26, 0.42); }
 
 /* 主面板毛玻璃 */
 body.skin-active .topbar,

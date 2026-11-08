@@ -3,7 +3,7 @@ resolver = "2"
 members = ["app/core", "app/cli", "app/gui"]
 
 [workspace.package]
-version = "0.7.7"
+version = "0.7.8"
 edition = "2021"
 license = "LicenseRef-KKitStudio"
 homepage = "https://github.com/KKitStudio/k-music"

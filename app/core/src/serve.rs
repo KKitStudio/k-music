@@ -103,8 +103,8 @@ fn err_json(msg: &str) -> Response {
 /// 原生窗口标题栏颜色回调（GUI 壳注册）。
 ///
 /// WebView 内的 `.topbar` 由 CSS 变量 `--primary` 着色，而 Windows 原生标题栏由 DWM 绘制，
-/// 两者默认割裂。前端在每次外观变化后把当前强调色 POST 到 `/api/appearance/titlebar`，
-/// 本钩子转交给 GUI 壳调用 DWM 把标题栏染成同色。
+/// 两者默认割裂。前端在每次外观变化后把固定强调色（FR-29 起不再由配置 / 皮肤派生）
+/// POST 到 `/api/appearance/titlebar`，本钩子转交给 GUI 壳调用 DWM 把标题栏染成同色。
 /// 用无捕获的 `fn` 指针而非闭包，保证跨线程调用安全；CLI `serve` 模式未注册，接口静默空转。
 static TITLEBAR_COLOR_SINK: OnceLock<fn(u32, bool)> = OnceLock::new();
 
@@ -468,6 +468,8 @@ async fn status_handler(State(st): State<AppState>) -> Response {
         "skin_preset": cfg_guard.ui.skin_preset,
         "skin_accent": cfg_guard.ui.skin_accent,
         "saved": cfg_guard.ui.appearance_saved,
+        "lyrics_opacity": cfg_guard.ui.lyrics_opacity,
+        "skin_blur": cfg_guard.ui.skin_blur,
     });
     // 本地网易云曲库目录（导入源）：空 = 未设置。
     let netease_library_dir = cfg_guard.netease.library_dir.to_string_lossy().to_string();
@@ -1555,7 +1557,8 @@ async fn columns_post_handler(
 // ---------- 界面偏好（布局风格 + 列宽比例）----------
 
 /// 读取界面偏好：各视图布局风格（1=横向 / 2=纵向）+ 歌曲列表各列宽度占比（%，总和 100）
-/// + 外观主题方案（theme / accent / skin_*，自定义皮肤图片本体不落配置）。
+/// + 外观主题方案（theme / skin_* / lyrics_opacity / skin_blur；accent / skin_accent 为废弃遗留字段，
+///   自定义皮肤图片本体不落配置）。
 async fn ui_prefs_get_handler(State(st): State<AppState>) -> Response {
     let ui = st.cfg.lock().unwrap().ui.clone();
     axum::Json(serde_json::json!({
@@ -1571,6 +1574,8 @@ async fn ui_prefs_get_handler(State(st): State<AppState>) -> Response {
         "volume": ui.volume,
         "muted": ui.muted,
         "detail_collapsed": ui.detail_collapsed,
+        "lyrics_opacity": ui.lyrics_opacity,
+        "skin_blur": ui.skin_blur,
     }))
     .into_response()
 }
@@ -1584,6 +1589,9 @@ fn appearance_json(ui: &config::UiConfig) -> serde_json::Value {
         "skin_preset": ui.skin_preset,
         "skin_accent": ui.skin_accent,
         "saved": ui.appearance_saved,
+        // FR-29：两个可调数值也走同一份注入（首屏脚本据此预设 CSS 变量，避免启动闪烁）。
+        "lyrics_opacity": ui.lyrics_opacity,
+        "skin_blur": ui.skin_blur,
     })
 }
 
@@ -1592,12 +1600,15 @@ fn appearance_json(ui: &config::UiConfig) -> serde_json::Value {
 /// { "layout_styles": { "library": 1, "playlists": 2 },
 ///   "column_widths": { "name": 34.5 },
 ///   "appearance": { "theme": "dark", "accent": "#7e57c2",
-///                   "skin_type": "preset", "skin_preset": "purple", "skin_accent": "#7e57c2" } }
+///                   "skin_type": "preset", "skin_preset": "purple", "skin_accent": "#7e57c2",
+///                   "lyrics_opacity": 82, "skin_blur": 18 } }
 /// ```
 /// - `layout_styles`：view → 1|2，view 取 `library` / `playlists` / `albums` / `artists`；
 ///   非法 view 或非法风格值忽略（不报错，避免前端脏数据写坏配置）。
 /// - `column_widths`：列 key → 占比（%）；写入后统一归一化（总和 100，单列 ≥ 4%）。
 /// - `appearance`：主题方案；非法值交给 `UiConfig::sanitize()` 回退，空串表示恢复默认。
+///   `accent` / `skin_accent` 为 FR-29 废弃的兼容遗留字段（仍可读写，但前端不再消费）；
+///   `lyrics_opacity` / `skin_blur` 为数值型，缺失时保持原值，越界由 `config::clamp_*` 钳制。
 ///
 /// 落盘走 `config::save_ui_in_place`：只就地替换 `[ui]` 段，其余内容（注释 / 未知键 / 键序）原样保留。
 async fn ui_prefs_post_handler(
@@ -1637,6 +1648,24 @@ async fn ui_prefs_post_handler(
             if let Some(v) = obj.get(key).and_then(|v| v.as_str()) {
                 *target = v.to_string();
             }
+        }
+        // FR-29：两个滑块数值（部分更新语义：缺失的键保持原值）。
+        // 接受 Number / 数字字符串，坏值与越界由 config::clamp_* 统一钳制，不报错。
+        if let Some(v) = obj.get("lyrics_opacity") {
+            let n = match v {
+                serde_json::Value::Number(n) => n.as_f64().unwrap_or(f64::NAN),
+                serde_json::Value::String(s) => s.trim().parse::<f64>().unwrap_or(f64::NAN),
+                _ => f64::NAN,
+            };
+            ui.lyrics_opacity = config::clamp_lyrics_opacity(n);
+        }
+        if let Some(v) = obj.get("skin_blur") {
+            let n = match v {
+                serde_json::Value::Number(n) => n.as_f64().unwrap_or(f64::NAN),
+                serde_json::Value::String(s) => s.trim().parse::<f64>().unwrap_or(f64::NAN),
+                _ => f64::NAN,
+            };
+            ui.skin_blur = config::clamp_skin_blur(n);
         }
         // 收到外观请求即视为「已显式保存过」，用于旧配置的一次性迁移判定。
         ui.appearance_saved = true;
@@ -1695,6 +1724,8 @@ async fn ui_prefs_post_handler(
         "volume": ui.volume,
         "muted": ui.muted,
         "detail_collapsed": ui.detail_collapsed,
+        "lyrics_opacity": ui.lyrics_opacity,
+        "skin_blur": ui.skin_blur,
     }))
     .into_response()
 }

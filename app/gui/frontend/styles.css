@@ -1365,3 +1365,55 @@ body.detail-collapsed .inline-detail::before { display: none; }
   #volume { width: 64px; }
 }
 
+/* ============================================================
+   FR-30：联网设置页 / 更新提示条 / 红点
+   提示条为文档流内的一条（非浮层、非模态），不阻断任何既有操作。
+   ============================================================ */
+.update-bar {
+  display: flex; align-items: center; gap: 10px; flex: none;
+  padding: 7px 20px; font-size: 13px; color: var(--text);
+  background: var(--primary-soft); border-bottom: 1px solid var(--divider);
+}
+.update-bar[hidden] { display: none; }
+.update-bar-mark {
+  flex: none; width: 20px; height: 20px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--primary); color: var(--on-primary); font-size: 13px; font-weight: 700;
+}
+.update-bar-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.update-bar a.md-btn { text-decoration: none; flex: none; }
+
+/* 红点：设置按钮「点一次即持久已读」，关于 tab「有更新就常驻」。 */
+#btn-settings.has-dot { position: relative; }
+.update-dot {
+  position: absolute; top: 4px; right: 4px; width: 8px; height: 8px;
+  border-radius: 50%; background: #ef4444; box-shadow: 0 0 0 2px var(--surface);
+  pointer-events: none;
+}
+#settings-modal .settings-tab > .update-dot { top: 9px; right: 9px; }
+.update-dot[hidden] { display: none; }
+
+/* 联网页：开关行 / 下拉行 / 状态区 / TODO 灰显占位。 */
+.net-toggle-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 0;
+  font-size: 13px; color: var(--text); cursor: pointer;
+}
+.net-toggle-row input { cursor: pointer; }
+.net-toggle-row input:disabled { cursor: not-allowed; }
+.net-field-row { display: flex; align-items: center; gap: 12px; padding: 7px 0; font-size: 13px; }
+.net-field-row label { flex: none; width: 92px; color: var(--text-soft); }
+.net-field-row select {
+  flex: 0 1 260px; min-width: 0; height: 30px; padding: 0 8px;
+  border: 1px solid var(--divider-strong); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text); font-size: 13px; cursor: pointer;
+}
+.net-field-row select:disabled { cursor: not-allowed; }
+#set-network-subitems.is-disabled { opacity: .5; }
+#set-network-subitems.is-disabled .net-toggle-row,
+#set-network-subitems.is-disabled .net-field-row { pointer-events: none; }
+.net-toggle-row.net-todo { color: var(--text-muted); cursor: not-allowed; opacity: .85; }
+.net-check-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+.net-check-hint { font-size: 12px; color: var(--text-soft); line-height: 1.5; }
+/* 皮肤激活时提示条仍要保证文字可读（玻璃拟态下补一层实底）。 */
+body.skin-active .update-bar { background: color-mix(in srgb, var(--primary-soft) 88%, var(--surface)); }
+

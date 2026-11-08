@@ -239,11 +239,29 @@ pub const SKIN_BLUR_MIN: u32 = 0;
 pub const SKIN_BLUR_MAX: u32 = 40;
 pub const SKIN_BLUR_DEFAULT: u32 = 18;
 
+// ---- FR-30：联网总闸 / 远程版本检测（app 级 [ui]，默认全部关闭）----
+/// 允许的更新源（目前只有 GitHub；新增源时在此登记并在前端 UPDATE_SOURCES 同步）。
+pub const UPDATE_SOURCES: [&str; 1] = ["github"];
+pub const UPDATE_SOURCE_DEFAULT: &str = "github";
+/// 检查频率：daily = 24h / weekly = 7d / monthly = 滚动 30 天。均为「启动触发 + 间隔节流」。
+pub const UPDATE_INTERVALS: [&str; 3] = ["daily", "weekly", "monthly"];
+pub const UPDATE_INTERVAL_DEFAULT: &str = "daily";
+
 fn default_sidebar_width() -> u32 { SIDEBAR_WIDTH_DEFAULT }
 fn default_group_width() -> u32 { GROUP_WIDTH_DEFAULT }
 fn default_volume() -> u32 { VOLUME_DEFAULT }
 fn default_lyrics_opacity() -> u32 { LYRICS_OPACITY_DEFAULT }
 fn default_skin_blur() -> u32 { SKIN_BLUR_DEFAULT }
+fn default_update_source() -> String { UPDATE_SOURCE_DEFAULT.to_string() }
+fn default_update_interval() -> String { UPDATE_INTERVAL_DEFAULT.to_string() }
+
+/// 枚举型字符串钳制：非法值一律回退默认，避免前端拿到未登记源 / 频率而拼出意外 URL。
+pub fn clamp_update_source(v: &str) -> String {
+    if UPDATE_SOURCES.contains(&v) { v.to_string() } else { default_update_source() }
+}
+pub fn clamp_update_interval(v: &str) -> String {
+    if UPDATE_INTERVALS.contains(&v) { v.to_string() } else { default_update_interval() }
+}
 
 /// FR-29：把前端滑块 / 接口的数值钳到合法区间；非有限值回退默认。
 pub fn clamp_lyrics_opacity(v: f64) -> u32 {
@@ -284,6 +302,30 @@ where
         fn visit_unit<E: Error>(self) -> std::result::Result<u32, E> { Ok(0) }
     }
     de.deserialize_any(U32Visitor)
+}
+
+/// FR-30：枚举型字符串字段的宽容反序列化。配置文件里手写的数字 / 布尔不会让整份配置加载失败，
+/// 统一转成字符串后由 `UiConfig::sanitize()` 用 `clamp_update_*()` 回退到已登记枚举值。
+fn de_ui_enum_string<'de, D>(de: D) -> std::result::Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, Visitor};
+    use std::fmt;
+    struct StrVisitor;
+    impl<'de> Visitor<'de> for StrVisitor {
+        type Value = String;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result { f.write_str("字符串枚举值") }
+        fn visit_str<E: Error>(self, v: &str) -> std::result::Result<String, E> { Ok(v.to_string()) }
+        fn visit_string<E: Error>(self, v: String) -> std::result::Result<String, E> { Ok(v) }
+        fn visit_i64<E: Error>(self, v: i64) -> std::result::Result<String, E> { Ok(v.to_string()) }
+        fn visit_u64<E: Error>(self, v: u64) -> std::result::Result<String, E> { Ok(v.to_string()) }
+        fn visit_f64<E: Error>(self, v: f64) -> std::result::Result<String, E> { Ok(v.to_string()) }
+        fn visit_bool<E: Error>(self, v: bool) -> std::result::Result<String, E> { Ok(v.to_string()) }
+        fn visit_none<E: Error>(self) -> std::result::Result<String, E> { Ok(String::new()) }
+        fn visit_unit<E: Error>(self) -> std::result::Result<String, E> { Ok(String::new()) }
+    }
+    de.deserialize_any(StrVisitor)
 }
 
 // ---- 自动播放列表（无名播放列表）生成上限 n（FR-17，属应用设置，不随曲库切换）----
@@ -465,6 +507,20 @@ pub struct UiConfig {
     /// 皮肤背景图模糊半径（px），[0, 40]，默认 18。0 = 原图直出。
     #[serde(default = "default_skin_blur", deserialize_with = "de_ui_u32")]
     pub skin_blur: u32,
+    // ---- FR-30：联网总闸 / 远程版本检测（默认全部关闭，零遥测、不下载任何文件）----
+    /// 联网总闸。**false 时前端不得发起任何非本机请求**；关闭只灰显子项、不清零其值，
+    /// 并立即隐藏更新提示条与两个红点（A3）。目前唯一联网点是 GitHub Releases 版本查询。
+    #[serde(default)]
+    pub network_enabled: bool,
+    /// 是否允许启动后远程检测新版本（子项，受 `network_enabled` 约束）。总闸开启不自动打开本项。
+    #[serde(default)]
+    pub update_check_enabled: bool,
+    /// 更新源，当前仅 `github`（前端 `UPDATE_SOURCES` 映射预留扩展）。
+    #[serde(default = "default_update_source", deserialize_with = "de_ui_enum_string")]
+    pub update_source: String,
+    /// 检查频率 `daily`(24h) / `weekly`(7d) / `monthly`(30d)：启动触发 + 间隔节流，无后台定时器。
+    #[serde(default = "default_update_interval", deserialize_with = "de_ui_enum_string")]
+    pub update_check_interval: String,
 }
 
 impl Default for UiConfig {
@@ -500,6 +556,10 @@ impl Default for UiConfig {
             detail_collapsed: false,
             lyrics_opacity: default_lyrics_opacity(),
             skin_blur: default_skin_blur(),
+            network_enabled: false,
+            update_check_enabled: false,
+            update_source: default_update_source(),
+            update_check_interval: default_update_interval(),
         }
     }
 }
@@ -695,6 +755,10 @@ impl UiConfig {
         if !(SKIN_BLUR_MIN..=SKIN_BLUR_MAX).contains(&self.skin_blur) {
             self.skin_blur = SKIN_BLUR_DEFAULT;
         }
+        // FR-30：两个枚举型字符串只接受已登记值（配置文件手写坏值 / 接口脏数据都一样回退默认）。
+        // 布尔总闸与子项不做强制联动——A3 要求关闭总闸时子项值保留、只灰显禁用。
+        self.update_source = clamp_update_source(&self.update_source);
+        self.update_check_interval = clamp_update_interval(&self.update_check_interval);
     }
 }
 
@@ -1287,7 +1351,7 @@ pub fn update_meta_in_place(path: &Path, meta: &ConfigMeta) -> Result<()> {
 }
 
 /// `[ui]` 段的字段顺序（新增键按此顺序追加，保证输出稳定可读）。
-pub const UI_FIELD_ORDER: [&str; 30] = [
+pub const UI_FIELD_ORDER: [&str; 34] = [
     "track_columns",
     "track_columns_saved",
     "layout_library",
@@ -1318,6 +1382,11 @@ pub const UI_FIELD_ORDER: [&str; 30] = [
     "detail_collapsed",
     "lyrics_opacity",
     "skin_blur",
+    // FR-30：联网总闸 / 版本检测（新增键一律追加到段尾，保持既有键序不变）。
+    "network_enabled",
+    "update_check_enabled",
+    "update_source",
+    "update_check_interval",
 ];
 
 /// 计算一行 TOML 中未闭合的括号深度（忽略字符串字面量与行注释内的括号）。
@@ -2491,12 +2560,64 @@ track_columns = ["name", "artist"]
             doc["ui"].clone().try_into().unwrap()
         };
         assert_eq!(back.auto_playlist_count, 33);
-        assert_eq!(UI_FIELD_ORDER.len(), 30);
+        assert_eq!(UI_FIELD_ORDER.len(), 34);
         assert_eq!(UI_FIELD_ORDER[20], "auto_playlist_count");
         assert_eq!(UI_FIELD_ORDER[26], "muted");
         assert_eq!(UI_FIELD_ORDER[27], "detail_collapsed");
         assert_eq!(UI_FIELD_ORDER[28], "lyrics_opacity");
         assert_eq!(UI_FIELD_ORDER[29], "skin_blur");
+        assert_eq!(UI_FIELD_ORDER[30], "network_enabled");
+        assert_eq!(UI_FIELD_ORDER[31], "update_check_enabled");
+        assert_eq!(UI_FIELD_ORDER[32], "update_source");
+        assert_eq!(UI_FIELD_ORDER[33], "update_check_interval");
+    }
+
+    #[test]
+    fn fr30_network_prefs_default_off_and_enum_clamp() {
+        // 默认必须全部关闭：程序默认不发起任何非本机请求。
+        let ui = UiConfig::default();
+        assert!(!ui.network_enabled && !ui.update_check_enabled);
+        assert_eq!(ui.update_source, UPDATE_SOURCE_DEFAULT);
+        assert_eq!(ui.update_check_interval, UPDATE_INTERVAL_DEFAULT);
+
+        // 枚举钳制只认已登记值。
+        assert_eq!(clamp_update_source("github"), "github");
+        assert_eq!(clamp_update_source("evil.example.com"), "github");
+        assert_eq!(clamp_update_interval("daily"), "daily");
+        assert_eq!(clamp_update_interval("weekly"), "weekly");
+        assert_eq!(clamp_update_interval("monthly"), "monthly");
+        assert_eq!(clamp_update_interval("hourly"), "daily");
+
+        // 就地写入 → 读回，4 个键都在 [ui] 段；关闭总闸不清零子项值（A3）。
+        let mut changed = UiConfig::default();
+        changed.network_enabled = false;
+        changed.update_check_enabled = true;
+        changed.update_source = "github".to_string();
+        changed.update_check_interval = "monthly".to_string();
+        let text = upsert_ui_section("[ui]\n", &changed);
+        for key in ["network_enabled", "update_check_enabled", "update_source", "update_check_interval"] {
+            assert!(text.contains(key), "FR-30 字段 {key} 必须写入 [ui] 段：\n{text}");
+        }
+        let back: UiConfig = {
+            let doc: toml::Value = toml::from_str(&text).unwrap();
+            doc["ui"].clone().try_into().unwrap()
+        };
+        assert!(!back.network_enabled && back.update_check_enabled);
+        assert_eq!(back.update_source, "github");
+        assert_eq!(back.update_check_interval, "monthly");
+
+        // 配置文件手写坏值：数字 / 非法枚举都会被宽容接住并回退默认，整份配置不失败。
+        let bad: UiConfig = toml::from_str(
+            "[ui]\nnetwork_enabled = true\nupdate_check_enabled = true\nupdate_source = 42\nupdate_check_interval = \"yearly\"\n",
+        ).unwrap();
+        assert_eq!(bad.update_source, "github");
+        assert_eq!(bad.update_check_interval, "daily");
+        let mut bad_s = bad.clone();
+        bad_s.update_source = "not-registered".to_string();
+        bad_s.update_check_interval = "hourly".to_string();
+        bad_s.sanitize();
+        assert_eq!(bad_s.update_source, "github");
+        assert_eq!(bad_s.update_check_interval, "daily");
     }
 
     #[test]

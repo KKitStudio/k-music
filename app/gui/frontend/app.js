@@ -41,6 +41,13 @@ const state = {
   library_config_compat: '',
   library_config_conflict: '',
   app_version: '',
+  // FR-30：联网四键（权威源 = /api/status 下发的 app 级 [ui]，默认全部关闭）。
+  networkEnabled: false,
+  updateCheckEnabled: false,
+  updateSource: 'github',
+  updateInterval: 'daily',
+  // 「稍后」只在本次会话隐藏提示条；重启后按缓存结果重现（A6）。
+  updateBarDismissed: false,
   file_scheme: 'artist_album',
   ncm_ready: false,
   ncm_tool: '',
@@ -404,6 +411,14 @@ async function refreshStatus() {
     state.library_config_compat = data.library_config_compat || '';
     state.library_config_conflict = data.library_config_conflict_reason || '';
     state.app_version = data.app_version || '';
+    // FR-30：联网四键。后端 sanitize() 已把枚举钳到已登记值，这里再兜一层：
+    // 未下发（老版本服务）一律保持「全部关闭」，绝不因字段缺失而隐式联网。
+    state.networkEnabled = data.network_enabled === true;
+    state.updateCheckEnabled = data.update_check_enabled === true;
+    // 当前仅登记 GitHub 一个更新源；未登记值一律回落 github。
+    state.updateSource = data.update_source === 'github' ? 'github' : 'github';
+    state.updateInterval = ['daily', 'weekly', 'monthly'].includes(data.update_check_interval)
+      ? data.update_check_interval : 'daily';
     // 外观 / 主题方案：以配置文件为准（或把旧版 localStorage 偏好一次性迁移进配置）。
     syncAppearanceFromStatus(data.appearance);
     // 自动播放列表上限 n（app 级设置，换曲库不变）。
@@ -3949,12 +3964,316 @@ function bindGroupDoubleClick(listId, view) {
   });
 }
 
+// ---------- FR-30：联网总闸 / 远程版本检测（本应用唯一联网点，默认全关） ----------
+// 设计约束（用户 2026-11-08 拍板）：
+//   · 仅向 api.github.com 发起一次简单 GET，取 Release 元数据；不读 assets[]、不下载、不安装、不写盘。
+//   · 响应 256 KiB 流式上限 + 8s 硬超时 + 零自定义头；失败 / 404 / 限流 / 超限 / 非法 tag 一律静默。
+//   · 频率 = 启动触发 + 间隔节流（daily 24h / weekly 7d / monthly 滚动 30 天），无后台定时器、无轮询。
+//   · 总闸关闭时禁止一切非本机请求；子项值保留不清零，仅灰显禁用；关闭立即隐藏提示条与两个红点。
+//   · 设置红点持久已读（seenFor），关于红点在「本地版本 < 远端版本」期间常驻，查看页面不熄灭。
+//   · 缓存 / 已读标记 / 稍后状态放 localStorage，不污染 kqk-app.toml。
+const UPDATE_SOURCES = {
+  github: {
+    label: 'GitHub',
+    api: 'https://api.github.com/repos/KKitStudio/k-music/releases/latest',
+    page: 'https://github.com/KKitStudio/k-music/releases',
+  },
+};
+const UPDATE_INTERVALS = {
+  daily: 24 * 3600 * 1000,
+  weekly: 7 * 24 * 3600 * 1000,
+  monthly: 30 * 24 * 3600 * 1000,
+};
+const UPDATE_CACHE_KEY = 'kqk_update_cache';
+const UPDATE_MAX_BYTES = 256 * 1024;
+const UPDATE_TIMEOUT_MS = 8000;
+const UPDATE_TAG_RE = /^v?\d+\.\d+\.\d+$/;
+
+function parseVersion(v) {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(String(v || '').trim());
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+// 三段数字比较；任一非法返回 null（调用方一律按「无更新」处理）。
+function compareVersions(a, b) {
+  const x = parseVersion(a), y = parseVersion(b);
+  if (!x || !y) return null;
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i] ? 1 : -1;
+  return 0;
+}
+function readUpdateCache() {
+  try {
+    const v = JSON.parse(localStorage.getItem(UPDATE_CACHE_KEY) || 'null');
+    return (v && typeof v === 'object') ? v : {};
+  } catch (e) { return {}; }
+}
+function writeUpdateCache(c) {
+  try { localStorage.setItem(UPDATE_CACHE_KEY, JSON.stringify(c)); } catch (e) { /* 存储不可用则本次会话内仍生效 */ }
+}
+// 下载链接只接受 github.com 的 https URL，避免把远端返回的字符串直接塞进 href。
+function safeReleaseUrl(u) {
+  try {
+    const url = new URL(String(u || ''));
+    if (url.protocol === 'https:' &&
+        (url.hostname === 'github.com' || url.hostname.endsWith('.github.com'))) return url.toString();
+  } catch (e) { /* 非法 URL 回落 releases 页 */ }
+  return UPDATE_SOURCES.github.page;
+}
+function setNetHint(msg) {
+  const el = $('net-check-hint');
+  if (el) el.textContent = msg || '';
+}
+function fmtCheckedAt(ms) {
+  const n = Number(ms);
+  if (!isFinite(n) || n <= 0) return '尚未检查';
+  try { return new Date(n).toLocaleString(); } catch (e) { return '—'; }
+}
+
+// 流式读取并累计字节：超过 256 KiB 立即 cancel + abort，不读完、不解析。
+async function readBoundedReleaseJson(res, controller) {
+  if (res.body && typeof res.body.getReader === 'function') {
+    const reader = res.body.getReader();
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const part = await reader.read();
+      if (part.done) break;
+      const bytes = part.value;
+      total += bytes.byteLength;
+      if (total > UPDATE_MAX_BYTES) {
+        try { await reader.cancel(); } catch (e) {}
+        try { controller.abort(); } catch (e) {}
+        return null;
+      }
+      chunks.push(bytes);
+    }
+    const buf = new Uint8Array(total);
+    let off = 0;
+    for (const c of chunks) { buf.set(c, off); off += c.byteLength; }
+    try { return JSON.parse(new TextDecoder().decode(buf)); } catch (e) { return null; }
+  }
+  // 老 WebView2 无流式 body 时的降级：仍按 Blob.size 校验字节上限。
+  try {
+    const text = await res.text();
+    if (new Blob([text]).size > UPDATE_MAX_BYTES) { controller.abort(); return null; }
+    return JSON.parse(text);
+  } catch (e) { return null; }
+}
+
+let updateCheckInFlight = false;
+/**
+ * @param {{manual?: boolean, force?: boolean}} opts
+ *   manual = 设置页「立即检查」：无视频率强制执行一次，且仅此处反馈失败原因；
+ *   force  = 忽略间隔节流（由 manual 使用）。
+ */
+async function checkForUpdate(opts) {
+  const o = opts || {};
+  // A3：总闸是硬门禁。关闭时绝不发出任何非本机请求，子项值仍保留。
+  if (!state.networkEnabled || !state.updateCheckEnabled) {
+    if (o.manual) setNetHint('请先开启联网总闸与「是否允许新版本检测」');
+    return { ok: false, reason: 'disabled' };
+  }
+  const cache = readUpdateCache();
+  const interval = UPDATE_INTERVALS[state.updateInterval] || UPDATE_INTERVALS.daily;
+  const due = !cache.checkedAt || (Date.now() - Number(cache.checkedAt) >= interval);
+  if (!o.force && !due) {
+    // A6：频率未到不重新请求，但用缓存结果重现提示条与红点。
+    applyUpdateUI();
+    return { ok: true, reason: 'throttled' };
+  }
+  if (updateCheckInFlight) return { ok: false, reason: 'in-flight' };
+  updateCheckInFlight = true;
+  const src = UPDATE_SOURCES[state.updateSource] || UPDATE_SOURCES.github;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), UPDATE_TIMEOUT_MS);
+  try {
+    // 简单 GET + 零自定义头（浏览器自带 UA 已满足 GitHub API 要求；自定义头会触发 CORS 预检）。
+    const res = await fetch(src.api, { signal: controller.signal });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await readBoundedReleaseJson(res, controller);
+    if (!data || typeof data !== 'object') throw new Error('bad payload');
+    const tag = String(data.tag_name || '');
+    if (!UPDATE_TAG_RE.test(tag)) throw new Error('bad tag');   // prerelease / 非三段一律放弃
+    const next = Object.assign({}, cache, {
+      latestVersion: tag,
+      htmlUrl: safeReleaseUrl(data.html_url),
+      checkedAt: Date.now(),
+    });
+    writeUpdateCache(next);
+    // 检测成功才写一行本地 app.log（只含两个版本号）；失败路径不发请求、不落遥测。
+    api('/api/update-check/log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ local: state.app_version || '', remote: tag }),
+    });
+    const cmp = compareVersions(tag, state.app_version);
+    if (o.manual) {
+      setNetHint(cmp > 0 ? ('发现新版本 ' + tag + '（当前 ' + (state.app_version || '—') + '）')
+                         : '已是最新版本 ' + (state.app_version || '—'));
+    }
+    applyUpdateUI();
+    return { ok: true, tag: tag, cmp: cmp, reason: 'ok' };
+  } catch (e) {
+    // 自动检测失败一律静默（不弹错、不写日志）；仅「立即检查」在此处反馈原因。
+    if (o.manual) setNetHint('检查未成功：网络不可达或暂时限流，稍后可重试（不影响使用）');
+    return { ok: false, reason: 'failed' };
+  } finally {
+    clearTimeout(timer);
+    updateCheckInFlight = false;
+  }
+}
+
+// 统一投射：提示条 + 两个红点 + 联网页状态。所有路径（启动 / 配置变更 / 检测完成）都汇聚这里。
+function applyUpdateUI() {
+  const cache = readUpdateCache();
+  const local = String(state.app_version || '');
+  const remote = String(cache.latestVersion || '');
+  const cmp = (remote && local) ? compareVersions(remote, local) : null;
+  const hasUpdate = cmp !== null && cmp > 0;
+  const gate = !!(state.networkEnabled && state.updateCheckEnabled);
+
+  // 提示条：总闸关闭立即隐藏；「稍后」只在本次会话隐藏，重启按 A6 重现。
+  const bar = $('update-bar');
+  const showBar = gate && hasUpdate && !state.updateBarDismissed;
+  if (bar) bar.hidden = !showBar;
+  if (showBar) {
+    $('update-bar-text').textContent = '发现新版本 ' + remote + '（当前 ' + local + '）';
+    $('update-bar-download').href = safeReleaseUrl(cache.htmlUrl);
+  }
+  // 设置红点：持久已读。仅检测到比 seenFor 更高的版本才重新亮。
+  const dotSettings = $('update-dot-settings');
+  if (dotSettings) {
+    const seen = String(cache.seenFor || '');
+    const newer = hasUpdate && (!seen || (compareVersions(remote, seen) || 0) > 0);
+    dotSettings.hidden = !(gate && newer);
+  }
+  // 关于红点：有更新就一直在，只有本地版本 ≥ 远端版本才熄灭；打开 / 查看页面不熄灭。
+  const dotAbout = $('update-dot-about');
+  if (dotAbout) dotAbout.hidden = !(gate && hasUpdate);
+
+  renderNetworkUI(hasUpdate, gate);
+}
+
+function renderNetworkUI(hasUpdate, gate) {
+  const on = !!state.networkEnabled;
+  const toggle = $('set-network-enabled');
+  if (toggle) toggle.checked = on;
+  const sub = $('set-update-check-enabled');
+  if (sub) sub.checked = !!state.updateCheckEnabled;
+  const srcSel = $('set-update-source');
+  if (srcSel) srcSel.value = UPDATE_SOURCES[state.updateSource] ? state.updateSource : 'github';
+  const intSel = $('set-update-interval');
+  if (intSel) intSel.value = UPDATE_INTERVALS[state.updateInterval] ? state.updateInterval : 'daily';
+  // 总闸关闭 → 子项整体灰显 + 逐控件 disabled（值保留不清零）；TODO 项恒 disabled。
+  const box = $('set-network-subitems');
+  if (box) box.classList.toggle('is-disabled', !on);
+  ['set-update-check-enabled', 'set-update-source', 'set-update-interval', 'set-update-check-now'].forEach((id) => {
+    const el = $(id);
+    if (el) el.disabled = !on;
+  });
+  const todo = $('set-lyrics-remote-todo');
+  if (todo) todo.disabled = true;
+
+  const cache = readUpdateCache();
+  const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+  set('net-current-version', state.app_version ? ('v' + state.app_version) : '—');
+  set('net-latest-version', cache.latestVersion || '—');
+  set('net-checked-at', fmtCheckedAt(cache.checkedAt));
+  const g = (gate === undefined) ? !!(state.networkEnabled && state.updateCheckEnabled) : gate;
+  // 事件回调可能不带参调用；此时自行从缓存推导，避免状态行短暂显示错误。
+  const local = String(state.app_version || '');
+  const remote = String(cache.latestVersion || '');
+  const derived = (remote && local) ? (compareVersions(remote, local) > 0) : false;
+  const up = (hasUpdate === undefined) ? derived : hasUpdate;
+  let status = '联网已关闭';
+  if (state.networkEnabled && !state.updateCheckEnabled) status = '检测未启用';
+  else if (g && up) status = '发现新版本（可自行下载）';
+  else if (g && cache.latestVersion) status = '已是最新版本';
+  else if (g) status = '等待检查';
+  set('net-status', status);
+}
+
+function saveNetworkPrefs(patch) {
+  return api('/api/ui-prefs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  }).then(({ data }) => {
+    if (!data || !data.ok) setHint((data && data.error) || '保存联网偏好失败');
+  }).catch(() => {});
+}
+
+function initUpdateEvents() {
+  const master = $('set-network-enabled');
+  if (master) master.addEventListener('change', (e) => {
+    state.networkEnabled = !!e.target.checked;
+    // A3：关闭总闸立即隐藏提示条与两个红点；开启总闸**不自动打开**检测子项。
+    applyUpdateUI();
+    saveNetworkPrefs({ network_enabled: state.networkEnabled });
+    setNetHint('');
+    // 总闸 + 子项都已开启时按正常节流规则尝试一次（不会绕过频率、不会在关闭态发请求）。
+    if (state.networkEnabled && state.updateCheckEnabled) checkForUpdate({});
+  });
+  const sub = $('set-update-check-enabled');
+  if (sub) sub.addEventListener('change', (e) => {
+    state.updateCheckEnabled = !!e.target.checked;
+    applyUpdateUI();
+    saveNetworkPrefs({ update_check_enabled: state.updateCheckEnabled });
+    if (state.networkEnabled && state.updateCheckEnabled) checkForUpdate({});
+  });
+  const src = $('set-update-source');
+  if (src) src.addEventListener('change', (e) => {
+    state.updateSource = UPDATE_SOURCES[e.target.value] ? e.target.value : 'github';
+    renderNetworkUI();
+    saveNetworkPrefs({ update_source: state.updateSource });
+  });
+  const interval = $('set-update-interval');
+  if (interval) interval.addEventListener('change', (e) => {
+    state.updateInterval = UPDATE_INTERVALS[e.target.value] ? e.target.value : 'daily';
+    renderNetworkUI();
+    saveNetworkPrefs({ update_check_interval: state.updateInterval });
+  });
+  const now = $('set-update-check-now');
+  if (now) now.addEventListener('click', () => {
+    // 手动：无视频率强制一次，失败原因只在此处反馈。
+    setNetHint('正在检查…');
+    checkForUpdate({ manual: true, force: true });
+  });
+  const later = $('update-bar-later');
+  if (later) later.addEventListener('click', () => {
+    state.updateBarDismissed = true;   // 仅本次会话隐藏，不写缓存 → 重启按 A6 重现
+    applyUpdateUI();
+  });
+  // A5：点一次「设置」即把设置红点标记为持久已读；关于红点不受影响。
+  const settingsBtn = $('btn-settings');
+  if (settingsBtn) settingsBtn.addEventListener('click', () => {
+    const cache = readUpdateCache();
+    if (cache.latestVersion && cache.seenFor !== cache.latestVersion) {
+      cache.seenFor = cache.latestVersion;
+      writeUpdateCache(cache);
+    }
+    applyUpdateUI();
+  });
+}
+
+let updateStartupChecked = false;
+function startUpdateCheckOnce() {
+  // A6：启动先按缓存重现提示条与红点（即使频率未到、不重新请求）。
+  applyUpdateUI();
+  if (updateStartupChecked) return;
+  updateStartupChecked = true;
+  // refreshStatus() 已读回 [ui]；只有总闸 + 子项都开才发请求，异步不阻塞首屏。
+  if (state.networkEnabled && state.updateCheckEnabled) checkForUpdate({});
+}
+
 // ---------- 初始化 ----------
 // 启动只调一次：refreshStatus() 在曲库已配置时会自行 loadTracks()，未配置则进入向导；
 // 向导完成（finishInit）也会加载。无需在此重复 loadTracks。
 initAppearanceEvents();
 applyAppearance();
 loadAbout();
+// FR-30：联网页交互绑定先于 refreshStatus()，保证读回 [ui] 后所有投射函数都已就绪。
+initUpdateEvents();
+renderNetworkUI();
 // FR-24：侧栏 / 音量交互绑定与初始状态（refreshStatus 读回配置后会再投射一次）。
 setupPaneResize();
 setupVolume();
@@ -3963,7 +4282,11 @@ bindGroupDoubleClick('al-list', 'albums');
 bindGroupDoubleClick('ar-list', 'artists');
 applyPaneLayout();
 applyVolume();
-refreshStatus().then(() => { restorePlaystate(); }).catch(() => {});
+refreshStatus().then(() => {
+  restorePlaystate();
+  // FR-30：必须等 [ui] 四键读回后才决定是否联网；异步检测不阻塞首屏。
+  startUpdateCheckOnce();
+}).catch(() => {});
 // FR-22 P1①：boot scan 在后台静默登记未决组，启动后补拉角标计数（**只更新角标，绝不自动弹窗**）。
 [1500, 5000, 12000].forEach((ms) => setTimeout(refreshDuplicateBadge, ms));
 setInterval(refreshDuplicateBadge, 30000);

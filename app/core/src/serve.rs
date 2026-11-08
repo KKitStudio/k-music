@@ -346,6 +346,8 @@ fn build_router(
         .route("/api/artists", get(artists_handler))
         .route("/api/artists/tracks", get(artist_tracks_handler))
         .route("/api/status", get(status_handler))
+        // FR-30：远程版本检测成功后写一行本地诊断日志（仅版本号，前端失败路径不发请求）。
+        .route("/api/update-check/log", post(update_check_log_handler))
         .route("/api/playstate", get(playstate_get_handler).post(playstate_post_handler))
         .route("/api/focus", get(focus_handler))
         .route("/api/about", get(about_handler))
@@ -460,6 +462,11 @@ async fn status_handler(State(st): State<AppState>) -> Response {
     let muted = cfg_guard.ui.muted;
     // FR-25：歌曲信息栏收起态（与侧栏 / 音量同属 app 级 [ui]）。
     let detail_collapsed = cfg_guard.ui.detail_collapsed;
+    // FR-30：联网总闸 / 版本检测（默认全关；前端 refreshStatus() 据此决定是否发起唯一一次外部 GET）。
+    let network_enabled = cfg_guard.ui.network_enabled;
+    let update_check_enabled = cfg_guard.ui.update_check_enabled;
+    let update_source = cfg_guard.ui.update_source.clone();
+    let update_check_interval = cfg_guard.ui.update_check_interval.clone();
     // 外观 / 主题方案（配置文件为准；自定义皮肤图片本体不入配置，由前端 localStorage 兜底）。
     let appearance = serde_json::json!({
         "theme": cfg_guard.ui.theme,
@@ -516,6 +523,10 @@ async fn status_handler(State(st): State<AppState>) -> Response {
             "volume": volume,
             "muted": muted,
             "detail_collapsed": detail_collapsed,
+            "network_enabled": network_enabled,
+            "update_check_enabled": update_check_enabled,
+            "update_source": update_source,
+            "update_check_interval": update_check_interval,
             "app_version": app::APP_VERSION,
             "min_compatible_version": app::MIN_COMPATIBLE_VERSION,
             "config_version": cs.app_config_version,
@@ -1554,11 +1565,39 @@ async fn columns_post_handler(
     axum::Json(serde_json::json!({ "ok": true, "columns": cols })).into_response()
 }
 
+// ---------- FR-30：版本检测诊断日志 ----------
+
+/// 检测成功后把「本地版本 / 远端版本」写一行到 `<曲库>/.mt/app.log`。
+///
+/// 前端只在**检测成功**时发此请求；失败 / 超时 / 超限 / 非法 tag 一律静默不发，
+/// 因此日志里不会出现网络噪声。请求体只接受两个三段数字版本号（可带 `v` 前缀、长度 ≤ 24），
+/// 其它内容一律忽略——防止把任意文本写进本地日志，也杜绝任何曲库 / 机器 / 用户信息流入。
+async fn update_check_log_handler(
+    State(st): State<AppState>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Response {
+    fn clean_version(v: Option<&serde_json::Value>) -> Option<String> {
+        let s = v?.as_str()?;
+        if s.len() > 24 { return None; }
+        let t = s.trim().strip_prefix('v').unwrap_or_else(|| s.trim());
+        let parts: Vec<&str> = t.split('.').collect();
+        let valid = parts.len() == 3
+            && parts.iter().all(|p| !p.is_empty() && p.len() <= 9 && p.bytes().all(|b| b.is_ascii_digit()));
+        if valid { Some(t.to_string()) } else { None }
+    }
+    if let (Some(local), Some(remote)) = (clean_version(body.get("local")), clean_version(body.get("remote"))) {
+        let cfg = st.cfg.lock().unwrap();
+        crate::log::event(&cfg, "update-check", &format!("local={local} remote={remote}"));
+    }
+    axum::Json(serde_json::json!({ "ok": true })).into_response()
+}
+
 // ---------- 界面偏好（布局风格 + 列宽比例）----------
 
 /// 读取界面偏好：各视图布局风格（1=横向 / 2=纵向）+ 歌曲列表各列宽度占比（%，总和 100）
 /// + 外观主题方案（theme / skin_* / lyrics_opacity / skin_blur；accent / skin_accent 为废弃遗留字段，
-///   自定义皮肤图片本体不落配置）。
+///   自定义皮肤图片本体不落配置）+ FR-30 联网四键（network_enabled / update_check_enabled /
+///   update_source / update_check_interval，默认全关）。
 async fn ui_prefs_get_handler(State(st): State<AppState>) -> Response {
     let ui = st.cfg.lock().unwrap().ui.clone();
     axum::Json(serde_json::json!({
@@ -1576,6 +1615,11 @@ async fn ui_prefs_get_handler(State(st): State<AppState>) -> Response {
         "detail_collapsed": ui.detail_collapsed,
         "lyrics_opacity": ui.lyrics_opacity,
         "skin_blur": ui.skin_blur,
+        // FR-30：联网总闸 / 版本检测四键随偏好一起读回。
+        "network_enabled": ui.network_enabled,
+        "update_check_enabled": ui.update_check_enabled,
+        "update_source": ui.update_source,
+        "update_check_interval": ui.update_check_interval,
     }))
     .into_response()
 }
@@ -1609,6 +1653,9 @@ fn appearance_json(ui: &config::UiConfig) -> serde_json::Value {
 /// - `appearance`：主题方案；非法值交给 `UiConfig::sanitize()` 回退，空串表示恢复默认。
 ///   `accent` / `skin_accent` 为 FR-29 废弃的兼容遗留字段（仍可读写，但前端不再消费）；
 ///   `lyrics_opacity` / `skin_blur` 为数值型，缺失时保持原值，越界由 `config::clamp_*` 钳制。
+/// - `network_enabled` / `update_check_enabled`：布尔总闸与子项（FR-30，默认 false）。
+/// - `update_source` / `update_check_interval`：枚举字符串，非法值由 `config::clamp_update_*` 回退默认。
+///   全部为部分更新语义，缺失键保持原值。
 ///
 /// 落盘走 `config::save_ui_in_place`：只就地替换 `[ui]` 段，其余内容（注释 / 未知键 / 键序）原样保留。
 async fn ui_prefs_post_handler(
@@ -1703,6 +1750,21 @@ async fn ui_prefs_post_handler(
     if let Some(v) = body.get("detail_collapsed").and_then(|v| v.as_bool()) {
         ui.detail_collapsed = v;
     }
+    // FR-30：联网总闸 / 版本检测。部分更新语义；两个布尔只做严格 bool 判定，
+    // 枚举字符串由 config::clamp_update_* 钳制（非法值回退已登记默认值），不会拼出意外 URL。
+    // 注意：总闸关闭**不清零** update_check_enabled（A3：子项值保留、仅灰显禁用）。
+    if let Some(v) = body.get("network_enabled").and_then(|v| v.as_bool()) {
+        ui.network_enabled = v;
+    }
+    if let Some(v) = body.get("update_check_enabled").and_then(|v| v.as_bool()) {
+        ui.update_check_enabled = v;
+    }
+    if let Some(v) = body.get("update_source").and_then(|v| v.as_str()) {
+        ui.update_source = config::clamp_update_source(v);
+    }
+    if let Some(v) = body.get("update_check_interval").and_then(|v| v.as_str()) {
+        ui.update_check_interval = config::clamp_update_interval(v);
+    }
     ui.sanitize();
 
     // 写盘（就地更新 [ui] 段）→ 失败则不污染内存状态。
@@ -1726,6 +1788,11 @@ async fn ui_prefs_post_handler(
         "detail_collapsed": ui.detail_collapsed,
         "lyrics_opacity": ui.lyrics_opacity,
         "skin_blur": ui.skin_blur,
+        // FR-30：联网总闸 / 版本检测四键随偏好一起读回。
+        "network_enabled": ui.network_enabled,
+        "update_check_enabled": ui.update_check_enabled,
+        "update_source": ui.update_source,
+        "update_check_interval": ui.update_check_interval,
     }))
     .into_response()
 }

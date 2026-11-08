@@ -114,7 +114,7 @@
       <button class="tab-btn" id="tab-playlists" type="button" data-icon="☰"><span>播放列表</span></button>
       <button class="tab-btn" id="tab-albums" type="button" data-icon="◉"><span>专辑</span></button>
       <button class="tab-btn" id="tab-artists" type="button" data-icon="♫"><span>歌手</span></button>
-      <button class="pane-handle" id="handle-sidebar" data-toggle="sidebar" type="button" title="收起 / 展开一级菜单" aria-label="收起 / 展开一级菜单">‹</button>
+      <button class="pane-handle" id="handle-sidebar" data-toggle="sidebar" type="button" data-tip="收起一级菜单" aria-label="收起一级菜单">‹</button>
       <div class="pane-resizer" data-resize="sidebar" title="拖动调整一级菜单宽度"></div>
     </nav>
 
@@ -143,7 +143,7 @@
         <ul id="pl-list" class="pl-list">
           <li class="pl-empty">暂无播放列表</li>
         </ul>
-        <button class="pane-handle group-handle" data-toggle="group" type="button" title="收起 / 展开二级列表" aria-label="收起 / 展开二级列表">‹</button>
+        <button class="pane-handle group-handle" data-toggle="group" type="button" data-tip="收起二级列表" aria-label="收起二级列表">‹</button>
         <div class="pane-mini-icon" aria-hidden="true">☰</div>
         <div class="pane-resizer" data-resize="group" title="拖动调整二级列表宽度"></div>
       </div>
@@ -178,7 +178,7 @@
         <ul id="al-list" class="pl-list">
           <li class="pl-empty">暂无智能播放列表 · 专辑</li>
         </ul>
-        <button class="pane-handle group-handle" data-toggle="group" type="button" title="收起 / 展开二级列表" aria-label="收起 / 展开二级列表">‹</button>
+        <button class="pane-handle group-handle" data-toggle="group" type="button" data-tip="收起二级列表" aria-label="收起二级列表">‹</button>
         <div class="pane-mini-icon" aria-hidden="true">◉</div>
         <div class="pane-resizer" data-resize="group" title="拖动调整二级列表宽度"></div>
       </div>
@@ -206,7 +206,7 @@
         <ul id="ar-list" class="pl-list">
           <li class="pl-empty">暂无智能播放列表 · 歌手</li>
         </ul>
-        <button class="pane-handle group-handle" data-toggle="group" type="button" title="收起 / 展开二级列表" aria-label="收起 / 展开二级列表">‹</button>
+        <button class="pane-handle group-handle" data-toggle="group" type="button" data-tip="收起二级列表" aria-label="收起二级列表">‹</button>
         <div class="pane-mini-icon" aria-hidden="true">♫</div>
         <div class="pane-resizer" data-resize="group" title="拖动调整二级列表宽度"></div>
       </div>
@@ -229,14 +229,15 @@
       </div>
     </div>
 
-    <!-- FR-27（2026-11-08 重做）：每栏唯一的收缩 / 展开图标改为钉在分隔线上的小按钮（collapse rail），
-         不再作为列表项内嵌。左栏/二级栏落右下角、详情栏贴左缘、纵向内联条钉右缘；
+    <!-- FR-25 第五轮（2026-11-08）：每栏唯一的收缩 / 展开控件是贯穿栏全高的细条（collapse rail），
+         贴在该栏与相邻栏之间的 12px 间隙上，不占布局宽度、不作为列表项内嵌。
+         纵向布局时详情区是水平条，该钮随详情内容一起移到内联条并转为横贯全宽的水平细条；
          折叠或窗口缩放都相对所属栏定位，不会漂移到歌曲表格里。 -->
     <aside class="detail-pane" id="detail-pane">
       <div class="detail-pane-head">
         <span>歌曲信息</span>
       </div>
-      <button class="pane-handle detail-handle" id="handle-detail" data-toggle="detail" type="button" title="收起 / 展开歌曲信息栏" aria-label="收起 / 展开歌曲信息栏">›</button>
+      <button class="pane-handle detail-handle" id="handle-detail" data-toggle="detail" type="button" data-tip="收起歌曲信息栏" aria-label="收起歌曲信息栏">›</button>
       <div class="pane-mini-icon" aria-hidden="true">ℹ</div>
       <!-- 内容独立滚动：头部（标题 + 伸缩图标）不随滚动条宽度变化，
            折叠前后图标右缘始终贴栏内固定 padding，水平位置不变。 -->

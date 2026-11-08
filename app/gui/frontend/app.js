@@ -722,7 +722,7 @@ function syncDetailVisibility() {
     const el = $(LAYOUT_VIEWS[v].wrap);
     if (el) el.hidden = !(inline && v === view && (state.detailShown[v] || state.detailCollapsed));
   });
-  // FR-27：详情按钮始终跟着「当前真正可见的详情区」走，成为该区列表的一项。
+  // FR-25 第五轮：详情细条始终跟着「当前真正可见的详情区」走（横向=右侧栏，纵向=内联水平条）。
   const dh = $('handle-detail');
   if (dh) {
     const host = inline ? $(LAYOUT_VIEWS[view].wrap) : $('detail-pane');
@@ -3791,13 +3791,23 @@ function clampPaneWidth(v, which) {
   const L = PANE_WIDTH_LIMITS[which];
   return (isFinite(v) && v >= L.min && v <= L.max) ? Math.round(v) : L.fallback;
 }
-// 每栏唯一的边线折叠钮：横向布局用左右箭头；纵向布局的内联详情条是水平条，改上下方向。
-// 按钮是所属栏的静态 flex 子项、贴固定边缘 → 折叠前后水平位置不变。
+// 每栏唯一的贯穿全高细条：横向布局用左右箭头；纵向布局的内联详情条是水平条，改上下方向。
+// 细条相对所属栏绝对定位、贴固定间隙 → 折叠前后水平位置不变。
+// 同时按当前展开 / 收起态写入即时悬浮提示（CSS ::after 读 data-tip）与读屏标签。
+function setPaneTip(el, text) {
+  if (!el) return;
+  el.setAttribute('data-tip', text);
+  el.setAttribute('aria-label', text);
+}
 function updatePaneHandleArrows() {
   const sh = $('handle-sidebar');
-  if (sh) sh.textContent = state.sidebarCollapsed ? '›' : '‹';
+  if (sh) {
+    sh.textContent = state.sidebarCollapsed ? '›' : '‹';
+    setPaneTip(sh, state.sidebarCollapsed ? '展开一级菜单' : '收起一级菜单');
+  }
   document.querySelectorAll('.pane-handle.group-handle').forEach((b) => {
     b.textContent = state.groupCollapsed ? '›' : '‹';
+    setPaneTip(b, state.groupCollapsed ? '展开二级列表' : '收起二级列表');
   });
   const dh = $('handle-detail');
   if (dh) {
@@ -3805,6 +3815,7 @@ function updatePaneHandleArrows() {
     dh.textContent = inline
       ? (state.detailCollapsed ? '⌄' : '⌃')
       : (state.detailCollapsed ? '‹' : '›');
+    setPaneTip(dh, (state.detailCollapsed ? '展开' : '收起') + (inline ? '歌曲详情' : '歌曲信息栏'));
   }
 }
 // 统一把内存状态投射到 DOM：宽度用 CSS 变量（body class 决定收起态），按钮常驻可展开。
@@ -3871,7 +3882,7 @@ function setupPaneResize() {
   });
   document.querySelectorAll('[data-toggle], [data-collapse]').forEach((b) => {
     b.addEventListener('click', (e) => {
-      e.stopPropagation(); // 折叠钮是钉在分隔线上的独立控件，点击不得触发该栏其它项的选中 / 切页
+      e.stopPropagation(); // 细条是贴在栏间间隙上的独立控件，点击不得触发该栏其它项的选中 / 切页
       togglePane(b.dataset.toggle || b.dataset.collapse);
     });
   });

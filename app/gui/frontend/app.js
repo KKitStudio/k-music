@@ -3853,7 +3853,7 @@ function clampPaneWidth(v, which) {
   const L = PANE_WIDTH_LIMITS[which];
   return (isFinite(v) && v >= L.min && v <= L.max) ? Math.round(v) : L.fallback;
 }
-// 每栏唯一的列表项图标：横向布局用左右箭头；纵向布局的内联详情条是水平条，改上下方向。
+// 每栏唯一的边线折叠钮：横向布局用左右箭头；纵向布局的内联详情条是水平条，改上下方向。
 // 按钮是所属栏的静态 flex 子项、贴固定边缘 → 折叠前后水平位置不变。
 function updatePaneHandleArrows() {
   const sh = $('handle-sidebar');
@@ -3933,7 +3933,7 @@ function setupPaneResize() {
   });
   document.querySelectorAll('[data-toggle], [data-collapse]').forEach((b) => {
     b.addEventListener('click', (e) => {
-      e.stopPropagation(); // 图标只是列表里的一个项，点击不得触发该栏其它项的选中 / 切页
+      e.stopPropagation(); // 折叠钮是钉在分隔线上的独立控件，点击不得触发该栏其它项的选中 / 切页
       togglePane(b.dataset.toggle || b.dataset.collapse);
     });
   });

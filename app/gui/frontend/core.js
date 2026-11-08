@@ -3574,6 +3574,8 @@ function saveAppearance(a) {
 //   saved=true  → 配置为准，覆盖本地缓存后重新应用；
 //   saved=false → 旧版本从未写外观，把 localStorage 里的老偏好一次性迁移进配置（不反向覆盖）。
 function syncAppearanceFromStatus(cfg) {
+  // 布局皮肤：即使外观尚未「被用户触碰」也照常应用（boot 时已按注入值预设，这里与状态对齐）。
+  if (cfg && cfg.layout_skin) applyLayoutSkin(cfg.layout_skin, false);
   if (!cfg || appearanceTouched) return;
   if (cfg.saved) {
     writeAppearanceLocal(appearanceFromConfig(cfg));
@@ -3680,6 +3682,9 @@ function renderAppearanceUI() {
   document.querySelectorAll('#ap-theme-seg .seg-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.theme === a.theme);
   });
+  // 布局皮肤下拉：回显当前值（layoutSkin 在 boot / syncAppearanceFromStatus 时已设置）。
+  const skinSel = document.getElementById('ap-layout-skin');
+  if (skinSel) skinSel.value = layoutSkin;
   const hint = $('ap-theme-hint');
   if (hint) {
     hint.textContent = a.theme === 'system'
@@ -3732,6 +3737,27 @@ function renderAppearanceUI() {
   if (sbOut) sbOut.textContent = bv + 'px';
 }
 
+// ---------- 布局皮肤切换（classic / modern）----------
+// 共享 core.js 引擎，仅换 CSS：boot 时已按 layout_skin 预设 <link> 与 html.skin-modern 类，
+// 这里提供运行时切换 + 持久化。皮肤是「整体配色 / 视觉」层，与底层背景皮肤（skin_type）正交。
+let layoutSkin = 'classic';
+function applyLayoutSkin(name, persist) {
+  if (name !== 'modern' && name !== 'classic') name = 'classic';
+  layoutSkin = name;
+  const link = document.getElementById('skin-css');
+  if (link) link.href = 'skins/' + name + '.css';
+  document.documentElement.classList.toggle('skin-modern', name === 'modern');
+  const sel = document.getElementById('ap-layout-skin');
+  if (sel) sel.value = name;
+  if (persist) {
+    fetch('/api/ui-prefs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ layout_skin: name }),
+    }).catch(() => {});
+  }
+}
+
 // ---------- 绑定外观事件（仅一次） ----------
 function initAppearanceEvents() {
   document.querySelectorAll('#ap-theme-seg .seg-btn').forEach((b) => {
@@ -3757,6 +3783,10 @@ function initAppearanceEvents() {
   };
   bindRange('ap-lyrics-opacity', 'ap-lyrics-opacity-value', 'lyricsOpacity', clampLyricsOpacity, '%');
   bindRange('ap-skin-blur', 'ap-skin-blur-value', 'skinBlur', clampSkinBlur, 'px');
+
+  // 布局皮肤切换：实时换 CSS 并持久化到 [ui].layout_skin（经 /api/ui-prefs 就地更新）。
+  const layoutSkinSel = document.getElementById('ap-layout-skin');
+  if (layoutSkinSel) layoutSkinSel.addEventListener('change', () => applyLayoutSkin(layoutSkinSel.value, true));
 
   const pick = $('ap-skin-pick');
   if (pick) pick.addEventListener('click', () => { const f = $('ap-skin-file'); if (f) f.click(); });

@@ -254,6 +254,9 @@ fn default_lyrics_opacity() -> u32 { LYRICS_OPACITY_DEFAULT }
 fn default_skin_blur() -> u32 { SKIN_BLUR_DEFAULT }
 fn default_update_source() -> String { UPDATE_SOURCE_DEFAULT.to_string() }
 fn default_update_interval() -> String { UPDATE_INTERVAL_DEFAULT.to_string() }
+/// 布局皮肤（界面整体风格）：classic(经典蓝) / modern(重设计棕)。默认 classic。
+/// 与 `skin_type`/`skin_preset`（底层背景皮肤）正交：前者换「布局风格」，后者换「背景图」。
+fn default_layout_skin() -> String { "classic".to_string() }
 
 /// 枚举型字符串钳制：非法值一律回退默认，避免前端拿到未登记源 / 频率而拼出意外 URL。
 pub fn clamp_update_source(v: &str) -> String {
@@ -463,6 +466,10 @@ pub struct UiConfig {
     /// 皮肤现在只画底层模糊背景图，不再解码取色；字段保留只为兼容旧配置与既有接口契约。
     #[serde(default)]
     pub skin_accent: String,
+    /// 布局皮肤（界面整体风格）：classic(经典蓝) / modern(重设计棕)。默认 classic。
+    /// 与 `skin_type`/`skin_preset`（底层背景皮肤）正交：前者换「布局风格」，后者换「背景图」。
+    #[serde(default = "default_layout_skin")]
+    pub layout_skin: String,
     /// 是否曾由前端显式保存过外观方案。
     /// 用于区分「旧版本从未写入外观（此时应把 localStorage 里的老偏好迁移进配置）」与
     /// 「用户显式把主题设成默认值」——两者在字段值上完全一样，必须靠这个标志判别。
@@ -545,6 +552,7 @@ impl Default for UiConfig {
             skin_type: String::new(),
             skin_preset: String::new(),
             skin_accent: String::new(),
+            layout_skin: default_layout_skin(),
             appearance_saved: false,
             auto_playlist_count: default_auto_playlist_count(),
             sidebar_width: default_sidebar_width(),
@@ -733,6 +741,10 @@ impl UiConfig {
         }
         if self.skin_type.is_empty() {
             self.skin_accent.clear();
+        }
+        // 布局皮肤：只认 classic / modern，其余回退默认 classic。
+        if !matches!(self.layout_skin.as_str(), "classic" | "modern") {
+            self.layout_skin = default_layout_skin();
         }
         // 自动播放列表上限：双保险（反序列化已归一化，这里防止运行期被直接赋值越界）。
         self.auto_playlist_count = self

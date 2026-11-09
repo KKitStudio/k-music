@@ -325,6 +325,51 @@ body, .topbar, .toolbar, .sidebar, .detail-pane, .player, .modal,
 .pl-list li.pl-empty:hover { background: transparent; }
 .pl-list .pl-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pl-list .pl-count { flex: none; font-size: 12px; color: var(--text-soft); background: var(--chip-bg); border-radius: 999px; padding: 2px 9px; }
+
+/* ---------- #27 专辑网格 / 列表视图切换（只改 al-list 呈现） ----------
+   颜色 / 圆角 / 阴影全部复用既有 CSS 令牌，两套皮肤共用（modern.css 经 @import 继承），
+   不引入硬编码色值；al-content 曲目表格、列宽与播放队列完全不受影响。 */
+.group-view-seg {
+  display: flex; flex: none; align-items: center;
+  border: 1px solid var(--divider-strong); border-radius: var(--radius-sm);
+  overflow: hidden; background: var(--surface);
+}
+.group-view-seg button {
+  height: 24px; min-width: 28px; padding: 0 6px; border: 0; border-radius: 0;
+  background: transparent; color: var(--text-soft); cursor: pointer;
+  font-size: 13px; line-height: 1;
+}
+.group-view-seg button + button { border-left: 1px solid var(--divider); }
+.group-view-seg button:hover { color: var(--primary); }
+.group-view-seg button.on { background: var(--primary-soft); color: var(--primary); }
+
+/* 网格视图：li 变封面卡片；列数随二级栏宽度自适应（栏宽可调，FR-24 已有能力）。 */
+.pl-list.grid-view {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 10px; align-content: start; padding: 10px;
+}
+.pl-list.grid-view li:not(.pl-empty) {
+  display: flex; flex-direction: column; align-items: stretch; gap: 4px;
+  padding: 6px; border: 1px solid var(--divider); border-radius: var(--radius-sm);
+  background: var(--surface-2); font-size: 12px; min-width: 0;
+}
+.pl-list.grid-view li.pl-empty { grid-column: 1 / -1; }
+.pl-list.grid-view li.selected { border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+.gcard-art {
+  position: relative; width: 100%; aspect-ratio: 1; border-radius: var(--radius-sm);
+  overflow: hidden; background: var(--surface-glass);
+  display: flex; align-items: center; justify-content: center;
+}
+.gcard-art img { position: relative; z-index: 1; width: 100%; height: 100%; object-fit: cover; display: block; }
+.gcard-fallback {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 24px; color: var(--text-muted);
+}
+.gcard-name { font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gcard-count { font-size: 11px; color: var(--text-soft); }
+body.density-compact .pl-list.grid-view { gap: 6px; padding: 6px; }
+body.density-compact .pl-list.grid-view li:not(.pl-empty) { padding: 4px; gap: 2px; }
+
 .pl-main {
   flex: 1; display: flex; flex-direction: column; min-height: 0;
   background: var(--surface); border-radius: var(--radius);

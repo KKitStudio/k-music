@@ -78,6 +78,9 @@ const state = {
   albums: [],
   currentAlbum: null,
   albumTracks: [],
+  // #27：专辑集合的呈现形态（'list' 文字行 / 'grid' 封面卡片）。会话内有效、不落盘；
+  // 只影响二级栏 al-list 的渲染，al-content 曲目表格 / 列宽 / 播放队列完全不变。
+  albumView: 'list',
   artists: [],
   currentArtist: null,
   artistTracks: [],
@@ -2442,6 +2445,40 @@ function renderGroupList(listId, items, emptyText, keyField, selectedKey) {
   });
 }
 
+// #27：专辑集合「网格视图」——把同一批分组渲染为封面卡片。
+// 刻意复用 renderGroupList 的 `li[data-name]` / `.selected` 契约：点击委托、双击整组播放、
+// selectAlbum 的选中高亮、FR-23 播放队列来源全部无需改动；只影响二级栏 al-list 的呈现。
+// 封面来自 GroupView.cover_id（组内代表曲目，后端 MIN(local_id) 聚合），走既有 /api/cover/:id；
+// 无封面时由捕获阶段的 error 委托换成占位符号，不显示「无封面」字样（空字段不渲染）。
+function renderGroupCards(listId, items, emptyText, selectedKey) {
+  const ul = $(listId);
+  if (!ul) return;
+  ul.innerHTML = '';
+  if (!items || !items.length) {
+    ul.innerHTML = '<li class="pl-empty">' + esc(emptyText) + '</li>';
+    return;
+  }
+  items.forEach((it) => {
+    const li = document.createElement('li');
+    li.dataset.name = it.name;
+    const name = detailValue(it.name);
+    const count = detailValue(it.track_count);
+    // fallback 常驻在封面容器内、被 img 盖住：封面不可用（/api/cover 返回 204/404）时
+    // error 委托只把 img 隐藏即可露出占位，不删 img（保留 DOM，便于断言与后续重试）。
+    const cover = it.cover_id
+      ? `<img src="/api/cover/${Number(it.cover_id)}" alt="" loading="lazy" />`
+      : '';
+    li.innerHTML =
+      `<div class="gcard-art">${cover}<span class="gcard-fallback" aria-hidden="true">♫</span></div>` +
+      (name !== null ? `<span class="gcard-name">${esc(name)}</span>` : '') +
+      (count !== null ? `<span class="gcard-count">${esc(count)} 首</span>` : '');
+    if (selectedKey !== null && selectedKey !== undefined && it.name === selectedKey) {
+      li.classList.add('selected');
+    }
+    ul.appendChild(li);
+  });
+}
+
 function renderPlaylists() {
   renderGroupList(
     'pl-list',
@@ -2764,14 +2801,48 @@ async function loadAlbums() {
 }
 
 function renderAlbums() {
-  renderGroupList(
-    'al-list',
-    state.albums,
-    '暂无智能播放列表 · 专辑',
-    'name',
-    state.currentAlbum ? state.currentAlbum.name : null,
-  );
+  const list = $('al-list');
+  const selected = state.currentAlbum ? state.currentAlbum.name : null;
+  if (state.albumView === 'grid') {
+    if (list) list.classList.add('grid-view');
+    renderGroupCards('al-list', state.albums, '暂无智能播放列表 · 专辑', selected);
+  } else {
+    // 默认「列表视图」= 原有行为，renderGroupList 一字不改，保证既有回归断言全绿。
+    if (list) list.classList.remove('grid-view');
+    renderGroupList('al-list', state.albums, '暂无智能播放列表 · 专辑', 'name', selected);
+  }
 }
+
+// #27：切换专辑集合呈现形态。会话内状态，不写 [ui] 配置、不新增定时器。
+function setAlbumView(mode) {
+  state.albumView = mode === 'grid' ? 'grid' : 'list';
+  const seg = $('al-view-seg');
+  if (seg) {
+    seg.querySelectorAll('button[data-view]').forEach((b) => {
+      const on = b.dataset.view === state.albumView;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', String(on));
+    });
+  }
+  renderAlbums();
+}
+
+// 视图切换按钮 + 封面兜底（error 不冒泡，须用捕获阶段委托）。
+(function initAlbumViewSwitch() {
+  const seg = $('al-view-seg');
+  if (seg) {
+    seg.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-view]');
+      if (btn) setAlbumView(btn.dataset.view);
+    });
+  }
+  document.addEventListener('error', (e) => {
+    const img = e.target;
+    if (!img || img.tagName !== 'IMG' || !img.closest('.gcard-art')) return;
+    // 只隐藏 img，露出常驻的 .gcard-fallback；不删节点，避免破图与 DOM 结构抖动。
+    img.style.display = 'none';
+  }, true);
+})();
 
 $('al-list').addEventListener('click', (e) => {
   const li = e.target.closest('li');

@@ -716,47 +716,52 @@ pub fn move_playlist_item(
     Ok(true)
 }
 
-/// 分组视图（专辑 / 歌手）：分组名称 + 组内曲目数。
+/// 分组视图（专辑 / 歌手）：分组名称 + 组内曲目数 + 代表曲目 local_id（用于取封面）。
 /// 用于左侧导航二级列表。NULL 或空字符串折叠为统一的占位名称，便于浏览未标注元数据的曲目。
+/// `cover_id` 由 `MIN(local_id)` 聚合得到（组内稳定代表曲目），前端据此请求 `/api/cover/:id`；
+/// 加字段不新增查询、不改变分组语义，`renderGroupList` 只消费 name/track_count，忽略此字段。
 #[derive(Debug, Clone, Serialize)]
 pub struct GroupView {
     pub name: String,
     pub track_count: i64,
+    pub cover_id: Option<i64>,
 }
 
-/// 列出全部专辑（按名称分组，含各专辑曲目数），NULL/空 album 折叠为「未知专辑」。
+/// 列出全部专辑（按名称分组，含各专辑曲目数与代表曲目 id），NULL/空 album 折叠为「未知专辑」。
 /// 排序：按专辑名称字典序。
 pub fn list_albums(conn: &Connection) -> Result<Vec<GroupView>> {
     let mut stmt = conn.prepare(
-        "SELECT COALESCE(NULLIF(album,''),'未知专辑') AS album, COUNT(*)
-         FROM download_records
-         WHERE status='downloaded' AND file_path IS NOT NULL
-         GROUP BY COALESCE(NULLIF(album,''),'未知专辑')
+        "SELECT COALESCE(NULLIF(dr.album,''),'未知专辑') AS album, COUNT(*), MIN(dr.local_id)
+         FROM download_records dr
+         WHERE dr.status='downloaded' AND dr.file_path IS NOT NULL
+         GROUP BY COALESCE(NULLIF(dr.album,''),'未知专辑')
          ORDER BY album",
     )?;
     let rows = stmt.query_map((), |r| {
         Ok(GroupView {
             name: r.get(0)?,
             track_count: r.get(1)?,
+            cover_id: r.get(2)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-/// 列出全部歌手（按整字段分组，含各歌手曲目数），NULL/空 artist 折叠为「未知艺人」。
+/// 列出全部歌手（按整字段分组，含各歌手曲目数与代表曲目 id），NULL/空 artist 折叠为「未知艺人」。
 /// 注：艺人字段可能含多人协作分隔符（如「A / B」），此处按整字段分组，不做拆分。
 pub fn list_artists(conn: &Connection) -> Result<Vec<GroupView>> {
     let mut stmt = conn.prepare(
-        "SELECT COALESCE(NULLIF(artist,''),'未知艺人') AS artist, COUNT(*)
-         FROM download_records
-         WHERE status='downloaded' AND file_path IS NOT NULL
-         GROUP BY COALESCE(NULLIF(artist,''),'未知艺人')
+        "SELECT COALESCE(NULLIF(dr.artist,''),'未知艺人') AS artist, COUNT(*), MIN(dr.local_id)
+         FROM download_records dr
+         WHERE dr.status='downloaded' AND dr.file_path IS NOT NULL
+         GROUP BY COALESCE(NULLIF(dr.artist,''),'未知艺人')
          ORDER BY artist",
     )?;
     let rows = stmt.query_map((), |r| {
         Ok(GroupView {
             name: r.get(0)?,
             track_count: r.get(1)?,
+            cover_id: r.get(2)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

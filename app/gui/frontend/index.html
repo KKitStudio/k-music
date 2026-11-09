@@ -205,6 +205,11 @@
       <div class="pl-sidebar">
         <div class="pl-sidebar-head">
           <span>专辑</span>
+          <!-- #27：专辑集合的网格 / 列表视图切换（只改二级列表呈现，曲目表格与列宽不变） -->
+          <div class="group-view-seg" id="al-view-seg" role="group" aria-label="专辑视图切换">
+            <button type="button" data-view="grid" aria-label="网格视图" aria-pressed="false" title="网格视图">▦</button>
+            <button type="button" class="on" data-view="list" aria-label="列表视图" aria-pressed="true" title="列表视图">☰</button>
+          </div>
         </div>
         <ul id="al-list" class="pl-list">
           <li class="pl-empty">暂无智能播放列表 · 专辑</li>

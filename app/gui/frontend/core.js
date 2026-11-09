@@ -61,6 +61,11 @@ const state = {
   // 全部曲库视图的筛选状态（会话内有效，不持久化；音质 quality / 仅看收藏 favorite）。
   tracksQuery: '',
   trackFilters: { quality: '', favorite: false },
+  // #31：「我喜欢的音乐」独立智能列表。收藏集合是实时推导的播放来源快照，
+  // 绝不写入 playlists 表；favoritesMode 只决定曲库表格渲染哪一组数据（会话内）。
+  favoritesMode: false,
+  favoriteTracks: [],
+  favoriteCount: 0,
   current: null,
   // 分视图选中态：四个页面各自的「曲级选中」互不干扰。
   // value = { track: 列表中的曲目摘要, trx: /api/track 返回的完整详情 } 或 null。
@@ -879,6 +884,8 @@ function renderConfigStatus() {
 // ---------- 曲库列表 ----------
 async function loadTracks(q) {
   state.tracksQuery = q || '';
+  // #31：收藏模式由 /api/favorites 单独供数并增量维护，曲库请求不得冲掉收藏视图。
+  if (state.favoritesMode) return;
   const params = new URLSearchParams();
   if (state.tracksQuery) params.set('q', state.tracksQuery);
   if (state.trackFilters.quality) params.set('quality', state.trackFilters.quality);
@@ -907,6 +914,18 @@ async function toggleFavorite(id) {
       return;
     }
     if (list) list.favorite = next;
+    // #31：增量维护「我喜欢的音乐」缓存，不重新请求 /api/favorites；
+    // 收藏模式下取消收藏立即从列表移除（实时推导语义）。
+    if (next) {
+      if (!state.favoriteTracks.some((t) => Number(t.local_id) === Number(id))) {
+        state.favoriteTracks.push(Object.assign({}, list || { local_id: id }, { favorite: true }));
+      }
+    } else {
+      state.favoriteTracks = state.favoriteTracks.filter((t) => Number(t.local_id) !== Number(id));
+    }
+    state.favoriteCount = state.favoriteTracks.length;
+    syncFavoriteCount();
+    if (state.favoritesMode) renderTracks();
     document.querySelectorAll('.fav-btn[data-id="' + id + '"]').forEach((b) => {
       b.textContent = next ? '♥' : '♡';
       b.classList.toggle('active', next);
@@ -949,6 +968,83 @@ document.addEventListener(
   }
 })();
 
+// ---------- #31：「我喜欢的音乐」独立智能列表 ----------
+// 实时从 /api/favorites 推导收藏集合（绝不写 playlists 表）。boot / 进入视图时取一次权威值，
+// 之后由 toggleFavorite() 增量维护，播放队列是 local_id[] 快照、生成后不读 DOM。
+async function loadFavorites(render) {
+  const { ok, data } = await api('/api/favorites');
+  // 后端暂不可用时保留上一次缓存，避免侧栏计数 / 双击整组播放被误清零。
+  if (!ok || !data || !Array.isArray(data.tracks)) {
+    syncFavoriteCount();
+    return;
+  }
+  state.favoriteTracks = data.tracks;
+  state.favoriteCount = state.favoriteTracks.length;
+  syncFavoriteCount();
+  if (render) renderTracks();
+}
+
+function syncFavoriteCount() {
+  const c = $('fav-count');
+  if (c) c.textContent = String(state.favoriteCount);
+  const c2 = $('favorites-count');
+  if (c2) c2.textContent = `共 ${state.favoriteCount} 首`;
+}
+
+async function enterFavorites() {
+  if (state.favoritesMode) return;
+  state.favoritesMode = true;
+  // 先清掉上一视图的曲级选中，避免详情栏短暂残留。
+  state.viewSelection.library = null;
+  switchTab('library');
+  const fb = $('track-filter-bar');
+  if (fb) fb.hidden = true;
+  const bar = $('favorites-bar');
+  if (bar) bar.hidden = false;
+  const entry = $('btn-favorites');
+  if (entry) entry.classList.add('active');
+  await loadFavorites(false);
+  renderTracks();
+}
+
+function exitFavorites() {
+  if (!state.favoritesMode) return;
+  state.favoritesMode = false;
+  const fb = $('track-filter-bar');
+  if (fb) fb.hidden = false;
+  const bar = $('favorites-bar');
+  if (bar) bar.hidden = true;
+  const entry = $('btn-favorites');
+  if (entry) entry.classList.remove('active');
+  state.viewSelection.library = null;
+  loadTracks(state.tracksQuery); // 恢复曲库视图（沿用既有搜索 / 筛选）
+}
+
+// 整组播放：双击侧栏入口或点「播放全部」；走既有 startPlayback(fullGroup)，
+// 队列来源 = libraryTracks()（收藏模式下的收藏集合），buildQueue() 算法一行不改。
+async function playAllFavorites() {
+  // 双击入口 / 「播放全部」都先取一次权威集合：boot 缓存可能尚未回来或已过期，
+  // 直接用它生成 fullGroup 队列会漏播。enterFavorites() 内部已 await loadFavorites()。
+  if (!state.favoritesMode) await enterFavorites();
+  else await loadFavorites(false);
+  if (!state.favoriteTracks.length) { setHint('还没有收藏的歌曲'); return; }
+  startPlayback(state.favoriteTracks[0], 'library', { fullGroup: true });
+}
+
+(function initFavoritesEntry() {
+  const entry = $('btn-favorites');
+  if (entry) {
+    entry.addEventListener('click', () => { enterFavorites(); });
+    entry.addEventListener('dblclick', () => { playAllFavorites(); });
+  }
+  const play = $('favorites-play');
+  if (play) play.addEventListener('click', playAllFavorites);
+  const back = $('favorites-back');
+  if (back) back.addEventListener('click', exitFavorites);
+  // boot 缓存一次集合供侧栏计数与双击整组播放；不渲染，首屏曲库表格零行为变化。
+  loadFavorites(false);
+})();
+
 function renderTracks() {
   const head = $('track-head');
   const body = $('track-body');
@@ -957,7 +1053,7 @@ function renderTracks() {
   const cols = visibleTrackCols();
   head.innerHTML = '<th class="idx-col">#</th>' + trackHeadHtml(cols);
   body.innerHTML = '';
-  state.tracks.forEach((t, i) => {
+  libraryTracks().forEach((t, i) => {
     const tr = document.createElement('tr');
     tr.dataset.id = t.local_id;
     tr.innerHTML = idxCellHtml(t, i) + trackCellsHtml(t, cols);
@@ -1154,7 +1250,8 @@ function normalizeStoredWidths() {
 // 渲染后默认选中：保持当前选中的曲目（若仍在过滤后列表内），否则选中第一行。
 // 保证打开主界面时右侧详情面板默认展示第一首歌曲，列表高亮也为首行。
 function autoSelectFirst() {
-  if (!state.tracks.length) {
+  const list = libraryTracks();
+  if (!list.length) {
     state.current = null;
     state.viewSelection.library = null;
     clearDetail();
@@ -1164,9 +1261,9 @@ function autoSelectFirst() {
   const prev = state.viewSelection.library;
   let sel = null;
   if (prev && prev.track) {
-    sel = state.tracks.find((t) => t.local_id === prev.track.local_id) || null;
+    sel = list.find((t) => t.local_id === prev.track.local_id) || null;
   }
-  if (!sel) sel = state.tracks[0];
+  if (!sel) sel = list[0];
   const tr = $('track-body').querySelector('tr[data-id="' + sel.local_id + '"]');
   if (!tr) return;
   // 仅当切换了选中对象时才重新拉取详情，避免搜索过滤时反复请求。
@@ -1186,7 +1283,7 @@ function clearDetail() {
 
 // 刷新按钮旁的统计：当前列表（已按搜索过滤）的歌曲数量。
 function updateTrackCount() {
-  $('track-count').textContent = `共 ${state.tracks.length} 首`;
+  $('track-count').textContent = `共 ${libraryTracks().length} 首`;
 }
 
 // 详情请求的并发令牌：连续快速点击时只认最后一次请求的结果，
@@ -1246,8 +1343,14 @@ function freshPlayback() {
 // state 的队列字段（放在 state 初始化之后补齐，避免打乱既有初始化结构）。
 state.playback = freshPlayback();
 
+// #31：曲库表格当前的渲染 / 播放来源。收藏模式下切换为独立智能列表集合，
+// buildQueue() / visibleRange() / startPlayback(fullGroup) 全部原样复用。
+function libraryTracks() {
+  return (state.favoritesMode ? state.favoriteTracks : state.tracks) || [];
+}
+
 function sourceTracks(view) {
-  if (view === 'library') return state.tracks || [];
+  if (view === 'library') return libraryTracks();
   if (view === 'playlists') return state.playlistTracks || [];
   if (view === 'albums') return state.albumTracks || [];
   if (view === 'artists') return state.artistTracks || [];
@@ -1311,6 +1414,8 @@ function buildQueue(view, clickedId, named) {
 }
 
 function queueTitle(view, named) {
+  // #31：收藏模式是独立智能列表来源，标题与曲库视图区分。
+  if (view === 'library' && state.favoritesMode) return '智能播放列表 · 我喜欢的音乐';
   // FR-23：智能三视图（全部曲库 / 专辑 / 歌手）统一「智能播放列表 · …」前缀；
   // 有名播放列表仍属手工维护列表，标题不变。
   if (view === 'playlists' && state.currentPlaylist) {

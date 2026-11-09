@@ -309,6 +309,7 @@ fn build_router(
     };
     Router::new()
         .route("/api/tracks", get(tracks_handler))
+        .route("/api/favorites", get(favorites_handler))
         .route("/api/tracks/:id/favorite", post(track_favorite_handler))
         .route("/api/tracks/delete", post(track_delete_handler))
         .route("/api/tracks/reveal", post(track_reveal_handler))
@@ -750,6 +751,19 @@ async fn tracks_handler(
     let rows = blocking(move || {
         let c = conn.lock().unwrap();
         db::list_tracks(&c, kw.as_deref(), quality.as_deref(), fav)
+    })
+    .await
+    .unwrap_or_default();
+    axum::Json(serde_json::json!({ "tracks": rows, "count": rows.len() })).into_response()
+}
+
+/// 「我喜欢的音乐」独立智能列表：实时从 download_records 推导收藏集合。
+/// 与 FR-23 一致——只读、不写 playlists 表、不建有名列表；前端拿到的是 local_id[] 快照来源。
+async fn favorites_handler(State(st): State<AppState>) -> Response {
+    let conn = st.conn.clone();
+    let rows = blocking(move || {
+        let c = conn.lock().unwrap();
+        db::list_tracks(&c, None, None, true)
     })
     .await
     .unwrap_or_default();

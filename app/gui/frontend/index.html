@@ -134,6 +134,12 @@
       <button class="tab-btn" id="tab-playlists" type="button" data-icon="☰"><span>播放列表</span></button>
       <button class="tab-btn" id="tab-albums" type="button" data-icon="◉"><span>专辑</span></button>
       <button class="tab-btn" id="tab-artists" type="button" data-icon="♫"><span>歌手</span></button>
+      <!-- #31：常驻「我喜欢的音乐」独立智能列表入口。无 data-icon，不占四 Tab 计数；
+           单击进入收藏视图，双击整组播放（FR-23 式实时推导快照，绝不写 playlists 表）。 -->
+      <button class="tab-btn fav-entry" id="btn-favorites" type="button"
+              title="我喜欢的音乐（双击整组播放）" aria-label="我喜欢的音乐">
+        <span>♥ 我喜欢的音乐</span><span class="fav-entry-count" id="fav-count">0</span>
+      </button>
       <button class="pane-handle" id="handle-sidebar" data-toggle="sidebar" type="button" data-tip="收起一级菜单" aria-label="收起一级菜单">‹</button>
       <div class="pane-resizer" data-resize="sidebar" title="拖动调整一级菜单宽度"></div>
     </nav>
@@ -149,6 +155,13 @@
           <option value="lossless_up">无损及以上</option>
         </select>
         <button id="filter-fav" class="md-btn sm" type="button" aria-pressed="false">已收藏</button>
+      </div>
+      <!-- #31：收藏独立智能列表视图条（仅收藏模式显示，届时上面的筛选条隐藏）。 -->
+      <div class="favorites-bar" id="favorites-bar" hidden>
+        <span class="fav-bar-title">♥ 我喜欢的音乐</span>
+        <span class="fav-bar-count" id="favorites-count">共 0 首</span>
+        <button id="favorites-play" class="md-btn sm primary" type="button">播放全部</button>
+        <button id="favorites-back" class="md-btn sm" type="button">返回曲库</button>
       </div>
       <!-- 纵向：曲目详情内联到歌曲列表上方（把宽度让给列表），横向时隐藏 -->
       <div class="inline-detail" id="lib-detail" hidden>

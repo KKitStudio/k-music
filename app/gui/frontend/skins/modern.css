@@ -266,3 +266,19 @@ html.skin-modern #al-back { margin-right: 10px; }
   html.skin-modern .toolbar::after { display: none; }
   html.skin-modern .layout { padding: 10px 12px; gap: 10px; }
 }
+
+/* ---------- #31：rail 内的收藏入口与收藏视图条 ---------- */
+html.skin-modern .fav-entry {
+  border-top-color: var(--rail-line); color: var(--rail-muted);
+}
+html.skin-modern .fav-entry:hover {
+  background: var(--rail-hover); color: var(--rail-text);
+}
+html.skin-modern .fav-entry-count {
+  background: var(--rail-hover); color: var(--rail-muted);
+}
+html.skin-modern .fav-entry.active {
+  background: var(--rail-hover); color: var(--rail-text);
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+html.skin-modern .favorites-bar { background: var(--surface-2); border-radius: var(--radius); }

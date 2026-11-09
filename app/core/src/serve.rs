@@ -476,6 +476,7 @@ async fn status_handler(State(st): State<AppState>) -> Response {
         "skin_accent": cfg_guard.ui.skin_accent,
         "saved": cfg_guard.ui.appearance_saved,
         "layout_skin": cfg_guard.ui.layout_skin,
+        "list_density": cfg_guard.ui.list_density,
         "lyrics_opacity": cfg_guard.ui.lyrics_opacity,
         "skin_blur": cfg_guard.ui.skin_blur,
     });
@@ -1617,6 +1618,7 @@ async fn ui_prefs_get_handler(State(st): State<AppState>) -> Response {
         "lyrics_opacity": ui.lyrics_opacity,
         "skin_blur": ui.skin_blur,
         "layout_skin": ui.layout_skin,
+        "list_density": ui.list_density,
         // FR-30：联网总闸 / 版本检测四键随偏好一起读回。
         "network_enabled": ui.network_enabled,
         "update_check_enabled": ui.update_check_enabled,
@@ -1637,6 +1639,7 @@ fn appearance_json(ui: &config::UiConfig) -> serde_json::Value {
         "saved": ui.appearance_saved,
         // 布局皮肤：classic / modern（与底层背景皮肤 skin_type 正交）。
         "layout_skin": ui.layout_skin,
+        "list_density": ui.list_density,
         // FR-29：两个可调数值也走同一份注入（首屏脚本据此预设 CSS 变量，避免启动闪烁）。
         "lyrics_opacity": ui.lyrics_opacity,
         "skin_blur": ui.skin_blur,
@@ -1775,6 +1778,12 @@ async fn ui_prefs_post_handler(
             ui.layout_skin = v.to_string();
         }
     }
+    // 列表密度：comfortable / compact（部分更新语义，非法值由 sanitize() 回退默认）。
+    if let Some(v) = body.get("list_density").and_then(|v| v.as_str()) {
+        if matches!(v, "comfortable" | "compact") {
+            ui.list_density = v.to_string();
+        }
+    }
     ui.sanitize();
 
     // 写盘（就地更新 [ui] 段）→ 失败则不污染内存状态。
@@ -1799,6 +1808,7 @@ async fn ui_prefs_post_handler(
         "lyrics_opacity": ui.lyrics_opacity,
         "skin_blur": ui.skin_blur,
         "layout_skin": ui.layout_skin,
+        "list_density": ui.list_density,
         // FR-30：联网总闸 / 版本检测四键随偏好一起读回。
         "network_enabled": ui.network_enabled,
         "update_check_enabled": ui.update_check_enabled,

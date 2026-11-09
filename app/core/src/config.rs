@@ -257,6 +257,8 @@ fn default_update_interval() -> String { UPDATE_INTERVAL_DEFAULT.to_string() }
 /// 布局皮肤（界面整体风格）：classic(经典蓝) / modern(重设计棕)。默认 classic。
 /// 与 `skin_type`/`skin_preset`（底层背景皮肤）正交：前者换「布局风格」，后者换「背景图」。
 fn default_layout_skin() -> String { "classic".to_string() }
+/// 列表密度：comfortable(舒适) / compact(紧凑)。默认 comfortable。
+fn default_list_density() -> String { "comfortable".to_string() }
 
 /// 枚举型字符串钳制：非法值一律回退默认，避免前端拿到未登记源 / 频率而拼出意外 URL。
 pub fn clamp_update_source(v: &str) -> String {
@@ -470,6 +472,10 @@ pub struct UiConfig {
     /// 与 `skin_type`/`skin_preset`（底层背景皮肤）正交：前者换「布局风格」，后者换「背景图」。
     #[serde(default = "default_layout_skin")]
     pub layout_skin: String,
+    /// 列表密度（行高/内边距）：comfortable(舒适) / compact(紧凑)。默认 comfortable。
+    /// 纯前端布局呈现，不改数据；落 app 级 [ui]，重启沿用。
+    #[serde(default = "default_list_density")]
+    pub list_density: String,
     /// 是否曾由前端显式保存过外观方案。
     /// 用于区分「旧版本从未写入外观（此时应把 localStorage 里的老偏好迁移进配置）」与
     /// 「用户显式把主题设成默认值」——两者在字段值上完全一样，必须靠这个标志判别。
@@ -553,6 +559,7 @@ impl Default for UiConfig {
             skin_preset: String::new(),
             skin_accent: String::new(),
             layout_skin: default_layout_skin(),
+            list_density: default_list_density(),
             appearance_saved: false,
             auto_playlist_count: default_auto_playlist_count(),
             sidebar_width: default_sidebar_width(),
@@ -745,6 +752,10 @@ impl UiConfig {
         // 布局皮肤：只认 classic / modern，其余回退默认 classic。
         if !matches!(self.layout_skin.as_str(), "classic" | "modern") {
             self.layout_skin = default_layout_skin();
+        }
+        // 列表密度：只认 comfortable / compact，其余回退默认 comfortable。
+        if !matches!(self.list_density.as_str(), "comfortable" | "compact") {
+            self.list_density = default_list_density();
         }
         // 自动播放列表上限：双保险（反序列化已归一化，这里防止运行期被直接赋值越界）。
         self.auto_playlist_count = self
@@ -1363,7 +1374,7 @@ pub fn update_meta_in_place(path: &Path, meta: &ConfigMeta) -> Result<()> {
 }
 
 /// `[ui]` 段的字段顺序（新增键按此顺序追加，保证输出稳定可读）。
-pub const UI_FIELD_ORDER: [&str; 34] = [
+pub const UI_FIELD_ORDER: [&str; 36] = [
     "track_columns",
     "track_columns_saved",
     "layout_library",
@@ -1399,6 +1410,11 @@ pub const UI_FIELD_ORDER: [&str; 34] = [
     "update_check_enabled",
     "update_source",
     "update_check_interval",
+    // 布局皮肤与列表密度：部分更新语义，追加到段尾（保持 FR-30 四键位置不变）。
+    // 此前 layout_skin 漏挂 UI_FIELD_ORDER，导致落盘时被 upsert_ui_section 丢弃、重启即回退 classic；
+    // 此处一并补挂，使两项偏好真正持久化。
+    "layout_skin",
+    "list_density",
 ];
 
 /// 计算一行 TOML 中未闭合的括号深度（忽略字符串字面量与行注释内的括号）。
@@ -2572,12 +2588,16 @@ track_columns = ["name", "artist"]
             doc["ui"].clone().try_into().unwrap()
         };
         assert_eq!(back.auto_playlist_count, 33);
-        assert_eq!(UI_FIELD_ORDER.len(), 34);
+        assert_eq!(UI_FIELD_ORDER.len(), 36);
         assert_eq!(UI_FIELD_ORDER[20], "auto_playlist_count");
         assert_eq!(UI_FIELD_ORDER[26], "muted");
         assert_eq!(UI_FIELD_ORDER[27], "detail_collapsed");
         assert_eq!(UI_FIELD_ORDER[28], "lyrics_opacity");
         assert_eq!(UI_FIELD_ORDER[29], "skin_blur");
+        assert_eq!(UI_FIELD_ORDER[30], "network_enabled");
+        assert_eq!(UI_FIELD_ORDER[33], "update_check_interval");
+        assert_eq!(UI_FIELD_ORDER[34], "layout_skin");
+        assert_eq!(UI_FIELD_ORDER[35], "list_density");
         assert_eq!(UI_FIELD_ORDER[30], "network_enabled");
         assert_eq!(UI_FIELD_ORDER[31], "update_check_enabled");
         assert_eq!(UI_FIELD_ORDER[32], "update_source");

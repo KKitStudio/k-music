@@ -372,6 +372,14 @@ body, .topbar, .toolbar, .sidebar, .detail-pane, .player, .modal,
 .track-table tbody tr.selected { background: color-mix(in srgb, var(--primary) 18%, transparent); }
 .track-table tbody tr.selected td:first-child { box-shadow: inset 3px 0 0 var(--primary); }
 
+/* ---------- 列表密度（comfortable 默认 / compact 紧凑）----------
+   纯布局呈现，不改数据；两套皮肤共用（modern.css 经 @import 继承）。
+   仅压缩行高 / 内边距，不触碰颜色令牌，避免与主题 / 皮肤背景冲突。 */
+body.density-compact .track-table th { padding: 6px 12px; }
+body.density-compact .track-table td { padding: 5px 12px; }
+body.density-compact .pl-list li:not(.pl-empty) { padding: 6px 12px; }
+body.density-compact .pl-list li.pl-empty { padding: 6px 12px; }
+
 /* ---------- 列宽可调（表头分隔线拖拽） ---------- */
 /* 业务列（带 data-col-key）右侧放一条可拖拽的手柄；拖动时该列与右邻列宽度此消彼长，
    总宽不变，因此不会撑破表格。列宽以「占比 %」存储，窗口缩放时按占比重新分配。 */

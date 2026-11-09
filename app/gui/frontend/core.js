@@ -3576,6 +3576,8 @@ function saveAppearance(a) {
 function syncAppearanceFromStatus(cfg) {
   // 布局皮肤：即使外观尚未「被用户触碰」也照常应用（boot 时已按注入值预设，这里与状态对齐）。
   if (cfg && cfg.layout_skin) applyLayoutSkin(cfg.layout_skin, false);
+  // 列表密度：同理，启动即与状态对齐（默认 comfortable）。
+  if (cfg && cfg.list_density) applyListDensity(cfg.list_density, false);
   if (!cfg || appearanceTouched) return;
   if (cfg.saved) {
     writeAppearanceLocal(appearanceFromConfig(cfg));
@@ -3685,6 +3687,9 @@ function renderAppearanceUI() {
   // 布局皮肤下拉：回显当前值（layoutSkin 在 boot / syncAppearanceFromStatus 时已设置）。
   const skinSel = document.getElementById('ap-layout-skin');
   if (skinSel) skinSel.value = layoutSkin;
+  // 列表密度下拉：回显当前值。
+  const densitySel = document.getElementById('ap-list-density');
+  if (densitySel) densitySel.value = listDensity;
   const hint = $('ap-theme-hint');
   if (hint) {
     hint.textContent = a.theme === 'system'
@@ -3758,6 +3763,24 @@ function applyLayoutSkin(name, persist) {
   }
 }
 
+// ---------- 列表密度切换（comfortable / compact）----------
+// 纯前端布局呈现（行高 / 内边距），不改数据；落 app 级 [ui].list_density，重启沿用。
+let listDensity = 'comfortable';
+function applyListDensity(name, persist) {
+  if (name !== 'comfortable' && name !== 'compact') name = 'comfortable';
+  listDensity = name;
+  document.body.classList.toggle('density-compact', name === 'compact');
+  const sel = document.getElementById('ap-list-density');
+  if (sel) sel.value = name;
+  if (persist) {
+    fetch('/api/ui-prefs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ list_density: name }),
+    }).catch(() => {});
+  }
+}
+
 // ---------- 绑定外观事件（仅一次） ----------
 function initAppearanceEvents() {
   document.querySelectorAll('#ap-theme-seg .seg-btn').forEach((b) => {
@@ -3787,6 +3810,9 @@ function initAppearanceEvents() {
   // 布局皮肤切换：实时换 CSS 并持久化到 [ui].layout_skin（经 /api/ui-prefs 就地更新）。
   const layoutSkinSel = document.getElementById('ap-layout-skin');
   if (layoutSkinSel) layoutSkinSel.addEventListener('change', () => applyLayoutSkin(layoutSkinSel.value, true));
+  // 列表密度切换：实时改行高 / 内边距并持久化到 [ui].list_density。
+  const densitySel = document.getElementById('ap-list-density');
+  if (densitySel) densitySel.addEventListener('change', () => applyListDensity(densitySel.value, true));
 
   const pick = $('ap-skin-pick');
   if (pick) pick.addEventListener('click', () => { const f = $('ap-skin-file'); if (f) f.click(); });

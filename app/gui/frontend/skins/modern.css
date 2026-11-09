@@ -186,17 +186,30 @@ html.skin-modern .toolbar {
   height: var(--stage-head-h); padding: 0 132px 0 24px; gap: 10px;
   flex-wrap: nowrap; overflow: hidden;
   background: var(--bg); border-bottom: 1px solid var(--divider);
+  /* #36：classic 基础规则带 0 1px 2px 阴影，与上面的 border-bottom 叠成双线；
+     现代顶栏只保留一条干净分隔线。 */
+  box-shadow: none;
 }
 html.skin-modern .toolbar::before {
-  content: attr(data-title); flex: none; align-self: flex-start;
-  /* #34：英文副标题已移除，不再需要为它保留横向占位。 */
-  margin: 9px 8px 0 0; line-height: 1.2;
+  /* #36：与搜索框/按钮一样垂直居中（原先 flex-start + margin-top:9px 把标题顶到上沿）。 */
+  content: attr(data-title); flex: none; align-self: center;
+  margin: 0 8px 0 0; line-height: 1.2;
   font-family: var(--serif); font-size: 19px; font-weight: 600; letter-spacing: .01em;
   color: var(--text); white-space: nowrap;
 }
+/* #36：空提示条不再常驻 26px 淡黄带 + 底边框；有提示内容时保持原样。
+   setHint('') 只写空 textContent，:empty 恰好覆盖该状态。 */
+html.skin-modern #hint.hint-bar:empty { display: none; }
 html.skin-modern .toolbar input[type="search"] {
   height: 34px; border-radius: 9px; background: var(--surface);
   border: 1px solid var(--divider); margin-left: auto;
+}
+/* #36：输入框外侧不再出现第二条线。必须带 #search（ID），否则 classic.css 的
+   `.toolbar #search` 特异性更高会盖掉这些声明。焦点仍有边框/底色反馈。 */
+html.skin-modern .toolbar #search { box-shadow: none; }
+html.skin-modern .toolbar #search:focus {
+  box-shadow: none; outline: none;
+  border-color: var(--primary); background: var(--surface);
 }
 html.skin-modern .toolbar .md-btn { height: 34px; border-radius: 9px; }
 

@@ -112,6 +112,10 @@ const state = {
   lyrics: null,
   lyricsIndex: -1,
   lyricsSource: '',
+  // #29：全屏「正在播放 / 歌词」覆盖层开关（会话内，不落 [ui] / playstate）。
+  nowViewOpen: false,
+  // 当前歌词所属曲目，避免打开全屏层时重复请求 /api/lyrics。
+  lyricsLocalId: null,
 };
 
 // 歌曲列表列定义（key → 表头文案 + 单元格渲染）。顺序即默认显示顺序。
@@ -1395,6 +1399,8 @@ function playCurrent() {
   $('now-playing').textContent = (m.name || ('#' + id)) + (m.artist ? ' — ' + m.artist : '');
   $('btn-play').textContent = '⏸';
   loadLyrics(id);
+  // #29：全屏层打开时切曲，左栏标题/封面/副信息同步更新（零新增请求）。
+  if (state.nowViewOpen) syncNowViewMeta();
   renderQueueUI();
   savePlaystate();
 }
@@ -1911,8 +1917,11 @@ async function loadLyrics(localId) {
   state.lyrics = null;
   state.lyricsIndex = -1;
   state.lyricsSource = '';
+  state.lyricsLocalId = localId || null;
   const srcEl = $('lyrics-source');
+  const nvSrc = $('nv-src');
   if (srcEl) srcEl.textContent = '';
+  if (nvSrc) nvSrc.textContent = '';
   if (!localId) { renderLyrics(); return; }
   const { data } = await api('/api/lyrics/' + localId);
   if (!data || !data.ok) { renderLyrics(); return; }
@@ -1920,45 +1929,48 @@ async function loadLyrics(localId) {
   if (!text.trim()) { renderLyrics(); return; }
   state.lyrics = parseLrc(text);
   state.lyricsSource = data.source || '';
-  if (srcEl) {
-    srcEl.textContent =
-      data.source === 'lrc' ? 'LRC 文件' : (data.source === 'embedded' ? '内嵌歌词' : '');
-  }
+  const label = data.source === 'lrc' ? 'LRC 文件' : (data.source === 'embedded' ? '内嵌歌词' : '');
+  if (srcEl) srcEl.textContent = label;
+  if (nvSrc) nvSrc.textContent = label;
   renderLyrics();
   syncLyrics();
 }
 
-// 渲染歌词面板。
-function renderLyrics() {
-  const body = $('lyrics-body');
-  if (!body) return;
-  const L = state.lyrics;
-  if (!L) {
-    body.innerHTML = '<div class="placeholder">暂无歌词</div>';
-    return;
-  }
+// #29：抽屉与全屏层共用同一份歌词 HTML，保证行序 / data-i / data-t 完全一致。
+const LYRICS_BODIES = ['lyrics-body', 'nv-lyrics'];
+function lyricsHtml(L) {
+  if (!L) return '<div class="placeholder">暂无歌词</div>';
   if (!L.timed || !L.lines.length) {
     // 纯文本歌词：整段展示（去掉元信息行）。
     const plain = L.plain.split(/\r?\n/)
       .filter((l) => l.trim() && !/^\[[a-zA-Z]+:.*\]$/.test(l.trim()))
       .map((l) => `<div class="lyric-line">${esc(l.trim())}</div>`)
       .join('');
-    body.innerHTML = plain || '<div class="placeholder">暂无歌词</div>';
-    return;
+    return plain || '<div class="placeholder">暂无歌词</div>';
   }
-  body.innerHTML = L.lines
+  return L.lines
     .map((l, i) => `<div class="lyric-line" data-i="${i}" data-t="${l.t}">${esc(l.text) || '&nbsp;'}</div>`)
     .join('');
-  // 点击某行跳转到对应时间点。
-  body.querySelectorAll('.lyric-line').forEach((el) => {
-    el.addEventListener('click', () => {
-      const t = parseFloat(el.dataset.t);
-      if (!isNaN(t) && audio.duration) audio.currentTime = t;
-    });
+}
+
+// 渲染歌词面板（抽屉 + 全屏层两个容器）。
+function renderLyrics() {
+  const html = lyricsHtml(state.lyrics);
+  LYRICS_BODIES.forEach((id) => {
+    const body = $(id);
+    if (body) body.innerHTML = html;
   });
 }
 
-// 按播放进度同步高亮行并居中滚动。
+// 点击某行跳转到对应时间点：两个容器统一委托一次，避免逐行绑定。
+document.addEventListener('click', (e) => {
+  const line = e.target.closest && e.target.closest('.lyric-line[data-t]');
+  if (!line || !line.closest('#lyrics-body, #nv-lyrics')) return;
+  const t = parseFloat(line.dataset.t);
+  if (!isNaN(t) && audio.duration) audio.currentTime = t;
+});
+
+// 按播放进度同步高亮行并居中滚动（抽屉 + 全屏层同步）。
 function syncLyrics() {
   const L = state.lyrics;
   if (!L || !L.timed || !L.lines.length) return;
@@ -1970,15 +1982,19 @@ function syncLyrics() {
   }
   if (idx === state.lyricsIndex) return;
   state.lyricsIndex = idx;
-  const body = $('lyrics-body');
-  if (!body) return;
-  body.querySelectorAll('.lyric-line').forEach((el) => el.classList.remove('current'));
-  if (idx < 0) return;
-  const el = body.querySelector(`.lyric-line[data-i="${idx}"]`);
-  if (el) {
+  LYRICS_BODIES.forEach((id) => {
+    const body = $(id);
+    if (!body) return;
+    body.querySelectorAll('.lyric-line.current').forEach((el) => el.classList.remove('current'));
+    if (idx < 0) return;
+    const el = body.querySelector(`.lyric-line[data-i="${idx}"]`);
+    if (!el) return;
     el.classList.add('current');
-    body.scrollTop = el.offsetTop - body.clientHeight / 2 + el.offsetHeight / 2;
-  }
+    // 隐藏容器 clientHeight=0，跳过滚动；打开全屏层时会强制重算一次。
+    if (body.clientHeight > 0) {
+      body.scrollTop = el.offsetTop - body.clientHeight / 2 + el.offsetHeight / 2;
+    }
+  });
 }
 
 // 歌词面板开关。
@@ -1995,6 +2011,77 @@ $('btn-lyrics').addEventListener('click', () => {
 });
 $('lyrics-close').addEventListener('click', () => {
   $('lyrics-drawer').hidden = true;
+});
+
+// ---------- #29 正在播放 / 全屏歌词 ----------
+// 元数据只从内存取（播放队列 meta + 各视图已加载的曲目数组），零新增 API 端点。
+function nowViewTrack(id) {
+  const pools = [state.tracks, state.playlistTracks, state.albumTracks, state.artistTracks];
+  for (const arr of pools) {
+    if (!Array.isArray(arr)) continue;
+    const hit = arr.find((t) => Number(t.local_id) === Number(id));
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function syncNowViewMeta() {
+  const pb = state.playback;
+  const id = pb.queue[pb.index];
+  const m = pb.meta[id] || null;
+  const titleEl = $('nv-title');
+  const metaEl = $('nv-meta');
+  const coverEl = $('nv-cover');
+  if (!titleEl || !coverEl) return;
+  if (!m) {
+    titleEl.textContent = '未在播放';
+    if (metaEl) metaEl.textContent = '';
+    coverEl.innerHTML = '<span class="nv-fallback" aria-hidden="true">♫</span>';
+    return;
+  }
+  const t = nowViewTrack(id);
+  titleEl.textContent = m.name || ('#' + id);
+  if (metaEl) metaEl.textContent = [m.artist, t && t.album, t && t.format].filter(Boolean).join(' · ');
+  // fallback 常驻、被 img 盖住；/api/cover 返回 204/404 时只隐藏 img、不删节点（同 #27）。
+  coverEl.innerHTML = `<img src="/api/cover/${Number(id)}" alt="" />` +
+    '<span class="nv-fallback" aria-hidden="true">♫</span>';
+}
+
+function openNowView() {
+  const view = $('now-view');
+  if (!view) return;
+  state.nowViewOpen = true;
+  view.hidden = false;
+  $('btn-now-view').classList.add('is-active');
+  syncNowViewMeta();
+  const id = state.playback.queue[state.playback.index];
+  if (id && state.lyricsLocalId === id) {
+    // 歌词已是当前曲目：复用内存数据，不重复请求 /api/lyrics。
+    renderLyrics();
+    state.lyricsIndex = -1;
+    syncLyrics();
+  } else if (id) {
+    loadLyrics(id);
+  } else {
+    renderLyrics();
+  }
+}
+
+function closeNowView() {
+  const view = $('now-view');
+  if (!view) return;
+  state.nowViewOpen = false;
+  view.hidden = true;
+  $('btn-now-view').classList.remove('is-active');
+}
+
+$('btn-now-view').addEventListener('click', () => {
+  if (state.nowViewOpen) closeNowView();
+  else openNowView();
+});
+$('nv-close').addEventListener('click', closeNowView);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && state.nowViewOpen) closeNowView();
 });
 
 // ---------- 播放控制（全局队列状态机）----------
@@ -2896,8 +2983,10 @@ function setAlbumView(mode) {
   }
   document.addEventListener('error', (e) => {
     const img = e.target;
-    if (!img || img.tagName !== 'IMG' || !img.closest('.gcard-art')) return;
-    // 只隐藏 img，露出常驻的 .gcard-fallback；不删节点，避免破图与 DOM 结构抖动。
+    if (!img || img.tagName !== 'IMG') return;
+    // 专辑卡片（#27）与全屏正在播放封面（#29）共用：两者都有常驻 fallback。
+    if (!img.closest('.gcard-art') && !img.closest('#nv-cover')) return;
+    // 只隐藏 img，露出常驻 fallback；不删节点，避免破图与 DOM 结构抖动。
     img.style.display = 'none';
   }, true);
 })();

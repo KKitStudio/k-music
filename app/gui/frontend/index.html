@@ -297,6 +297,8 @@
       <button id="btn-repeat" class="md-btn sm" type="button" title="列表循环" aria-label="列表循环">🔁</button>
       <button id="btn-queue" class="md-btn sm" type="button" title="查看当前播放队列">队列</button>
       <button id="btn-lyrics" class="md-btn sm" type="button" title="显示歌词">词</button>
+      <!-- #29：全屏「正在播放 / 歌词」覆盖层入口；抽屉「词」按钮保持原行为不变。 -->
+      <button id="btn-now-view" class="md-btn sm" type="button" title="全屏歌词" aria-label="全屏歌词">⛶</button>
       <span id="cur-time" class="time">0:00</span>
       <input id="seek" type="range" min="0" max="1000" value="0" />
       <span id="dur-time" class="time">0:00</span>
@@ -305,6 +307,25 @@
     </div>
     <audio id="audio"></audio>
   </footer>
+
+  <!-- #29 正在播放 / 全屏歌词：覆盖主内容区（底部播放栏保留，可继续控制）。
+       歌词与 #lyrics-body 共用同一份 state.lyrics 与 syncLyrics()，两处高亮/点击跳转同步。 -->
+  <div class="now-view" id="now-view" hidden aria-label="正在播放">
+    <div class="nv-left">
+      <div class="nv-eyebrow">正在播放</div>
+      <div class="cover nv-cover" id="nv-cover"><span class="nv-fallback" aria-hidden="true">♫</span></div>
+      <h2 class="nv-title" id="nv-title">未在播放</h2>
+      <p class="nv-meta" id="nv-meta"></p>
+    </div>
+    <div class="nv-right">
+      <div class="nv-head">
+        <b>歌词</b>
+        <span class="nv-src" id="nv-src"></span>
+        <button id="nv-close" class="md-btn sm" type="button" aria-label="关闭全屏歌词">关闭</button>
+      </div>
+      <div class="nv-lyrics" id="nv-lyrics"><div class="placeholder">暂无歌词</div></div>
+    </div>
+  </div>
 
   <!-- 歌词面板：优先同名 .lrc，其次音频内嵌歌词；按播放进度高亮并可点击跳转 -->
   <div class="lyrics-drawer" id="lyrics-drawer" hidden>

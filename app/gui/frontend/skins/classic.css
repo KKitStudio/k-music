@@ -676,6 +676,64 @@ body.col-resizing * { cursor: col-resize !important; }
 .lyric-line:hover { background: var(--surface-2); }
 .lyric-line.current { color: var(--primary); font-weight: 600; font-size: 14px; }
 
+/* ---------- #29 正在播放 / 全屏歌词（覆盖主内容区，底部播放栏保留）---------- */
+.now-view {
+  position: fixed; inset: 0 0 70px 0; z-index: 45; /* 70px = .player 固定高度 */
+  display: grid; grid-template-columns: minmax(220px, 36%) minmax(0, 1fr);
+  gap: 28px; padding: 26px 32px; overflow: hidden;
+  /* 与 .lyrics-drawer 同一套 FR-29 半透明规则：皮肤图仍从 body::before 底层透出。
+     先写不透明兜底，老 WebView2 不支持 color-mix 时退回实心面板。 */
+  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) var(--lyrics-alpha, 82%), transparent);
+  backdrop-filter: blur(14px) saturate(130%);
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
+  border-bottom: 1px solid var(--divider);
+}
+.now-view[hidden] { display: none; }
+.nv-left { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; min-width: 0; }
+.nv-eyebrow { font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--text-soft); }
+.nv-cover { width: min(300px, 86%); margin: 0; position: relative; box-shadow: var(--shadow-lg); }
+.nv-cover img { position: relative; z-index: 1; }
+.nv-fallback { font-size: 42px; color: var(--text-soft); }
+/* fallback 常驻且被封面盖住；/api/cover 失败时 JS 只隐藏 img、露出它。 */
+.nv-cover img + .nv-fallback {
+  position: absolute; inset: 0; z-index: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.nv-title { margin: 0; font-size: 22px; font-weight: 600; line-height: 1.35; text-align: center; color: var(--text); }
+.nv-meta { margin: 0; font-size: 12px; text-align: center; color: var(--text-soft); }
+.nv-meta:empty { display: none; }
+.nv-right { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.nv-head { display: flex; align-items: center; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--divider); }
+.nv-head b { font-size: 12px; letter-spacing: .12em; color: var(--text-soft); }
+.nv-src { flex: 1 1 auto; font-size: 11px; color: var(--text-soft); background: var(--chip-bg); padding: 2px 8px; border-radius: 999px; }
+.nv-src:empty { display: none; }
+.nv-lyrics {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 22px 8px 40px;
+  scroll-behavior: smooth;
+  mask-image: linear-gradient(180deg, transparent, black 12%, black 84%, transparent);
+  -webkit-mask-image: linear-gradient(180deg, transparent, black 12%, black 84%, transparent);
+}
+.nv-lyrics .lyric-line {
+  font-size: 17px; line-height: 2; padding: 3px 8px; color: var(--text-soft);
+  transition: color .2s, font-size .2s;
+}
+.nv-lyrics .lyric-line:hover { background: var(--surface-2); }
+.nv-lyrics .lyric-line.current {
+  color: var(--primary); font-size: 20px; font-weight: 600; background: transparent;
+}
+.nv-lyrics .lyric-line.current::before {
+  content: ''; display: inline-block; width: 3px; height: 15px;
+  background: var(--primary); margin-right: 9px; vertical-align: -2px; border-radius: 2px;
+}
+@media (max-width: 900px) {
+  .now-view { grid-template-columns: minmax(160px, 32%) minmax(0, 1fr); gap: 16px; padding: 16px 18px; }
+  .nv-cover { width: min(180px, 86%); }
+  .nv-title { font-size: 17px; }
+  .nv-lyrics .lyric-line { font-size: 14px; line-height: 1.9; }
+  .nv-lyrics .lyric-line.current { font-size: 16px; }
+}
+
 /* ---------- 弹窗 ---------- */
 .modal-mask {
   position: fixed; inset: 0; background: rgba(8, 12, 24, 0.5);

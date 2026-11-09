@@ -3,11 +3,35 @@
 //! → 接收服务实际端口 → 打开 WebView 窗口加载该地址（同源，前端用相对路径调用 /api）。
 //! 网易云服务端登录/下载已于 2026-10-29 移除；本地导入源仅「从本地网易云音乐曲库更新」按钮。
 use mt_core::{config, db, log, serve};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::Duration;
+use tauri::Manager;
 
 mod single_instance;
 mod window_state;
+
+/// #32：无边框窗口的自绘控制条。前端 POST /api/window/control，本回调通过
+/// Tauri 窗口 API 执行动作；start_dragging() 内部把请求投递到 UI 线程，
+/// 因此无需手写 Win32、也不依赖 WebView 的 IPC 权限（CLI serve 模式未注册则空转）。
+static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+fn window_control(action: &'static str) {
+    let Some(app) = APP_HANDLE.get() else { return };
+    let Some(win) = app.get_webview_window("main") else { return };
+    match action {
+        "minimize" => { let _ = win.minimize(); }
+        "toggle-maximize" => {
+            let _ = if win.is_maximized().unwrap_or(false) {
+                win.unmaximize()
+            } else {
+                win.maximize()
+            };
+        }
+        "close" => { let _ = win.close(); }
+        "drag" => { let _ = win.start_dragging(); }
+        _ => {}
+    }
+}
 
 /// Windows 原生标题栏着色。
 ///
@@ -205,6 +229,9 @@ pub fn run() {
             // 原生对话框（rfd）关闭后恢复主窗口焦点，避免「主窗口无响应 / 点击不生效」。
             #[cfg(windows)]
             serve::set_post_dialog_focus_sink(native_titlebar::refocus);
+            // #32：登记窗口句柄与自绘控制条回调，供 /api/window/control 调用。
+            let _ = APP_HANDLE.set(app.handle().clone());
+            serve::set_window_control_sink(window_control);
             let uri = tauri::Url::parse(&url).expect("无效的服务地址");
             // 恢复上次窗口位置：先校验坐标仍落在当前某台显示器上（外接屏拔掉 /
             // 改分辨率后旧坐标会跑到屏幕外），不通过则回退系统默认居中。
@@ -213,7 +240,11 @@ pub fn run() {
             let win = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(uri))
                 .title(mt_core::app::title())
                 .inner_size(1100.0, 720.0)
-                .min_inner_size(900.0, 600.0)
+                // #32：隐藏 Windows 原生标题栏（与 modern 深色 rail / 米色 stage 割裂），
+                // 拖动与最小化 / 最大化 / 关闭改由前端自绘控制条经 REST 驱动。
+                .decorations(false)
+                // 重设计布局在 1280x720 以下必然溢出换行；这是「能显示全」的硬下限。
+                .min_inner_size(window_state::MIN_W as f64, window_state::MIN_H as f64)
                 // 先隐藏：定位 / 恢复尺寸 / 最大化完成后再显示，避免位置跳变被看见。
                 .visible(false)
                 .build()?;

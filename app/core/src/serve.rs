@@ -135,6 +135,14 @@ fn restore_focus_after_dialog() {
     }
 }
 
+/// #32：无边框窗口自绘控制条回调（GUI 壳注册）。
+/// 白名单动作由 /api/window/control 校验后转交，CLI serve 模式未注册则静默空转。
+static WINDOW_CONTROL_SINK: OnceLock<fn(&'static str)> = OnceLock::new();
+
+pub fn set_window_control_sink(f: fn(&'static str)) {
+    let _ = WINDOW_CONTROL_SINK.set(f);
+}
+
 /// 解析 `#RRGGBB`（兼容 `#RGB`），返回 Windows COLORREF `0x00BBGGRR`。
 fn parse_colorref(s: &str) -> Option<u32> {
     let h = s.trim().trim_start_matches('#');
@@ -170,6 +178,21 @@ async fn titlebar_color_handler(axum::Json(body): axum::Json<serde_json::Value>)
         }
     }
     axum::Json(serde_json::json!({ "ok": parsed.is_some() })).into_response()
+}
+
+/// #32：自绘窗口控制条。只接受四个固定动作，杜绝任意窗口操作被网页触发。
+async fn window_control_handler(axum::Json(body): axum::Json<serde_json::Value>) -> Response {
+    let action = match body.get("action").and_then(|v| v.as_str()) {
+        Some("minimize") => "minimize",
+        Some("toggle-maximize") => "toggle-maximize",
+        Some("close") => "close",
+        Some("drag") => "drag",
+        _ => return axum::Json(serde_json::json!({ "ok": false })).into_response(),
+    };
+    if let Some(sink) = WINDOW_CONTROL_SINK.get() {
+        sink(action);
+    }
+    axum::Json(serde_json::json!({ "ok": true })).into_response()
 }
 
 /// 解析前端（静态资源）目录：相对 exe 所在目录做级联查找。
@@ -310,6 +333,7 @@ fn build_router(
     Router::new()
         .route("/api/tracks", get(tracks_handler))
         .route("/api/favorites", get(favorites_handler))
+        .route("/api/window/control", post(window_control_handler))
         .route("/api/tracks/:id/favorite", post(track_favorite_handler))
         .route("/api/tracks/delete", post(track_delete_handler))
         .route("/api/tracks/reveal", post(track_reveal_handler))

@@ -15,9 +15,11 @@ use std::sync::{Arc, Mutex};
 use tauri::{Monitor, PhysicalPosition, PhysicalSize, Position, Size, WebviewWindow, WindowEvent};
 
 pub const STATE_FILE: &str = "kqk-window.state";
-/// 与 `WebviewWindowBuilder::min_inner_size(900, 600)` 保持一致（逻辑像素基准）。
-pub const MIN_W: u32 = 900;
-pub const MIN_H: u32 = 600;
+/// #32：与 `WebviewWindowBuilder::min_inner_size(1280, 720)` 保持一致。
+/// 重设计布局（236px rail + stage 顶栏 + 卡片内容 + 80px 播放器）在更小尺寸下
+/// 会溢出换行，因此把窗口硬下限提到「能完整显示」的 1280x720。
+pub const MIN_W: u32 = 1280;
+pub const MIN_H: u32 = 720;
 const MAX_W: u32 = 8192;
 const MAX_H: u32 = 8192;
 /// 窗口至少要有这么大的区域落在某台显示器上，才认为旧坐标仍然可用。
@@ -198,6 +200,14 @@ pub fn track(win: &WebviewWindow, path: PathBuf) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn min_geometry_is_the_full_layout_floor() {
+        // #32：重设计布局的硬下限；builder 直接引用这两个常量，改变它即改变窗口下限。
+        assert_eq!(MIN_W, 1280);
+        assert_eq!(MIN_H, 720);
+        assert!(MIN_W < MAX_W && MIN_H < MAX_H);
+    }
+
     fn sample() -> Geometry {
         Geometry { x: 120, y: 80, w: 1280, h: 800, maximized: false }
     }
@@ -223,16 +233,16 @@ mod tests {
         assert_eq!(parse("x=1\ny=2\nw=99999\nh=800\n"), None, "超上限");
         // 坏行 / 注释 / 未知键应被忽略，不影响有效字段
         assert_eq!(
-            parse("# comment\nbroken-line\nunknown=7\nx=-1920\ny=0\nw=1100\nh=720\nmaximized=0\n"),
-            Some(Geometry { x: -1920, y: 0, w: 1100, h: 720, maximized: false }),
+            parse("# comment\nbroken-line\nunknown=7\nx=-1920\ny=0\nw=1280\nh=720\nmaximized=0\n"),
+            Some(Geometry { x: -1920, y: 0, w: 1280, h: 720, maximized: false }),
             "多显示器负坐标必须保留"
         );
     }
 
     #[test]
     fn parse_accepts_true_false_for_maximized() {
-        assert_eq!(parse("x=0\ny=0\nw=1100\nh=720\nmaximized=true\n").unwrap().maximized, true);
-        assert_eq!(parse("x=0\ny=0\nw=1100\nh=720\nmaximized=0\n").unwrap().maximized, false);
+        assert_eq!(parse("x=0\ny=0\nw=1280\nh=720\nmaximized=true\n").unwrap().maximized, true);
+        assert_eq!(parse("x=0\ny=0\nw=1280\nh=720\nmaximized=0\n").unwrap().maximized, false);
     }
 
     #[test]

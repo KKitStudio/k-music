@@ -77,7 +77,9 @@ html.skin-modern::before {
 
 /* ---------- rail 上段：品牌 + 当前曲库 + 切换按钮 ---------- */
 html.skin-modern .topbar {
-  position: fixed; left: 0; top: 0; z-index: 30;
+  /* #32：必须高于 .sidebar(30)，否则其子元素 .status/.actions
+     被 DOM 更靠后的 sidebar 整块盖住，左下角设置按钮不可见。 */
+  position: fixed; left: 0; top: 0; z-index: 32;
   width: var(--rail-w); height: var(--rail-head-h);
   display: flex; flex-direction: column; align-items: stretch;
   justify-content: flex-start; gap: 6px; padding: 16px 12px 10px;
@@ -177,7 +179,9 @@ html.skin-modern .tab-btn.active {
 /* ---------- stage 顶栏：动态页标题（switchTab 写 data-title）+ 搜索/操作 ---------- */
 html.skin-modern .toolbar {
   position: relative; flex: none;
-  height: var(--stage-head-h); padding: 0 24px; gap: 10px;
+  /* #32：右侧让出自绘窗口按钮；禁止换行（计数/刷新已移入筛选条）。 */
+  height: var(--stage-head-h); padding: 0 132px 0 24px; gap: 10px;
+  flex-wrap: nowrap; overflow: hidden;
   background: var(--bg); border-bottom: 1px solid var(--divider);
 }
 html.skin-modern .toolbar::before {
@@ -267,18 +271,24 @@ html.skin-modern #al-back { margin-right: 10px; }
   html.skin-modern .layout { padding: 10px 12px; gap: 10px; }
 }
 
-/* ---------- #31：rail 内的收藏入口与收藏视图条 ---------- */
-html.skin-modern .fav-entry {
-  border-top-color: var(--rail-line); color: var(--rail-muted);
+/* ---------- #32：自绘窗口控制条 / 列表条计数 ---------- */
+html.skin-modern .win-controls {
+  height: var(--stage-head-h); padding: 0 16px; color: var(--text-soft);
 }
-html.skin-modern .fav-entry:hover {
-  background: var(--rail-hover); color: var(--rail-text);
+html.skin-modern .win-btn:hover { background: var(--chip-bg); color: var(--text); }
+html.skin-modern .win-btn.win-close:hover { background: var(--danger, #d33a3a); color: #fff; }
+/* 原型：「共 N 首」在列表筛选条右端，小字弱化；刷新按钮紧随其后。 */
+html.skin-modern #track-filter-bar .track-count {
+  margin-left: auto; background: transparent; padding: 0 4px;
+  font-size: 11.5px; color: var(--text-soft);
 }
-html.skin-modern .fav-entry-count {
+html.skin-modern #track-filter-bar #btn-refresh { height: 28px; font-size: 11.5px; }
+
+/* ---------- #32：rail 内第 5 个同级 Tab 与收藏视图条 ---------- */
+html.skin-modern #btn-favorites .fav-entry-count {
   background: var(--rail-hover); color: var(--rail-muted);
 }
-html.skin-modern .fav-entry.active {
-  background: var(--rail-hover); color: var(--rail-text);
-  box-shadow: inset 3px 0 0 var(--primary);
+html.skin-modern #btn-favorites.active .fav-entry-count {
+  background: rgba(255, 255, 255, 0.14); color: var(--rail-text);
 }
 html.skin-modern .favorites-bar { background: var(--surface-2); border-radius: var(--radius); }

@@ -61,19 +61,18 @@ const state = {
   // 全部曲库视图的筛选状态（会话内有效，不持久化；音质 quality / 仅看收藏 favorite）。
   tracksQuery: '',
   trackFilters: { quality: '', favorite: false },
-  // #31：「我喜欢的音乐」独立智能列表。收藏集合是实时推导的播放来源快照，
-  // 绝不写入 playlists 表；favoritesMode 只决定曲库表格渲染哪一组数据（会话内）。
-  favoritesMode: false,
+  // #31/#32：「我喜欢的音乐」= 第 5 个一级视图（activeTab==='favorites'），与专辑/歌手同级。
+  // 集合是实时推导的播放来源快照，绝不写入 playlists 表；无二级栏，直接复用曲库表格。
   favoriteTracks: [],
   favoriteCount: 0,
   current: null,
-  // 分视图选中态：四个页面各自的「曲级选中」互不干扰。
+  // 分视图选中态：五个页面各自的「曲级选中」互不干扰。
   // value = { track: 列表中的曲目摘要, trx: /api/track 返回的完整详情 } 或 null。
   // 旧实现只有一个全局 state.current，切页后详情栏会残留上一页的数据。
-  viewSelection: { library: null, playlists: null, albums: null, artists: null },
+  viewSelection: { library: null, playlists: null, albums: null, artists: null, favorites: null },
   // 每页当前是否有可展示的详情内容（渲染时更新，供可见性仲裁使用）。
   // 无内容 → 该页的详情区（右侧栏 / 内联条）整体隐藏，不渲染占位内容。
-  detailShown: { library: false, playlists: false, albums: false, artists: false },
+  detailShown: { library: false, playlists: false, albums: false, artists: false, favorites: false },
   activeTab: 'library',
   // 播放列表（本地曲库内用户自建，local_id 体系）。
   playlists: [],
@@ -173,6 +172,8 @@ const VIEW_BOX = {
   playlists: 'pl-content',
   albums: 'al-content',
   artists: 'ar-content',
+  // #32：收藏复用曲库表格，故共用同一个滚动容器（无二级栏）。
+  favorites: 'library-scroll',
 };
 
 // 布局风格的显示文案（1 = 横向：详情在右侧独立栏；2 = 纵向：详情内联到列表上方）。
@@ -730,7 +731,8 @@ function detailModelOf(view) {
 // 把某页面的详情写入该页的「内联详情条」（纵向布局时显示在列表上方）。
 // 渲染完成后立即重算显隐：内容为空 → 该页内联条隐藏（不留占位）。
 function renderViewDetail(view) {
-  const c = LAYOUT_VIEWS[view];
+  // #32：收藏复用曲库的内联详情条（无独立 DOM），其余页面各自一份。
+  const c = LAYOUT_VIEWS[view] || LAYOUT_VIEWS.library;
   if (!c) return;
   const targets = detailTargets(c.wrap, c.cover, c.fields);
   const ok = renderDetailRegion(targets, detailModelOf(view));
@@ -755,7 +757,10 @@ function renderActiveDetail() {
 //     不渲染「无封面」「暂无信息」等占位内容。
 function syncDetailVisibility() {
   const view = state.activeTab;
-  const inline = (state.layoutStyles[view] || 1) === 2;
+  // #32：收藏没有自己的内联详情条 / 布局配置，复用曲库的那一份；
+  // 详情内容仍取 state.detailShown[view]（收藏自己的选中态），保持分视图隔离。
+  const styleView = view === 'favorites' ? 'library' : view;
+  const inline = (state.layoutStyles[styleView] || 1) === 2;
   // FR-25：纵向布局时右侧详情栏隐藏，列表内图标按钮需贴列表右缘。
   document.body.classList.toggle('detail-inline', inline);
   // 右侧独立详情栏：纵向时隐藏（宽度让给列表）。
@@ -765,12 +770,12 @@ function syncDetailVisibility() {
   // 内联详情条：仅当前页 + 纵向 +（有内容 或 处于收起态）时显示。
   VIEW_KEYS.forEach((v) => {
     const el = $(LAYOUT_VIEWS[v].wrap);
-    if (el) el.hidden = !(inline && v === view && (state.detailShown[v] || state.detailCollapsed));
+    if (el) el.hidden = !(inline && v === styleView && (state.detailShown[view] || state.detailCollapsed));
   });
   // FR-25 第五轮：详情细条始终跟着「当前真正可见的详情区」走（横向=右侧栏，纵向=内联水平条）。
   const dh = $('handle-detail');
   if (dh) {
-    const host = inline ? $(LAYOUT_VIEWS[view].wrap) : $('detail-pane');
+    const host = inline ? $(LAYOUT_VIEWS[styleView].wrap) : $('detail-pane');
     if (host && dh.parentNode !== host) host.appendChild(dh);
   }
   // 布局方向变了 → 详情栏按钮的箭头方向跟着切（横向左右 / 纵向上下）。
@@ -884,8 +889,6 @@ function renderConfigStatus() {
 // ---------- 曲库列表 ----------
 async function loadTracks(q) {
   state.tracksQuery = q || '';
-  // #31：收藏模式由 /api/favorites 单独供数并增量维护，曲库请求不得冲掉收藏视图。
-  if (state.favoritesMode) return;
   const params = new URLSearchParams();
   if (state.tracksQuery) params.set('q', state.tracksQuery);
   if (state.trackFilters.quality) params.set('quality', state.trackFilters.quality);
@@ -925,7 +928,7 @@ async function toggleFavorite(id) {
     }
     state.favoriteCount = state.favoriteTracks.length;
     syncFavoriteCount();
-    if (state.favoritesMode) renderTracks();
+    if (state.activeTab === 'favorites') renderTracks();
     document.querySelectorAll('.fav-btn[data-id="' + id + '"]').forEach((b) => {
       b.textContent = next ? '♥' : '♡';
       b.classList.toggle('active', next);
@@ -968,12 +971,12 @@ document.addEventListener(
   }
 })();
 
-// ---------- #31：「我喜欢的音乐」独立智能列表 ----------
-// 实时从 /api/favorites 推导收藏集合（绝不写 playlists 表）。boot / 进入视图时取一次权威值，
-// 之后由 toggleFavorite() 增量维护，播放队列是 local_id[] 快照、生成后不读 DOM。
+// ---------- #31/#32：「我喜欢的音乐」独立智能列表（第 5 个一级视图）----------
+// 实时从 /api/favorites 推导收藏集合（绝不写 playlists 表）。boot / 切到本视图时取权威值，
+// 之后由 toggleFavorite() 增量维护；播放队列是 local_id[] 快照、生成后不读 DOM。
 async function loadFavorites(render) {
   const { ok, data } = await api('/api/favorites');
-  // 后端暂不可用时保留上一次缓存，避免侧栏计数 / 双击整组播放被误清零。
+  // 后端暂不可用时保留上一次缓存，避免侧栏计数 / 整组播放被误清零。
   if (!ok || !data || !Array.isArray(data.tracks)) {
     syncFavoriteCount();
     return;
@@ -991,58 +994,54 @@ function syncFavoriteCount() {
   if (c2) c2.textContent = `共 ${state.favoriteCount} 首`;
 }
 
-async function enterFavorites() {
-  if (state.favoritesMode) return;
-  state.favoritesMode = true;
-  // 先清掉上一视图的曲级选中，避免详情栏短暂残留。
-  state.viewSelection.library = null;
-  switchTab('library');
-  const fb = $('track-filter-bar');
-  if (fb) fb.hidden = true;
-  const bar = $('favorites-bar');
-  if (bar) bar.hidden = false;
-  const entry = $('btn-favorites');
-  if (entry) entry.classList.add('active');
-  await loadFavorites(false);
-  renderTracks();
-}
-
-function exitFavorites() {
-  if (!state.favoritesMode) return;
-  state.favoritesMode = false;
-  const fb = $('track-filter-bar');
-  if (fb) fb.hidden = false;
-  const bar = $('favorites-bar');
-  if (bar) bar.hidden = true;
-  const entry = $('btn-favorites');
-  if (entry) entry.classList.remove('active');
-  state.viewSelection.library = null;
-  loadTracks(state.tracksQuery); // 恢复曲库视图（沿用既有搜索 / 筛选）
-}
-
 // 整组播放：双击侧栏入口或点「播放全部」；走既有 startPlayback(fullGroup)，
-// 队列来源 = libraryTracks()（收藏模式下的收藏集合），buildQueue() 算法一行不改。
+// 队列来源 = sourceTracks('favorites')，buildQueue() 算法一行不改。
 async function playAllFavorites() {
-  // 双击入口 / 「播放全部」都先取一次权威集合：boot 缓存可能尚未回来或已过期，
-  // 直接用它生成 fullGroup 队列会漏播。enterFavorites() 内部已 await loadFavorites()。
-  if (!state.favoritesMode) await enterFavorites();
-  else await loadFavorites(false);
+  if (state.activeTab !== 'favorites') switchTab('favorites');
+  // 先取权威集合：boot 缓存可能尚未回来或已过期，直接用它生成 fullGroup 会漏播。
+  await loadFavorites(false);
   if (!state.favoriteTracks.length) { setHint('还没有收藏的歌曲'); return; }
-  startPlayback(state.favoriteTracks[0], 'library', { fullGroup: true });
+  startPlayback(state.favoriteTracks[0], 'favorites', { fullGroup: true });
 }
 
 (function initFavoritesEntry() {
-  const entry = $('btn-favorites');
-  if (entry) {
-    entry.addEventListener('click', () => { enterFavorites(); });
-    entry.addEventListener('dblclick', () => { playAllFavorites(); });
-  }
   const play = $('favorites-play');
   if (play) play.addEventListener('click', playAllFavorites);
   const back = $('favorites-back');
-  if (back) back.addEventListener('click', exitFavorites);
+  if (back) back.addEventListener('click', () => switchTab('library'));
   // boot 缓存一次集合供侧栏计数与双击整组播放；不渲染，首屏曲库表格零行为变化。
   loadFavorites(false);
+})();
+
+// ---------- #32：无边框窗口自绘控制条 ----------
+// 隐藏系统标题栏后，拖动与三个按钮都走本机 REST，由 GUI 壳调用 Tauri 窗口 API。
+// 不依赖 WebView IPC 权限；keepalive 保证拖拽请求在快速交互中不被丢弃。
+function windowControl(action) {
+  fetch('/api/window/control', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+    keepalive: true,
+  }).catch(() => {});
+}
+
+(function initWindowControls() {
+  const map = {
+    'win-minimize': 'minimize',
+    'win-maximize': 'toggle-maximize',
+    'win-close': 'close',
+  };
+  Object.keys(map).forEach((id) => {
+    const el = $(id);
+    if (el) el.addEventListener('click', () => windowControl(map[id]));
+  });
+  // 顶栏空白区拖动窗口；排除全部交互元素，双击的第二下不重复发拖动请求。
+  document.addEventListener('mousedown', (e) => {
+    if (e.button !== 0 || e.detail > 1) return;
+    if (!e.target.closest('.topbar, .toolbar')) return;
+    if (e.target.closest('button, input, select, textarea, a, label, [contenteditable], .win-controls, #library-name')) return;
+    windowControl('drag');
+  });
 })();
 
 function renderTracks() {
@@ -1250,15 +1249,16 @@ function normalizeStoredWidths() {
 // 渲染后默认选中：保持当前选中的曲目（若仍在过滤后列表内），否则选中第一行。
 // 保证打开主界面时右侧详情面板默认展示第一首歌曲，列表高亮也为首行。
 function autoSelectFirst() {
+  const view = tracksView();
   const list = libraryTracks();
   if (!list.length) {
     state.current = null;
-    state.viewSelection.library = null;
+    state.viewSelection[view] = null;
     clearDetail();
     return;
   }
-  // 只认「全部曲库」页自己的选中态，避免其它页面的选中串进来。
-  const prev = state.viewSelection.library;
+  // 只认当前表格所属视图自己的选中态，避免其它页面的选中串进来。
+  const prev = state.viewSelection[view];
   let sel = null;
   if (prev && prev.track) {
     sel = list.find((t) => t.local_id === prev.track.local_id) || null;
@@ -1274,11 +1274,12 @@ function autoSelectFirst() {
   }
 }
 
-// 曲库无曲目 / 未选中时清空「全部曲库」页的详情（并同步右侧详情栏）。
+// 当前表格无曲目 / 未选中时清空该视图的详情（并同步右侧详情栏）。
 function clearDetail() {
-  state.viewSelection.library = null;
-  renderViewDetail('library');
-  if (state.activeTab === 'library') renderActiveDetail();
+  const view = tracksView();
+  state.viewSelection[view] = null;
+  renderViewDetail(view);
+  if (state.activeTab === view) renderActiveDetail();
 }
 
 // 刷新按钮旁的统计：当前列表（已按搜索过滤）的歌曲数量。
@@ -1343,14 +1344,19 @@ function freshPlayback() {
 // state 的队列字段（放在 state 初始化之后补齐，避免打乱既有初始化结构）。
 state.playback = freshPlayback();
 
-// #31：曲库表格当前的渲染 / 播放来源。收藏模式下切换为独立智能列表集合，
-// buildQueue() / visibleRange() / startPlayback(fullGroup) 全部原样复用。
+// #32：曲库表格由 library / favorites 两个一级视图共用（无二级栏）。
+// tracksView() 决定选中态归属，libraryTracks() 决定渲染哪一组。
+function tracksView() {
+  return state.activeTab === 'favorites' ? 'favorites' : 'library';
+}
+
 function libraryTracks() {
-  return (state.favoritesMode ? state.favoriteTracks : state.tracks) || [];
+  return (state.activeTab === 'favorites' ? state.favoriteTracks : state.tracks) || [];
 }
 
 function sourceTracks(view) {
-  if (view === 'library') return libraryTracks();
+  if (view === 'favorites') return state.favoriteTracks || [];
+  if (view === 'library') return state.tracks || [];
   if (view === 'playlists') return state.playlistTracks || [];
   if (view === 'albums') return state.albumTracks || [];
   if (view === 'artists') return state.artistTracks || [];
@@ -1414,8 +1420,8 @@ function buildQueue(view, clickedId, named) {
 }
 
 function queueTitle(view, named) {
-  // #31：收藏模式是独立智能列表来源，标题与曲库视图区分。
-  if (view === 'library' && state.favoritesMode) return '智能播放列表 · 我喜欢的音乐';
+  // #32：收藏是第 5 个一级视图，队列标题与曲库区分。
+  if (view === 'favorites') return '智能播放列表 · 我喜欢的音乐';
   // FR-23：智能三视图（全部曲库 / 专辑 / 歌手）统一「智能播放列表 · …」前缀；
   // 有名播放列表仍属手工维护列表，标题不变。
   if (view === 'playlists' && state.currentPlaylist) {
@@ -1944,15 +1950,16 @@ function dropFromPlaybackQueue(id) {
 
 // 删除后刷新当前视图与分组计数，并清掉四页内存里残留的该曲，避免详情/队列显示脏数据。
 async function refreshAfterTrackDelete(id, view) {
-  ['tracks', 'playlistTracks', 'albumTracks', 'artistTracks'].forEach((k) => {
+  ['tracks', 'playlistTracks', 'albumTracks', 'artistTracks', 'favoriteTracks'].forEach((k) => {
     state[k] = (state[k] || []).filter((x) => Number(x.local_id) !== id);
   });
-  ['library', 'playlists', 'albums', 'artists'].forEach((v) => {
+  ['library', 'playlists', 'albums', 'artists', 'favorites'].forEach((v) => {
     const sel = state.viewSelection[v];
     if (sel && sel.track && Number(sel.track.local_id) === id) state.viewSelection[v] = null;
   });
   if (state.current && Number(state.current.local_id) === id) state.current = null;
   if (view === 'library') await loadTracks($('search').value);
+  else if (view === 'favorites') await loadFavorites(true);
   else if (view === 'playlists' && state.currentPlaylist) await loadPlaylistTracks(state.currentPlaylist.id);
   else if (view === 'albums' && state.currentAlbum) await loadAlbumTracks(state.currentAlbum.name);
   else if (view === 'artists' && state.currentArtist) await loadArtistTracks(state.currentArtist.name);
@@ -2569,47 +2576,58 @@ $('ncm-organize-go').addEventListener('click', async () => {
 $('btn-refresh').addEventListener('click', () => loadTracks($('search').value));
 $('search').addEventListener('input', (e) => loadTracks(e.target.value));
 
-// ---------- 左侧 tab 选择栏（全部曲库 / 播放列表 / 专辑 / 歌手）----------
+// ---------- 左侧 tab 选择栏（全部曲库 / 播放列表 / 专辑 / 歌手 / 我喜欢的音乐）----------
+// #32：收藏与专辑/歌手同级，只是没有二级栏：直接复用 #library-pane 的单张歌曲表格。
 function switchTab(tab) {
   closeTrackContextMenu();
+  const prevTab = state.activeTab;
   state.activeTab = tab;
   // #30：modern 皮肤 stage 顶部标题由 CSS 伪元素读取属性；classic 完全不消费。
   document.body.dataset.tab = tab;
   const toolbar = document.querySelector('.toolbar');
   if (toolbar) {
-    toolbar.dataset.title = ({ library: '全部曲库', playlists: '播放列表', albums: '专辑', artists: '歌手' })[tab]
-      || '全部曲库';
+    toolbar.dataset.title = ({
+      library: '全部曲库', playlists: '播放列表', albums: '专辑', artists: '歌手',
+      favorites: '我喜欢的音乐'
+    })[tab] || '全部曲库';
   }
-  $('tab-library').classList.toggle('active', tab === 'library');
-  $('tab-playlists').classList.toggle('active', tab === 'playlists');
-  $('tab-albums').classList.toggle('active', tab === 'albums');
-  $('tab-artists').classList.toggle('active', tab === 'artists');
-  $('library-pane').hidden = (tab !== 'library');
+  ['library', 'playlists', 'albums', 'artists', 'favorites'].forEach((v) => {
+    const btn = $(v === 'favorites' ? 'btn-favorites' : 'tab-' + v);
+    if (btn) btn.classList.toggle('active', tab === v);
+  });
+  // 收藏与曲库共用同一张表格 DOM；其余三页各自独立 pane。
+  $('library-pane').hidden = !(tab === 'library' || tab === 'favorites');
   $('playlists-pane').hidden = (tab !== 'playlists');
   $('albums-pane').hidden = (tab !== 'albums');
   $('artists-pane').hidden = (tab !== 'artists');
+  const fb = $('track-filter-bar');
+  if (fb) fb.hidden = (tab === 'favorites');
+  const bar = $('favorites-bar');
+  if (bar) bar.hidden = (tab !== 'favorites');
   // 按当前页面的布局风格决定：右侧独立详情栏（横向）还是列表上方内联详情条（纵向）。
   applyLayoutStyle();
-  // 右侧详情栏是四个页面共用的单一 DOM：切页后必须按新页面的选中态重算，
-  // 否则会残留上一页（例如曲库页）选中的歌曲数据。
+  // 右侧详情栏是各页面共用的单一 DOM：切页后必须按新页面的选中态重算。
   renderActiveDetail();
-  // 表格高亮同步到新页面的选中项。
   syncSelectionHighlight(tab);
-  // 目标页的内联详情条也按该页自己的选中态重算（与右侧详情栏保持同一来源）。
   renderViewDetail(tab);
-  // 切到对应面板时载入列表。播放列表页额外重拉当前列表曲目：
-  // 加入 / 移除 / 删除歌曲可能发生在别的视图，右侧表格不能沿用上次加载的快照。
+  // 切到对应面板时载入列表。
   if (tab === 'playlists') {
     loadPlaylists();
     if (state.currentPlaylist) loadPlaylistTracks(state.currentPlaylist.id);
   }
   if (tab === 'albums') loadAlbums();
   if (tab === 'artists') loadArtists();
+  if (tab === 'favorites') loadFavorites(true);
+  // #32：从收藏切回曲库必须重绘表格，否则会停留在收藏集合（空收藏时表现为空白）。
+  if (tab === 'library' && prevTab === 'favorites') renderTracks();
 }
 $('tab-library').addEventListener('click', () => switchTab('library'));
 $('tab-playlists').addEventListener('click', () => switchTab('playlists'));
 $('tab-albums').addEventListener('click', () => switchTab('albums'));
 $('tab-artists').addEventListener('click', () => switchTab('artists'));
+$('btn-favorites').addEventListener('click', () => switchTab('favorites'));
+$('btn-favorites').addEventListener('dblclick', () => { playAllFavorites(); });
+
 // #30：boot 不调用 switchTab，首屏若已是 modern 皮肤也要有 stage 标题。
 (function initStageTitle() {
   document.body.dataset.tab = state.activeTab || 'library';
@@ -4197,6 +4215,18 @@ let layoutSkin = 'classic';
 // #30：modern 会强制专辑进入封面墙；切回 classic 必须还原用户先前的视图，
 // 否则 classic 的专辑页会残留 grid（破坏 classic 1:1）。
 let albumViewBeforeModern = 'list';
+// #32：modern 按重设计稿把「共 N 首 / 刷新」放在列表筛选条右侧；
+// classic 必须挂回 .toolbar，保证经典皮肤 1:1 不变。
+function syncToolbarExtras(skin) {
+  const count = $('track-count');
+  const refresh = $('btn-refresh');
+  const bar = $('track-filter-bar');
+  const toolbar = document.querySelector('.toolbar');
+  if (!count || !refresh || !bar || !toolbar) return;
+  const target = skin === 'modern' ? bar : toolbar;
+  [count, refresh].forEach((el) => { if (el.parentNode !== target) target.appendChild(el); });
+}
+
 function applyLayoutSkin(name, persist) {
   if (name !== 'modern' && name !== 'classic') name = 'classic';
   const wasModern = document.documentElement.classList.contains('skin-modern');
@@ -4205,6 +4235,7 @@ function applyLayoutSkin(name, persist) {
   if (link) link.href = 'skins/' + name + '.css';
   document.documentElement.classList.toggle('skin-modern', name === 'modern');
   document.body.dataset.skin = name;
+  syncToolbarExtras(name);
   // #30：modern 默认「整页封面墙」；切回 classic 复位视图与两个 class（1:1 不受影响）。
   if (name === 'modern') {
     if (!wasModern) albumViewBeforeModern = state.albumView;

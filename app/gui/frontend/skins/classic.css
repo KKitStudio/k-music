@@ -99,7 +99,7 @@ body, .topbar, .toolbar, .sidebar, .detail-pane, .player, .modal,
 /* ---------- 顶栏 ---------- */
 .topbar {
   display: flex; align-items: center; gap: 16px;
-  padding: 0 20px; height: 60px;
+  padding: 0 124px 0 20px; height: 60px;
   color: #fff;
   background: linear-gradient(135deg, var(--primary), var(--primary-dark));
   box-shadow: var(--shadow); z-index: 5;
@@ -453,24 +453,30 @@ body.density-compact .pl-list.grid-view li:not(.pl-empty) { padding: 4px; gap: 2
 .filter-bar .md-select { min-width: 120px; }
 #filter-fav.active { background: color-mix(in srgb, #e5484d 16%, transparent); border-color: #e5484d; color: #e5484d; }
 
-/* ---------- #31：「我喜欢的音乐」独立智能列表 ---------- */
+/* ---------- #32：无边框窗口自绘控制条 ---------- */
+.win-controls {
+  position: fixed; top: 0; right: 0; z-index: 60;
+  display: flex; align-items: center; gap: 2px; height: 60px; padding: 0 8px;
+  color: #fff;
+}
+.win-btn {
+  width: 34px; height: 34px; border: none; border-radius: 8px;
+  background: transparent; color: inherit; font-size: 15px; line-height: 1;
+  cursor: pointer; opacity: .8; transition: background .15s, opacity .15s;
+}
+.win-btn:hover { background: rgba(255, 255, 255, 0.18); opacity: 1; }
+.win-btn.win-close:hover { background: var(--danger, #d33a3a); color: #fff; }
+
+/* ---------- #31/#32：「我喜欢的音乐」独立智能列表 ---------- */
 /* 两条栏都设了 display:flex，必须显式处理 hidden（作者 display 会盖过 UA 的 [hidden]）。 */
 .filter-bar[hidden], .favorites-bar[hidden] { display: none; }
-.fav-entry {
-  display: flex; align-items: center; gap: 6px;
-  margin-top: 4px; border-top: 1px solid var(--divider); border-radius: 0;
-  font-size: 13px; color: var(--text-soft);
-}
-.fav-entry > span:first-child {
-  flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.fav-entry-count {
-  flex: none; font-size: 11px; color: var(--text-soft);
+/* #32：收藏是第 5 个同级 Tab，完全沿用 .tab-btn 样式，只在右侧加计数徽标。 */
+.tab-btn .fav-entry-count {
+  float: right; font-size: 11px; color: var(--text-soft);
   background: var(--chip-bg); border-radius: 999px; padding: 1px 7px;
 }
-.fav-entry.active {
-  background: var(--chip-bg); color: var(--primary); font-weight: 600;
-  box-shadow: inset 3px 0 0 var(--primary);
+.tab-btn.active .fav-entry-count {
+  color: var(--on-primary); background: rgba(255, 255, 255, 0.22);
 }
 .favorites-bar {
   display: flex; align-items: center; gap: 10px;

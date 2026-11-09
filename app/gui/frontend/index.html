@@ -88,6 +88,13 @@
     </div>
   </header>
 
+  <!-- #32：隐藏系统标题栏后，由应用自绘最小化 / 最大化 / 关闭；顶栏空白区可拖动窗口。 -->
+  <div class="win-controls" id="win-controls">
+    <button id="win-minimize" class="win-btn" type="button" aria-label="最小化" title="最小化">─</button>
+    <button id="win-maximize" class="win-btn" type="button" aria-label="最大化 / 还原" title="最大化 / 还原">□</button>
+    <button id="win-close" class="win-btn win-close" type="button" aria-label="关闭" title="关闭">×</button>
+  </div>
+
   <section class="toolbar">
     <input id="search" type="search" placeholder="搜索曲名 / 艺人 / 专辑" />
     <button id="btn-scan" class="md-btn">扫描曲库</button>
@@ -134,11 +141,11 @@
       <button class="tab-btn" id="tab-playlists" type="button" data-icon="☰"><span>播放列表</span></button>
       <button class="tab-btn" id="tab-albums" type="button" data-icon="◉"><span>专辑</span></button>
       <button class="tab-btn" id="tab-artists" type="button" data-icon="♫"><span>歌手</span></button>
-      <!-- #31：常驻「我喜欢的音乐」独立智能列表入口。无 data-icon，不占四 Tab 计数；
-           单击进入收藏视图，双击整组播放（FR-23 式实时推导快照，绝不写 playlists 表）。 -->
-      <button class="tab-btn fav-entry" id="btn-favorites" type="button"
+      <!-- #32：与专辑/歌手同级的第 5 个一级 Tab；无二级栏，直接显示歌曲列表。
+           双击整组播放（FR-23 式实时推导快照，绝不写 playlists 表）。 -->
+      <button class="tab-btn" id="btn-favorites" type="button" data-icon="♥"
               title="我喜欢的音乐（双击整组播放）" aria-label="我喜欢的音乐">
-        <span>♥ 我喜欢的音乐</span><span class="fav-entry-count" id="fav-count">0</span>
+        <span>我喜欢的音乐</span><span class="fav-entry-count" id="fav-count">0</span>
       </button>
       <button class="pane-handle" id="handle-sidebar" data-toggle="sidebar" type="button" data-tip="收起一级菜单" aria-label="收起一级菜单">‹</button>
       <div class="pane-resizer" data-resize="sidebar" title="拖动调整一级菜单宽度"></div>

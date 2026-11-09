@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["app/core", "app/cli", "app/gui"]
+
+[workspace.package]
+version = "0.9.4"
+edition = "2021"
+license = "LicenseRef-KKitStudio"
+homepage = "https://github.com/KKitStudio/k-music"
+authors = ["KKitStudio"]
+
+# 产物体积优化（瘦身）：以体积优先的发布配置。
+# - opt-level="z"  按尺寸优化代码生成（比默认 "3" 更小，扫描性能影响有限）
+# - lto="thin"     跨 crate 内联 + 死代码消除（full LTO 体积略小但编译更慢）
+# - panic="abort"  移除 unwind 栈展开表与 panic 机制，约减 10–20%（桌面应用可接受）
+# - codegen-units=1 单单元代码生成，提升优化/内联、减小体积
+# - strip=true     剥离符号表（MSVC 下同时抑制 .pdb 生成）
+[profile.release]
+opt-level = "z"
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

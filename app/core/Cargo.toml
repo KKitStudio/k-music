@@ -1,0 +1,23 @@
+[package]
+name = "mt-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+anyhow = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+lofty = "0.21"
+# 仅启用实际用到的 tokio feature（axum 已强制拉齐 rt/net/time/sync/io-util/macros）。
+# 实际用到：rt-multi-thread(new_multi_thread)、net(TcpListener)、time、sync、signal(ctrl_c)。
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "signal", "macros", "io-util"] }
+axum = "0.7"
+tower-http = { version = "0.5", features = ["fs"] }
+rfd = "0.15"
+encoding_rs = { version = "0.8.44", default-features = false, features = ["std", "alloc"] }
+# 说明：ureq/aes/cbc/num-bigint/hex/base64/rand/percent-encoding 为旧 netease(WEAPI) 加密/网络依赖，
+# 已于 2026-10-29 移除服务端登录/下载后成为死代码（源码零引用），故剔除以精简依赖树与编译时间。
+# 若未来恢复基于官方 API 的下载，再按需重新引入。

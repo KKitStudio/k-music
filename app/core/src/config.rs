@@ -254,7 +254,7 @@ fn default_lyrics_opacity() -> u32 { LYRICS_OPACITY_DEFAULT }
 fn default_skin_blur() -> u32 { SKIN_BLUR_DEFAULT }
 fn default_update_source() -> String { UPDATE_SOURCE_DEFAULT.to_string() }
 fn default_update_interval() -> String { UPDATE_INTERVAL_DEFAULT.to_string() }
-/// 布局皮肤（界面整体风格）：classic(经典蓝) / modern(重设计棕)。默认 classic。
+/// 布局皮肤（界面整体风格）：classic(经典) / modern(现代)。默认 classic。
 /// 与 `skin_type`/`skin_preset`（底层背景皮肤）正交：前者换「布局风格」，后者换「背景图」。
 fn default_layout_skin() -> String { "classic".to_string() }
 /// 列表密度：comfortable(舒适) / compact(紧凑)。默认 comfortable。
@@ -468,7 +468,7 @@ pub struct UiConfig {
     /// 皮肤现在只画底层模糊背景图，不再解码取色；字段保留只为兼容旧配置与既有接口契约。
     #[serde(default)]
     pub skin_accent: String,
-    /// 布局皮肤（界面整体风格）：classic(经典蓝) / modern(重设计棕)。默认 classic。
+    /// 布局皮肤（界面整体风格）：classic(经典) / modern(现代)。默认 classic。
     /// 与 `skin_type`/`skin_preset`（底层背景皮肤）正交：前者换「布局风格」，后者换「背景图」。
     #[serde(default = "default_layout_skin")]
     pub layout_skin: String,

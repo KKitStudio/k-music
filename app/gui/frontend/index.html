@@ -64,7 +64,7 @@
   </script>
   <link id="skin-css" rel="stylesheet" href="skins/classic.css" />
   <script>
-    // 首屏按 layout_skin 选取皮肤 CSS（在样式表加载前设定 href，避免经典蓝先闪一帧再切棕）。
+    // 首屏按 layout_skin 选取皮肤 CSS（在样式表加载前设定 href，避免经典皮肤先闪一帧再切现代）。
     (function () {
       var sk = (window.__KQK_BOOT_APPEARANCE__ && window.__KQK_BOOT_APPEARANCE__.layout_skin) || 'classic';
       var link = document.getElementById('skin-css');
@@ -75,7 +75,7 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">K music</div>
+    <div class="brand">K music<span class="brand-version" id="brand-version" aria-label="版本号"></span></div>
     <div class="library-name" id="library-name" title="曲库名称"></div>
     <button id="btn-switch-library" class="icon-btn" type="button" title="切换曲库" aria-label="切换曲库">
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 6h-7.59l3.29-3.29L16 2l-6 6 6 6 1.7-1.71L13.41 10H21V6zM3 18h7.59l-3.29 3.29L8 22l6-6-6-6-1.7 1.71L10.59 14H3v4z"/></svg>
@@ -272,7 +272,7 @@
           <span id="ar-title">歌手内容</span>
         </div>
         <!-- 歌手页内联详情条：把独立右侧详情栏的「封面 + 文字」移到歌曲列表上方，
-             让出 300px 宽度给歌曲表格，避免列宽被挤压导致文字显示不全。
+             让出 240px 宽度给歌曲表格，避免列宽被挤压导致文字显示不全。
              内容按页面隔离：只展示「歌手」页自己选中的歌手 / 歌曲，
              不会残留「全部曲库」页选中的歌曲数据。
              横向时隐藏该条、改为显示右侧独立详情栏（与其它页面一致）。 -->
@@ -503,8 +503,8 @@
           <div class="ap-label">布局皮肤</div>
           <!-- 与上方「主题模式」同款分段控件，不再用下拉。 -->
           <div class="seg" id="ap-layout-skin" role="group" aria-label="布局皮肤">
-            <button class="seg-btn active" type="button" data-skin="classic" aria-pressed="true">经典蓝（默认）</button>
-            <button class="seg-btn" type="button" data-skin="modern" aria-pressed="false">重设计棕</button>
+            <button class="seg-btn active" type="button" data-skin="classic" aria-pressed="true">经典（默认）</button>
+            <button class="seg-btn" type="button" data-skin="modern" aria-pressed="false">现代</button>
           </div>
           <div class="ap-subhint">切换整体界面风格（配色 / 视觉），实时生效并自动保存，下次启动沿用。</div>
         </div>

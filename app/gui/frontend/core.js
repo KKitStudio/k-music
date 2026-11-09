@@ -439,6 +439,9 @@ async function refreshStatus() {
     state.library_config_compat = data.library_config_compat || '';
     state.library_config_conflict = data.library_config_conflict_reason || '';
     state.app_version = data.app_version || '';
+    // #34：左侧品牌区第二行显示编译期版本号，与窗口标题 / 设置·关于同源，升级版本自动跟随。
+    const brandVer = $('brand-version');
+    if (brandVer) brandVer.textContent = state.app_version ? 'v' + state.app_version : '';
     // FR-30：联网四键。后端 sanitize() 已把枚举钳到已登记值，这里再兜一层：
     // 未下发（老版本服务）一律保持「全部关闭」，绝不因字段缺失而隐式联网。
     state.networkEnabled = data.network_enabled === true;
@@ -524,7 +527,7 @@ function updateChrome() {
 
 // ---------- 布局风格（横向 / 纵向）----------
 // 横向(1) = 曲目详情显示在窗口右侧的独立详情栏；
-// 纵向(2) = 详情内联到歌曲列表上方，把 300px 宽度让给列表（长曲名/艺人/专辑不被截断）。
+// 纵向(2) = 详情内联到歌曲列表上方，把 240px 宽度让给列表（长曲名/艺人/专辑不被截断）。
 // 每个页面独立配置，切换后立即生效并持久化到配置文件。
 
 // 应用当前页面的布局风格：决定「右侧详情栏」与「内联详情条」的显示与隐藏。

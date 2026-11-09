@@ -1,5 +1,5 @@
 /* ============================================================
-   重设计棕皮肤（modern）
+   现代皮肤（modern）
    ------------------------------------------------------------
    - 与底层背景皮肤（skin_type / skin_preset）正交：这里只换「整体配色 + 布局」。
    - 复用 classic.css 的全部组件样式与 core.js 引擎（DOM 结构不变，仅换 CSS）。
@@ -99,10 +99,13 @@ html.skin-modern .brand::before {
   -webkit-mask: none; mask: none;
   display: grid; place-items: center; font: 700 15px/1 var(--serif);
 }
-html.skin-modern .brand::after {
-  content: "Local Library"; grid-column: 2; grid-row: 2;
-  font-size: 10px; font-weight: 400; letter-spacing: .18em; text-transform: uppercase;
-  color: var(--rail-muted);
+/* #34：品牌区第二行改为编译期版本号（core.js 由 /api/status 的 app_version 写入），
+   删除原来的英文副标题；经典皮肤下 .brand-version 隐藏。 */
+html.skin-modern .brand-version {
+  display: block; /* 覆盖 classic.css 的 .brand-version{display:none}，否则第二行不渲染 */
+  grid-column: 2; grid-row: 2; align-self: start;
+  font-size: 10px; font-weight: 400; letter-spacing: .14em;
+  color: var(--rail-muted); white-space: nowrap;
 }
 html.skin-modern .library-name {
   max-width: 100%; font-size: 12.5px; font-weight: 600; opacity: 1;
@@ -186,18 +189,10 @@ html.skin-modern .toolbar {
 }
 html.skin-modern .toolbar::before {
   content: attr(data-title); flex: none; align-self: flex-start;
-  /* #33：::after 是绝对定位、不占 flex 宽度，标题必须给副标题留出足够占位，
-     否则搜索框会被推到副标题文字上（用户报告「Offline 与文本框重叠」）。 */
-  min-width: 168px; box-sizing: border-box;
+  /* #34：英文副标题已移除，不再需要为它保留横向占位。 */
   margin: 9px 8px 0 0; line-height: 1.2;
   font-family: var(--serif); font-size: 19px; font-weight: 600; letter-spacing: .01em;
   color: var(--text); white-space: nowrap;
-}
-html.skin-modern .toolbar::after {
-  content: "Local Library · Offline"; position: absolute; left: 24px; top: 38px;
-  max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  font-size: 10.5px; letter-spacing: .04em; color: var(--text-soft);
-  pointer-events: none;
 }
 html.skin-modern .toolbar input[type="search"] {
   height: 34px; border-radius: 9px; background: var(--surface);
@@ -267,13 +262,10 @@ html.skin-modern #al-back { margin-right: 10px; }
 /* ---------- 窄屏收窄 rail，保证表格可用宽度 ---------- */
 @media (max-width: 1100px) {
   html.skin-modern { --rail-w: 196px; }
-  /* #33：窄屏没有足够横向空间同时容纳标题占位与搜索框，直接隐藏副标题并释放占位。 */
-  html.skin-modern .toolbar::before { font-size: 17px; min-width: 0; }
-  html.skin-modern .toolbar::after { display: none; }
+  html.skin-modern .toolbar::before { font-size: 17px; }
 }
 @media (max-width: 860px) {
   html.skin-modern { --rail-w: 168px; --rail-head-h: 140px; }
-  html.skin-modern .toolbar::after { display: none; }
   html.skin-modern .layout { padding: 10px 12px; gap: 10px; }
 }
 

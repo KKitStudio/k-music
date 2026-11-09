@@ -108,6 +108,8 @@ body, .topbar, .toolbar, .sidebar, .detail-pane, .player, .modal,
   font-size: 21px; font-weight: 700; letter-spacing: .8px; flex: none; white-space: nowrap;
   display: flex; align-items: center; gap: 9px;
 }
+/* #34：版本号徽标只在现代皮肤的左栏品牌区显示，经典顶栏保持 1:1 不加字。 */
+.brand-version { display: none; }
 .brand::before {
   content: ""; width: 22px; height: 22px; border-radius: 6px;
   background: rgba(255, 255, 255, 0.22);
@@ -290,7 +292,8 @@ body, .topbar, .toolbar, .sidebar, .detail-pane, .player, .modal,
 }
 .list-pane[hidden], .playlists-pane[hidden] { display: none; }
 .detail-pane {
-  width: 300px; flex: none; border-radius: var(--radius);
+  /* #34：用户拍板两套皮肤统一收窄 300 → 240px，给歌曲表格多让出 60px。 */
+  width: 240px; flex: none; border-radius: var(--radius);
   background: var(--surface); border: 1px solid var(--divider);
   padding: 16px 8px; overflow: visible; box-shadow: var(--shadow-sm);
   display: flex; flex-direction: column; position: relative;
@@ -298,7 +301,7 @@ body, .topbar, .toolbar, .sidebar, .detail-pane, .player, .modal,
 /* FR-25 第五轮：滚动条只在 .detail-scroll 内容区出现；栏本体 overflow:visible 让左侧间隙里的
    贯穿全高细条可见，且滚动条不会挤动细条的水平位置。 */
 .detail-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
-/* 详情内联到内容区上方的页面（歌手页）隐藏独立右侧详情栏，把 300px 宽度让给列表。 */
+/* 详情内联到内容区上方的页面（歌手页）隐藏独立右侧详情栏，把 240px 宽度让给列表。 */
 .detail-pane[hidden] { display: none; }
 
 /* ---------- 播放列表面板 ---------- */
@@ -533,7 +536,7 @@ body.col-resizing * { cursor: col-resize !important; }
 .placeholder { color: var(--text-muted); }
 
 /* ---------- 纵向：详情内联条（封面 + 文字）位于歌曲列表上方 ---------- */
-/* 原独立右侧详情栏（300px）会把歌曲表格挤窄，导致「艺人/专辑」列文字被省略号截断。
+/* 原独立右侧详情栏（240px）会把歌曲表格挤窄，导致「艺人/专辑」列文字被省略号截断。
    内联为横向条带后：宽度让给表格，高度只占封面高度，字段横向换行排列。
    .inline-detail 为四个页面共用的通用类；.ar-detail 为歌手页的历史类名（保留兼容）。 */
 .inline-detail,

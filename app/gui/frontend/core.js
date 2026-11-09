@@ -2468,6 +2468,13 @@ $('search').addEventListener('input', (e) => loadTracks(e.target.value));
 function switchTab(tab) {
   closeTrackContextMenu();
   state.activeTab = tab;
+  // #30：modern 皮肤 stage 顶部标题由 CSS 伪元素读取属性；classic 完全不消费。
+  document.body.dataset.tab = tab;
+  const toolbar = document.querySelector('.toolbar');
+  if (toolbar) {
+    toolbar.dataset.title = ({ library: '全部曲库', playlists: '播放列表', albums: '专辑', artists: '歌手' })[tab]
+      || '全部曲库';
+  }
   $('tab-library').classList.toggle('active', tab === 'library');
   $('tab-playlists').classList.toggle('active', tab === 'playlists');
   $('tab-albums').classList.toggle('active', tab === 'albums');
@@ -2498,6 +2505,12 @@ $('tab-library').addEventListener('click', () => switchTab('library'));
 $('tab-playlists').addEventListener('click', () => switchTab('playlists'));
 $('tab-albums').addEventListener('click', () => switchTab('albums'));
 $('tab-artists').addEventListener('click', () => switchTab('artists'));
+// #30：boot 不调用 switchTab，首屏若已是 modern 皮肤也要有 stage 标题。
+(function initStageTitle() {
+  document.body.dataset.tab = state.activeTab || 'library';
+  const tb = document.querySelector('.toolbar');
+  if (tb) tb.dataset.title = '全部曲库';
+})();
 
 // ---------- 播放列表（逻辑层已落地：本地曲库内用户自建，local_id 体系）----------
 
@@ -2970,6 +2983,22 @@ function setAlbumView(mode) {
     });
   }
   renderAlbums();
+  // #30：modern 皮肤下 grid 视图升级为「整页封面墙」；classic 一律复位为原三栏。
+  syncAlbumWall();
+}
+
+// #30：仅 modern + 专辑 grid 生效的封面墙状态。classic 下 album-wall / album-picked
+// 全部清除、返回按钮恒隐藏，保证 classic 1:1 不受影响。
+function syncAlbumWall() {
+  const pane = $('albums-pane');
+  const back = $('al-back');
+  // 用 <html> 的皮肤类判断，避免 boot 顺序上的变量初始化依赖（TDZ）。
+  const wall = document.documentElement.classList.contains('skin-modern') && state.albumView === 'grid';
+  if (pane) {
+    pane.classList.toggle('album-wall', wall);
+    if (!wall) pane.classList.remove('album-picked');
+  }
+  if (back) back.hidden = !wall;
 }
 
 // 视图切换按钮 + 封面兜底（error 不冒泡，须用捕获阶段委托）。
@@ -2989,6 +3018,22 @@ function setAlbumView(mode) {
     // 只隐藏 img，露出常驻 fallback；不删节点，避免破图与 DOM 结构抖动。
     img.style.display = 'none';
   }, true);
+  // #30：整页封面墙的「← 返回」/ ESC。仅当 album-picked 存在时才动作，classic 恒无副作用。
+  const back = $('al-back');
+  if (back) {
+    back.addEventListener('click', () => {
+      const pane = $('albums-pane');
+      if (pane) pane.classList.remove('album-picked');
+    });
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const pane = $('albums-pane');
+    if (pane && pane.classList.contains('album-picked')) {
+      pane.classList.remove('album-picked');
+      e.stopPropagation();
+    }
+  });
 })();
 
 $('al-list').addEventListener('click', (e) => {
@@ -3006,6 +3051,11 @@ async function selectAlbum(name) {
     if (x.dataset.name === name) { x.classList.add('selected'); break; }
   }
   $('al-title').textContent = a ? a.name : '专辑内容';
+  // #30：modern 封面墙下点卡片 → 浮起专辑曲目表格（← 返回 可回到墙）。
+  if (document.documentElement.classList.contains('skin-modern') && state.albumView === 'grid') {
+    const pane = $('albums-pane');
+    if (pane) pane.classList.add('album-picked');
+  }
   // 切换专辑 → 清空该页曲级选中（旧的曲目选中属于上一个专辑）。
   state.viewSelection.albums = null;
   await loadAlbumTracks(name);
@@ -4039,12 +4089,26 @@ function renderAppearanceUI() {
 // 共享 core.js 引擎，仅换 CSS：boot 时已按 layout_skin 预设 <link> 与 html.skin-modern 类，
 // 这里提供运行时切换 + 持久化。皮肤是「整体配色 / 视觉」层，与底层背景皮肤（skin_type）正交。
 let layoutSkin = 'classic';
+// #30：modern 会强制专辑进入封面墙；切回 classic 必须还原用户先前的视图，
+// 否则 classic 的专辑页会残留 grid（破坏 classic 1:1）。
+let albumViewBeforeModern = 'list';
 function applyLayoutSkin(name, persist) {
   if (name !== 'modern' && name !== 'classic') name = 'classic';
+  const wasModern = document.documentElement.classList.contains('skin-modern');
   layoutSkin = name;
   const link = document.getElementById('skin-css');
   if (link) link.href = 'skins/' + name + '.css';
   document.documentElement.classList.toggle('skin-modern', name === 'modern');
+  document.body.dataset.skin = name;
+  // #30：modern 默认「整页封面墙」；切回 classic 复位视图与两个 class（1:1 不受影响）。
+  if (name === 'modern') {
+    if (!wasModern) albumViewBeforeModern = state.albumView;
+    setAlbumView('grid');
+  } else if (wasModern) {
+    setAlbumView(albumViewBeforeModern);
+  } else {
+    syncAlbumWall();
+  }
   const sel = document.getElementById('ap-layout-skin');
   if (sel) sel.value = name;
   if (persist) {

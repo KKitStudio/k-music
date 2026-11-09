@@ -1,9 +1,10 @@
 /* ============================================================
    重设计棕皮肤（modern）
    ------------------------------------------------------------
-   - 与底层背景皮肤（skin_type / skin_preset）正交：这里只换「整体配色 + 少量布局修饰」。
+   - 与底层背景皮肤（skin_type / skin_preset）正交：这里只换「整体配色 + 布局」。
    - 复用 classic.css 的全部组件样式与 core.js 引擎（DOM 结构不变，仅换 CSS）。
    - 令牌命名严格遵循 docs/THEME_TOKENS.md，保证与 classic 风格统一、可切换。
+   - #30：所有布局规则一律以 html.skin-modern 为前缀，classic 皮肤 1:1 零影响。
    ============================================================ */
 @import url('classic.css');
 
@@ -14,11 +15,18 @@
   --primary-soft: rgba(142, 59, 47, 0.14);
   --primary-glow: rgba(142, 59, 47, 0.35);
   /* 略暖的底色，呼应重设计稿的温馨感（仍属浅色主题） */
-  --bg: #f7f4f1;
+  --bg: #f4f2ec;
   --bg-grad: linear-gradient(180deg, #fbf9f7 0%, #efe9e4 100%);
-  --surface: #ffffff;
-  --surface-2: #f3eeea;
+  --surface: #fffdfa;
+  --surface-2: #f8f6f0;
   --chip-bg: rgba(142, 59, 47, 0.08);
+  /* #30 rail 令牌（重设计稿左侧深色导航） */
+  --rail: #191715;
+  --rail-text: #ede8de;
+  --rail-muted: #b3aca0;
+  --rail-line: rgba(255, 255, 255, 0.09);
+  --rail-hover: rgba(255, 255, 255, 0.06);
+  --serif: "Noto Serif CJK SC", "Songti SC", "Source Han Serif SC", Georgia, serif;
 }
 
 /* 深色主题：暖棕强调（亮一档，保证深色底上的可读性） */
@@ -27,54 +35,234 @@
   --primary-dark: #b35f47;
   --primary-soft: rgba(216, 121, 95, 0.16);
   --primary-glow: rgba(216, 121, 95, 0.35);
-  --bg: #14110f;
+  --bg: #131211;
   --bg-grad: linear-gradient(180deg, #1a1614 0%, #0f0c0a 100%);
-  --surface: #1f1a17;
-  --surface-2: #271f1b;
+  --surface: #1b1a18;
+  --surface-2: #222019;
   --chip-bg: rgba(216, 121, 95, 0.12);
+  --rail: #0c0b0a;
+  --rail-text: #ede8de;
+  --rail-muted: #948e84;
 }
 
-/* ---------- 重设计风格修饰（仅作用于 modern 皮肤） ---------- */
+/* ---------- 重设计风格基础 ---------- */
 html.skin-modern {
   --radius: 14px;
   --radius-lg: 18px;
+  --rail-w: 236px;
+  --rail-head-h: 152px;
+  --stage-head-h: 62px;
+  --player-h: 80px;
 }
 
-/* 侧栏：更紧凑、圆角卡片化，强调色描边选中态 */
+/* ============================================================
+   #30 Phase B2：rail + stage 布局重排（同一 DOM、同一 core.js 引擎）
+   .topbar / .sidebar 用 fixed 拼成左侧连续 rail；body 让出 rail 宽度后，
+   toolbar（stage 顶栏）→ layout（stage 内容）→ player（stage 底栏）自然成三段。
+   fixed 元素不进入 flex 流，因此 classic 的 .layout flex 结构无需任何改动。
+   ============================================================ */
+html.skin-modern body {
+  padding-left: var(--rail-w);
+  background: var(--bg);
+}
+/* FR-29：底层背景皮肤开启时 body 必须仍为 transparent，皮肤图才不会被盖住。 */
+html.skin-modern body.skin-active { background: transparent; }
+/* rail 的连续深色底由 html 伪元素提供（绝不占用 body::before —— 它专属皮肤图底层）。
+   这样左下角（播放器左侧）也保持 rail 深色，与重设计稿 rail 跨两行一致。 */
+html.skin-modern::before {
+  content: ""; position: fixed; left: 0; top: 0; bottom: 0;
+  width: var(--rail-w); z-index: 29; pointer-events: none;
+  background: var(--rail); border-right: 1px solid var(--rail-line);
+}
+
+/* ---------- rail 上段：品牌 + 当前曲库 + 切换按钮 ---------- */
+html.skin-modern .topbar {
+  position: fixed; left: 0; top: 0; z-index: 30;
+  width: var(--rail-w); height: var(--rail-head-h);
+  display: flex; flex-direction: column; align-items: stretch;
+  justify-content: flex-start; gap: 6px; padding: 16px 12px 10px;
+  color: var(--rail-text); background: var(--rail);
+  border-right: 1px solid var(--rail-line); box-shadow: none;
+}
+html.skin-modern .brand {
+  display: grid; grid-template-columns: 30px minmax(0, 1fr); grid-template-rows: auto auto;
+  column-gap: 10px; align-items: center; flex: none;
+  font-size: 15px; font-weight: 650; letter-spacing: .02em;
+  white-space: nowrap; padding: 2px 8px 14px;
+}
+html.skin-modern .brand::before {
+  content: "K"; grid-column: 1; grid-row: 1 / 3;
+  width: 30px; height: 30px; border-radius: 8px;
+  background: var(--primary); color: var(--on-primary, #fff);
+  -webkit-mask: none; mask: none;
+  display: grid; place-items: center; font: 700 15px/1 var(--serif);
+}
+html.skin-modern .brand::after {
+  content: "Local Library"; grid-column: 2; grid-row: 2;
+  font-size: 10px; font-weight: 400; letter-spacing: .18em; text-transform: uppercase;
+  color: var(--rail-muted);
+}
+html.skin-modern .library-name {
+  max-width: 100%; font-size: 12.5px; font-weight: 600; opacity: 1;
+  padding: 7px 10px; border-radius: 10px;
+  background: var(--rail-hover); border: 1px solid var(--rail-line);
+}
+html.skin-modern .library-name::before {
+  content: "当前曲库"; display: block; margin-bottom: 2px;
+  font-size: 9.5px; font-weight: 400; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--rail-muted);
+}
+html.skin-modern #btn-switch-library {
+  position: absolute; right: 18px; top: 78px;
+  color: var(--rail-muted); opacity: .9;
+}
+html.skin-modern #btn-switch-library:hover { background: var(--rail-hover); opacity: 1; }
+
+/* rail 下段：曲库状态 + 版本/设置（沿用真实 DOM 节点，仅用 fixed  reposition） */
+html.skin-modern .status {
+  position: fixed; left: 12px; bottom: calc(var(--player-h) - 16px);
+  width: calc(var(--rail-w) - 24px); z-index: 31;
+  font-size: 11px; line-height: 1.6; white-space: normal; opacity: 1;
+  padding: 10px; border-radius: 10px;
+  background: var(--rail-hover); border: 1px solid var(--rail-line);
+  color: var(--rail-muted);
+}
+html.skin-modern .status::before {
+  content: "曲库状态"; display: block; margin-bottom: 4px;
+  font-size: 9.5px; font-weight: 650; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--rail-text); opacity: .5;
+}
+html.skin-modern .actions {
+  position: fixed; left: 12px; bottom: 12px;
+  width: calc(var(--rail-w) - 24px); z-index: 31;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding-top: 10px; border-top: 1px solid var(--rail-line);
+}
+html.skin-modern .actions::before {
+  content: "K music"; font-size: 10px; letter-spacing: .06em;
+  color: var(--rail-muted); opacity: .55;
+}
+html.skin-modern .actions .md-btn {
+  background: transparent; color: var(--rail-muted); border-color: transparent;
+  font-size: 11.5px;
+}
+html.skin-modern .actions .md-btn:hover { background: var(--rail-hover); color: var(--rail-text); }
+
+/* ---------- rail 中段：四个 Tab 导航 ---------- */
 html.skin-modern .sidebar {
-  background: var(--surface);
-  border-radius: var(--radius-lg);
-  padding: 14px 10px;
-  gap: 8px;
+  position: fixed; left: 0; top: var(--rail-head-h); bottom: 0;
+  width: var(--rail-w); height: auto; z-index: 30;
+  /* 底部留给曲库状态块 + 版本/设置块，避免 Tab 与它们重叠。 */
+  padding: 6px 12px 136px; gap: 2px;
+  background: var(--rail); color: var(--rail-text);
+  border: none; border-right: 1px solid var(--rail-line);
+  border-radius: 0; box-shadow: none;
 }
+html.skin-modern .sidebar::before {
+  content: "浏览"; padding: 10px 10px 6px;
+  font-size: 9.5px; font-weight: 650; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--rail-muted); opacity: .55;
+}
+html.skin-modern .tab-btn {
+  height: 38px; font-size: 13px; color: var(--rail-muted);
+  background: transparent; border-radius: 8px;
+}
+html.skin-modern .tab-btn:hover { background: var(--rail-hover); color: var(--rail-text); }
 html.skin-modern .tab-btn.active {
-  background: var(--primary-soft);
-  color: var(--primary);
+  background: var(--rail-hover); color: var(--rail-text); font-weight: 600;
   box-shadow: inset 3px 0 0 var(--primary);
-  border-radius: 10px;
+  border-radius: 8px;
 }
 
-/* 主内容卡：更大圆角 + 轻投影，靠近重设计的「卡片化」观感 */
+/* ---------- stage 顶栏：动态页标题（switchTab 写 data-title）+ 搜索/操作 ---------- */
+html.skin-modern .toolbar {
+  position: relative; flex: none;
+  height: var(--stage-head-h); padding: 0 24px; gap: 10px;
+  background: var(--bg); border-bottom: 1px solid var(--divider);
+}
+html.skin-modern .toolbar::before {
+  content: attr(data-title); flex: none; align-self: flex-start;
+  margin: 9px 8px 0 0; line-height: 1.2;
+  font-family: var(--serif); font-size: 19px; font-weight: 600; letter-spacing: .01em;
+  color: var(--text); white-space: nowrap;
+}
+html.skin-modern .toolbar::after {
+  content: "Local Library · Offline"; position: absolute; left: 24px; top: 38px;
+  font-size: 10.5px; letter-spacing: .04em; color: var(--text-soft);
+  pointer-events: none;
+}
+html.skin-modern .toolbar input[type="search"] {
+  height: 34px; border-radius: 9px; background: var(--surface);
+  border: 1px solid var(--divider); margin-left: auto;
+}
+html.skin-modern .toolbar .md-btn { height: 34px; border-radius: 9px; }
+
+/* ---------- stage 内容：卡片化 ---------- */
+html.skin-modern .layout { padding: 16px 20px; gap: 16px; }
+html.skin-modern .list-pane,
+html.skin-modern .pl-sidebar,
+html.skin-modern .pl-main,
+html.skin-modern .detail-pane,
+html.skin-modern .inline-detail {
+  border-radius: var(--radius-lg); box-shadow: var(--shadow);
+  background: var(--surface);
+}
 html.skin-modern .pane,
 html.skin-modern .card,
 html.skin-modern .settings-modal,
-html.skin-modern .dialog {
-  border-radius: var(--radius-lg);
-}
-
-/* 主操作按钮：棕渐变（与 classic 的纯色区分，强化重设计辨识度） */
+html.skin-modern .dialog { border-radius: var(--radius-lg); }
 html.skin-modern .md-btn.primary {
   background: linear-gradient(135deg, var(--primary), var(--primary-dark));
   box-shadow: 0 2px 10px var(--primary-glow);
 }
-
-/* 表头 / 列表行 hover 用暖色系 */
 html.skin-modern .track-row:hover,
-html.skin-modern .group-row:hover {
-  background: var(--primary-soft);
-}
+html.skin-modern .group-row:hover { background: var(--primary-soft); }
+html.skin-modern .md-select { border-radius: 10px; }
 
-/* 设置·外观的布局皮肤下拉与主题分段同风格 */
-html.skin-modern .md-select {
-  border-radius: 10px;
+/* ---------- stage 底栏：80px 播放器 / 覆盖层偏移 ---------- */
+html.skin-modern .player {
+  height: var(--player-h); padding: 0 24px;
+  background: var(--surface); border-top: 1px solid var(--divider);
+}
+html.skin-modern .now-view { left: var(--rail-w); bottom: var(--player-h); }
+html.skin-modern .lyrics-drawer { bottom: calc(var(--player-h) + 16px); }
+
+/* ============================================================
+   #30 专辑「整页封面墙」：仅 modern + 专辑 grid 生效
+   二级栏铺满 pane 成为多列大封面墙；点卡片后 .pl-main 浮起显示曲目表格，
+   「← 返回」/ ESC 回到墙。core.js 只切两个 class，表格/列宽/播放队列全不动。
+   ============================================================ */
+html.skin-modern #albums-pane.album-wall { position: relative; }
+html.skin-modern #albums-pane.album-wall .pl-sidebar {
+  position: absolute; inset: 0; width: 100% !important;
+  padding: 0; border-radius: var(--radius-lg); overflow: hidden;
+}
+html.skin-modern #albums-pane.album-wall .pl-list.grid-view {
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 20px; padding: 22px; align-content: start;
+}
+html.skin-modern #albums-pane.album-wall .gcard-art { border-radius: 12px; }
+html.skin-modern #albums-pane.album-wall .gcard-name { font-size: 14px; }
+html.skin-modern #albums-pane.album-wall .pl-main {
+  position: absolute; inset: 0; z-index: 2;
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);
+  opacity: 0; pointer-events: none; transform: translateY(10px);
+  transition: opacity .2s ease, transform .2s ease;
+}
+html.skin-modern #albums-pane.album-wall.album-picked .pl-main {
+  opacity: 1; pointer-events: auto; transform: none;
+}
+html.skin-modern #albums-pane.album-wall .pane-handle,
+html.skin-modern #albums-pane.album-wall .pane-resizer { display: none; }
+html.skin-modern #al-back { margin-right: 10px; }
+
+/* ---------- 窄屏收窄 rail，保证表格可用宽度 ---------- */
+@media (max-width: 1100px) {
+  html.skin-modern { --rail-w: 196px; }
+  html.skin-modern .toolbar::before { font-size: 17px; }
+}
+@media (max-width: 860px) {
+  html.skin-modern { --rail-w: 168px; --rail-head-h: 140px; }
+  html.skin-modern .toolbar::after { display: none; }
+  html.skin-modern .layout { padding: 10px 12px; gap: 10px; }
 }

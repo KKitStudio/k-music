@@ -441,7 +441,7 @@ body.density-compact .pl-list.grid-view li:not(.pl-empty) { padding: 4px; gap: 2
 .fav-btn.active { color: #e5484d; }
 .fav-btn.active:hover { color: #f2555a; }
 
-/* ---------- 全部曲库筛选条 ---------- */
+/* ---------- 全部曲库筛选条（#33：音质四档平铺按钮，无下拉、无「已收藏」） ---------- */
 .filter-bar {
   display: flex;
   align-items: center;
@@ -449,9 +449,14 @@ body.density-compact .pl-list.grid-view li:not(.pl-empty) { padding: 4px; gap: 2
   padding: 8px 14px;
   border-bottom: 1px solid var(--border, rgba(128, 128, 128, 0.18));
 }
-.filter-label { font-size: 12px; color: var(--text-dim, #9aa0a6); }
-.filter-bar .md-select { min-width: 120px; }
-#filter-fav.active { background: color-mix(in srgb, #e5484d 16%, transparent); border-color: #e5484d; color: #e5484d; }
+.filter-label { font-size: 12px; color: var(--text-dim, #9aa0a6); flex: none; }
+.filter-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.filter-chip { white-space: nowrap; flex: none; }
+/* 选中态沿用主题模式分段按钮的 primary 高亮，全令牌化、不写死色值。 */
+.filter-chip.active {
+  background: var(--primary); color: var(--on-primary); font-weight: 600;
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--primary) 40%, transparent);
+}
 
 /* ---------- #32：无边框窗口自绘控制条 ---------- */
 .win-controls {
@@ -1055,6 +1060,8 @@ input[type="radio"], input[type="checkbox"] {
 }
 .seg-btn:hover { color: var(--text); }
 .seg-btn.active { background: var(--primary); color: var(--on-primary); font-weight: 600; box-shadow: 0 2px 6px color-mix(in srgb, var(--primary) 40%, transparent); }
+/* #33：布局皮肤 / 列表密度复用同一分段控件；文案较长时允许换行，不溢出设置面板。 */
+.appearance-block .seg { max-width: 100%; flex-wrap: wrap; }
 
 /* FR-29：主题色色板 / 自定义取色器（.accent-row / .swatch / .custom-color）已整体删除，勿复活。
    歌词不透明度与皮肤模糊两个数值滑块共用这一行布局。 */

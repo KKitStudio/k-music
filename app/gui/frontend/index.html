@@ -152,16 +152,15 @@
     </nav>
 
     <div class="list-pane" id="library-pane">
-      <!-- 全部曲库视图筛选条：音质 + 仅看收藏（仅本视图生效） -->
+      <!-- 全部曲库视图筛选条：音质四档平铺按钮；「已收藏」入口已移除（与第 5 个一级视图重叠）。 -->
       <div class="filter-bar" id="track-filter-bar">
-        <label class="filter-label" for="filter-quality">筛选</label>
-        <select id="filter-quality" class="md-select">
-          <option value="">全部音质</option>
-          <option value="lossless">仅无损</option>
-          <option value="hires">仅高解析</option>
-          <option value="lossless_up">无损及以上</option>
-        </select>
-        <button id="filter-fav" class="md-btn sm" type="button" aria-pressed="false">已收藏</button>
+        <span class="filter-label">筛选</span>
+        <div class="filter-chips" id="filter-quality" role="group" aria-label="音质筛选">
+          <button class="md-btn sm filter-chip active" type="button" data-quality="" aria-pressed="true">全部音质</button>
+          <button class="md-btn sm filter-chip" type="button" data-quality="lossless" aria-pressed="false">仅无损</button>
+          <button class="md-btn sm filter-chip" type="button" data-quality="hires" aria-pressed="false">仅高解析</button>
+          <button class="md-btn sm filter-chip" type="button" data-quality="lossless_up" aria-pressed="false">无损及以上</button>
+        </div>
       </div>
       <!-- #31：收藏独立智能列表视图条（仅收藏模式显示，届时上面的筛选条隐藏）。 -->
       <div class="favorites-bar" id="favorites-bar" hidden>
@@ -502,18 +501,20 @@
         </div>
         <div class="appearance-block">
           <div class="ap-label">布局皮肤</div>
-          <select id="ap-layout-skin" class="md-select">
-            <option value="classic">经典蓝（默认）</option>
-            <option value="modern">重设计棕</option>
-          </select>
+          <!-- 与上方「主题模式」同款分段控件，不再用下拉。 -->
+          <div class="seg" id="ap-layout-skin" role="group" aria-label="布局皮肤">
+            <button class="seg-btn active" type="button" data-skin="classic" aria-pressed="true">经典蓝（默认）</button>
+            <button class="seg-btn" type="button" data-skin="modern" aria-pressed="false">重设计棕</button>
+          </div>
           <div class="ap-subhint">切换整体界面风格（配色 / 视觉），实时生效并自动保存，下次启动沿用。</div>
         </div>
         <div class="appearance-block">
           <div class="ap-label">列表密度</div>
-          <select id="ap-list-density" class="md-select">
-            <option value="comfortable">舒适（默认）</option>
-            <option value="compact">紧凑</option>
-          </select>
+          <!-- 与上方「主题模式」同款分段控件，不再用下拉。 -->
+          <div class="seg" id="ap-list-density" role="group" aria-label="列表密度">
+            <button class="seg-btn active" type="button" data-density="comfortable" aria-pressed="true">舒适（默认）</button>
+            <button class="seg-btn" type="button" data-density="compact" aria-pressed="false">紧凑</button>
+          </div>
           <div class="ap-subhint">调整曲库 / 列表行高与内边距，实时生效并自动保存，下次启动沿用。</div>
         </div>
         <div class="appearance-block">

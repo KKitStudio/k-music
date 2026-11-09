@@ -20,6 +20,11 @@ pub const STATE_FILE: &str = "kqk-window.state";
 /// 会溢出换行，因此把窗口硬下限提到「能完整显示」的 1280x720。
 pub const MIN_W: u32 = 1280;
 pub const MIN_H: u32 = 720;
+/// #33：首次启动 / 旧状态失效 / 取不到窗口尺寸时的默认几何，必须 ≥ 硬下限。
+/// 曾硬编码 1100x720（小于 MIN_W），「不允许更小」在首次启动就不成立。
+/// builder、current_geometry 与 parse() 共用这一组常量，避免出现第二套下限。
+pub const DEFAULT_W: u32 = MIN_W;
+pub const DEFAULT_H: u32 = MIN_H;
 const MAX_W: u32 = 8192;
 const MAX_H: u32 = 8192;
 /// 窗口至少要有这么大的区域落在某台显示器上，才认为旧坐标仍然可用。
@@ -126,8 +131,8 @@ fn current_geometry(win: &WebviewWindow) -> Geometry {
     Geometry {
         x: p.as_ref().map(|p| p.x).unwrap_or(0),
         y: p.as_ref().map(|p| p.y).unwrap_or(0),
-        w: s.as_ref().map(|s| s.width).unwrap_or(1100),
-        h: s.as_ref().map(|s| s.height).unwrap_or(720),
+        w: s.as_ref().map(|s| s.width).unwrap_or(DEFAULT_W),
+        h: s.as_ref().map(|s| s.height).unwrap_or(DEFAULT_H),
         maximized: win.is_maximized().unwrap_or(false),
     }
 }
@@ -206,6 +211,14 @@ mod tests {
         assert_eq!(MIN_W, 1280);
         assert_eq!(MIN_H, 720);
         assert!(MIN_W < MAX_W && MIN_H < MAX_H);
+    }
+
+    #[test]
+    fn default_geometry_never_below_the_floor() {
+        // #33：首次启动 / 回退默认时不能比硬下限更小，否则音量条等控件仍会被挤出。
+        assert_eq!(DEFAULT_W, MIN_W);
+        assert_eq!(DEFAULT_H, MIN_H);
+        assert!(parse(&format!("x=0\ny=0\nw={}\nh={}\nmaximized=0\n", DEFAULT_W, DEFAULT_H)).is_some());
     }
 
     fn sample() -> Geometry {

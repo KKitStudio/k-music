@@ -186,12 +186,16 @@ html.skin-modern .toolbar {
 }
 html.skin-modern .toolbar::before {
   content: attr(data-title); flex: none; align-self: flex-start;
+  /* #33：::after 是绝对定位、不占 flex 宽度，标题必须给副标题留出足够占位，
+     否则搜索框会被推到副标题文字上（用户报告「Offline 与文本框重叠」）。 */
+  min-width: 168px; box-sizing: border-box;
   margin: 9px 8px 0 0; line-height: 1.2;
   font-family: var(--serif); font-size: 19px; font-weight: 600; letter-spacing: .01em;
   color: var(--text); white-space: nowrap;
 }
 html.skin-modern .toolbar::after {
   content: "Local Library · Offline"; position: absolute; left: 24px; top: 38px;
+  max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   font-size: 10.5px; letter-spacing: .04em; color: var(--text-soft);
   pointer-events: none;
 }
@@ -263,7 +267,9 @@ html.skin-modern #al-back { margin-right: 10px; }
 /* ---------- 窄屏收窄 rail，保证表格可用宽度 ---------- */
 @media (max-width: 1100px) {
   html.skin-modern { --rail-w: 196px; }
-  html.skin-modern .toolbar::before { font-size: 17px; }
+  /* #33：窄屏没有足够横向空间同时容纳标题占位与搜索框，直接隐藏副标题并释放占位。 */
+  html.skin-modern .toolbar::before { font-size: 17px; min-width: 0; }
+  html.skin-modern .toolbar::after { display: none; }
 }
 @media (max-width: 860px) {
   html.skin-modern { --rail-w: 168px; --rail-head-h: 140px; }
@@ -282,6 +288,9 @@ html.skin-modern #track-filter-bar .track-count {
   margin-left: auto; background: transparent; padding: 0 4px;
   font-size: 11.5px; color: var(--text-soft);
 }
+/* #33：音质 chip 与「共 N 首 / 刷新」同处筛选条，尺寸略收以免把计数挤出右侧。 */
+html.skin-modern #track-filter-bar .filter-chips { flex: 0 1 auto; }
+html.skin-modern #track-filter-bar .filter-chip { height: 26px; padding: 0 9px; font-size: 11.5px; }
 html.skin-modern #track-filter-bar #btn-refresh { height: 28px; font-size: 11.5px; }
 
 /* ---------- #32：rail 内第 5 个同级 Tab 与收藏视图条 ---------- */

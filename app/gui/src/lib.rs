@@ -239,7 +239,8 @@ pub fn run() {
             let geom = saved_geometry.filter(|g| window_state::visible_on_any_monitor(g, &monitors));
             let win = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(uri))
                 .title(mt_core::app::title())
-                .inner_size(1100.0, 720.0)
+                // #33：默认几何必须等于「能显示全」的硬下限，别再硬编码 1100（< MIN_W）。
+                .inner_size(window_state::DEFAULT_W as f64, window_state::DEFAULT_H as f64)
                 // #32：隐藏 Windows 原生标题栏（与 modern 深色 rail / 米色 stage 割裂），
                 // 拖动与最小化 / 最大化 / 关闭改由前端自绘控制条经 REST 驱动。
                 .decorations(false)

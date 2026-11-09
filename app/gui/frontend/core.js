@@ -60,7 +60,8 @@ const state = {
   tracks: [],
   // 全部曲库视图的筛选状态（会话内有效，不持久化；音质 quality / 仅看收藏 favorite）。
   tracksQuery: '',
-  trackFilters: { quality: '', favorite: false },
+  // #33：曲库筛选只保留音质；「已收藏」入口已删除（收藏是第 5 个一级视图）。
+  trackFilters: { quality: '' },
   // #31/#32：「我喜欢的音乐」= 第 5 个一级视图（activeTab==='favorites'），与专辑/歌手同级。
   // 集合是实时推导的播放来源快照，绝不写入 playlists 表；无二级栏，直接复用曲库表格。
   favoriteTracks: [],
@@ -892,7 +893,6 @@ async function loadTracks(q) {
   const params = new URLSearchParams();
   if (state.tracksQuery) params.set('q', state.tracksQuery);
   if (state.trackFilters.quality) params.set('quality', state.trackFilters.quality);
-  if (state.trackFilters.favorite) params.set('favorite', '1');
   const { data } = await api('/api/tracks?' + params.toString());
   state.tracks = (data && data.tracks) || [];
   renderTracks();
@@ -952,23 +952,27 @@ document.addEventListener(
   true
 );
 
-// 全部曲库视图筛选条（音质下拉 + 仅看收藏）。
+// #33：全部曲库筛选条 = 四档音质平铺按钮（互斥单选），不再有下拉与「已收藏」入口。
+// 仍只影响本视图；收藏集合由第 5 个一级视图 /api/favorites 独立推导。
+function setQualityFilter(value) {
+  state.trackFilters.quality = String(value || '');
+  const seg = $('filter-quality');
+  if (seg) {
+    seg.querySelectorAll('.filter-chip').forEach((b) => {
+      const on = (b.dataset.quality || '') === state.trackFilters.quality;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', String(on));
+    });
+  }
+  loadTracks(state.tracksQuery);
+}
 (function initTrackFilters() {
-  const fq = $('filter-quality');
-  const ff = $('filter-fav');
-  if (fq) {
-    fq.addEventListener('change', () => {
-      state.trackFilters.quality = fq.value;
-      loadTracks(state.tracksQuery);
-    });
-  }
-  if (ff) {
-    ff.addEventListener('click', () => {
-      state.trackFilters.favorite = !state.trackFilters.favorite;
-      ff.classList.toggle('active', state.trackFilters.favorite);
-      loadTracks(state.tracksQuery);
-    });
-  }
+  const seg = $('filter-quality');
+  if (!seg) return;
+  seg.addEventListener('click', (e) => {
+    const b = e.target.closest('.filter-chip');
+    if (b && seg.contains(b)) setQualityFilter(b.dataset.quality);
+  });
 })();
 
 // ---------- #31/#32：「我喜欢的音乐」独立智能列表（第 5 个一级视图）----------
@@ -976,9 +980,11 @@ document.addEventListener(
 // 之后由 toggleFavorite() 增量维护；播放队列是 local_id[] 快照、生成后不读 DOM。
 async function loadFavorites(render) {
   const { ok, data } = await api('/api/favorites');
-  // 后端暂不可用时保留上一次缓存，避免侧栏计数 / 整组播放被误清零。
+  // 后端暂不可用时保留上一次缓存，避免侧栏计数 / 整组播放被误清零；
+  // 但仍按当前缓存重绘，绝不把「全部曲库」的行残留在收藏视图里。
   if (!ok || !data || !Array.isArray(data.tracks)) {
     syncFavoriteCount();
+    if (render) renderTracks();
     return;
   }
   state.favoriteTracks = data.tracks;
@@ -2617,7 +2623,12 @@ function switchTab(tab) {
   }
   if (tab === 'albums') loadAlbums();
   if (tab === 'artists') loadArtists();
-  if (tab === 'favorites') loadFavorites(true);
+  // #33：进入收藏视图先同步按当前缓存重绘，再异步取权威集合。不能只等 loadFavorites()，
+  // 否则后端稍慢 / 不可用时表格会残留「全部曲库」的行（用户报告「点进去是全部音乐」）。
+  if (tab === 'favorites') {
+    renderTracks();
+    loadFavorites(true);
+  }
   // #32：从收藏切回曲库必须重绘表格，否则会停留在收藏集合（空收藏时表现为空白）。
   if (tab === 'library' && prevTab === 'favorites') renderTracks();
 }
@@ -4141,6 +4152,19 @@ function setSkin(skin) {
   renderAppearanceUI();
 }
 
+// #33：外观页「布局皮肤 / 列表密度」换成与主题模式同款 .seg 分段控件后，
+// 回显统一走这里；applyLayoutSkin / applyListDensity / renderAppearanceUI 三处共用，
+// 避免只换 DOM 却漏掉选中态同步。dataKey 传 'skin' / 'density'（对应 data-* 属性）。
+function syncSegGroup(groupId, dataKey, value) {
+  const g = $(groupId);
+  if (!g) return;
+  g.querySelectorAll('.seg-btn').forEach((b) => {
+    const on = b.dataset[dataKey] === value;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', String(on));
+  });
+}
+
 // ---------- 渲染外观设置 UI ----------
 function renderAppearanceUI() {
   if (!$('ap-skins')) return;
@@ -4150,12 +4174,9 @@ function renderAppearanceUI() {
   document.querySelectorAll('#ap-theme-seg .seg-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.theme === a.theme);
   });
-  // 布局皮肤下拉：回显当前值（layoutSkin 在 boot / syncAppearanceFromStatus 时已设置）。
-  const skinSel = document.getElementById('ap-layout-skin');
-  if (skinSel) skinSel.value = layoutSkin;
-  // 列表密度下拉：回显当前值。
-  const densitySel = document.getElementById('ap-list-density');
-  if (densitySel) densitySel.value = listDensity;
+  // #33：布局皮肤 / 列表密度分段控件回显（layoutSkin / listDensity 在 boot 时已设置）。
+  syncSegGroup('ap-layout-skin', 'skin', layoutSkin);
+  syncSegGroup('ap-list-density', 'density', listDensity);
   const hint = $('ap-theme-hint');
   if (hint) {
     hint.textContent = a.theme === 'system'
@@ -4245,8 +4266,7 @@ function applyLayoutSkin(name, persist) {
   } else {
     syncAlbumWall();
   }
-  const sel = document.getElementById('ap-layout-skin');
-  if (sel) sel.value = name;
+  syncSegGroup('ap-layout-skin', 'skin', name);
   if (persist) {
     fetch('/api/ui-prefs', {
       method: 'POST',
@@ -4263,8 +4283,7 @@ function applyListDensity(name, persist) {
   if (name !== 'comfortable' && name !== 'compact') name = 'comfortable';
   listDensity = name;
   document.body.classList.toggle('density-compact', name === 'compact');
-  const sel = document.getElementById('ap-list-density');
-  if (sel) sel.value = name;
+  syncSegGroup('ap-list-density', 'density', name);
   if (persist) {
     fetch('/api/ui-prefs', {
       method: 'POST',
@@ -4300,12 +4319,17 @@ function initAppearanceEvents() {
   bindRange('ap-lyrics-opacity', 'ap-lyrics-opacity-value', 'lyricsOpacity', clampLyricsOpacity, '%');
   bindRange('ap-skin-blur', 'ap-skin-blur-value', 'skinBlur', clampSkinBlur, 'px');
 
-  // 布局皮肤切换：实时换 CSS 并持久化到 [ui].layout_skin（经 /api/ui-prefs 就地更新）。
-  const layoutSkinSel = document.getElementById('ap-layout-skin');
-  if (layoutSkinSel) layoutSkinSel.addEventListener('change', () => applyLayoutSkin(layoutSkinSel.value, true));
-  // 列表密度切换：实时改行高 / 内边距并持久化到 [ui].list_density。
-  const densitySel = document.getElementById('ap-list-density');
-  if (densitySel) densitySel.addEventListener('change', () => applyListDensity(densitySel.value, true));
+  // #33：布局皮肤 / 列表密度分段按钮（与主题模式同款），点击委托到各自的 seg 容器。
+  const layoutSeg = $('ap-layout-skin');
+  if (layoutSeg) layoutSeg.addEventListener('click', (e) => {
+    const b = e.target.closest('.seg-btn');
+    if (b && layoutSeg.contains(b)) applyLayoutSkin(b.dataset.skin, true);
+  });
+  const densitySeg = $('ap-list-density');
+  if (densitySeg) densitySeg.addEventListener('click', (e) => {
+    const b = e.target.closest('.seg-btn');
+    if (b && densitySeg.contains(b)) applyListDensity(b.dataset.density, true);
+  });
 
   const pick = $('ap-skin-pick');
   if (pick) pick.addEventListener('click', () => { const f = $('ap-skin-file'); if (f) f.click(); });

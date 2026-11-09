@@ -365,12 +365,43 @@ body, .topbar, .toolbar, .sidebar, .detail-pane, .player, .modal,
 /* 导入时间 / 创建时间：短格式节省列宽，完整值在 title 里；等宽数字让多行对齐。 */
 .track-table td .dt-cell { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .track-table th.idx-col, .track-table td.idx-col {
-  width: 48px; text-align: center; color: var(--text-soft); padding-left: 4px; padding-right: 4px;
+  width: 56px; text-align: center; color: var(--text-soft); padding-left: 6px; padding-right: 4px;
 }
+.track-table td.idx-col { display: flex; align-items: center; justify-content: center; gap: 3px; }
+.track-table td.idx-col .idx-num { font-variant-numeric: tabular-nums; min-width: 14px; text-align: right; }
 .track-table tbody tr { cursor: pointer; }
 .track-table tbody tr:hover { background: color-mix(in srgb, var(--primary) 9%, transparent); }
 .track-table tbody tr.selected { background: color-mix(in srgb, var(--primary) 18%, transparent); }
 .track-table tbody tr.selected td:first-child { box-shadow: inset 3px 0 0 var(--primary); }
+
+/* 序号列内嵌的收藏心形按钮（四表共用，不占独立列，不参与业务列宽分配）。 */
+.fav-btn {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 1px 2px;
+  color: var(--text-dim, #9aa0a6);
+  transition: color 0.15s ease, transform 0.1s ease;
+  user-select: none;
+  flex: none;
+}
+.fav-btn:hover { color: var(--primary); transform: scale(1.15); }
+.fav-btn.active { color: #e5484d; }
+.fav-btn.active:hover { color: #f2555a; }
+
+/* ---------- 全部曲库筛选条 ---------- */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border, rgba(128, 128, 128, 0.18));
+}
+.filter-label { font-size: 12px; color: var(--text-dim, #9aa0a6); }
+.filter-bar .md-select { min-width: 120px; }
+#filter-fav.active { background: color-mix(in srgb, #e5484d 16%, transparent); border-color: #e5484d; color: #e5484d; }
 
 /* ---------- 列表密度（comfortable 默认 / compact 紧凑）----------
    纯布局呈现，不改数据；两套皮肤共用（modern.css 经 @import 继承）。

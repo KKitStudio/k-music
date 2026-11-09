@@ -30,6 +30,8 @@ pub struct TrackView {
     /// 音频文件的**文件系统创建时间**，UNIX 毫秒。
     /// Windows 取 birth time；某些平台拿不到创建时间时退化为文件修改时间。
     pub created_at: Option<i64>,
+    /// 收藏标记（用户侧「已收藏」）。SQLite 存储为 INTEGER（0/1），读取时转 bool。
+    pub favorite: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -161,6 +163,20 @@ fn init_schema(conn: &Connection) -> Result<()> {
         };
         conn.execute_batch(backfill)?;
     }
+    // 收藏标记：无破坏迁移，默认 0（未收藏）。旧记录无需回填。
+    let has_fav: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('download_records') WHERE name='favorite'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !has_fav {
+        conn.execute_batch(
+            "ALTER TABLE download_records ADD COLUMN favorite INTEGER DEFAULT 0;",
+        )?;
+    }
     Ok(())
 }
 
@@ -266,49 +282,86 @@ fn track_from_row(row: &rusqlite::Row) -> rusqlite::Result<TrackView> {
         file_path: row.get(13)?,
         imported_at: row.get(14)?,
         created_at: row.get(15)?,
+        favorite: row.get::<_, i64>(16)? != 0,
     })
 }
 
 /// 查询曲库中可播放曲目（来自 download_records 中 status='downloaded' 且有文件路径者）。
 /// 直接读 download_records 的冗余列（本地文件 song_id 为 NULL，无需关联其它表）。
-/// 支持按关键词（曲名/艺人/专辑）过滤。
-pub fn list_tracks(conn: &Connection, q: Option<&str>) -> Result<Vec<TrackView>> {
+/// 支持按关键词（曲名/艺人/专辑）、音质层级（quality）、仅看收藏（favorite_only）过滤。
+pub fn list_tracks(
+    conn: &Connection,
+    q: Option<&str>,
+    quality: Option<&str>,
+    favorite_only: bool,
+) -> Result<Vec<TrackView>> {
     let mut sql = String::from(
         "SELECT dr.local_id, dr.song_id, dr.name, dr.artist, dr.album, dr.format, dr.sample_rate,
-                dr.bit_depth, dr.bitrate, dr.channels, dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at
+                dr.bit_depth, dr.bitrate, dr.channels, dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at, dr.favorite
          FROM download_records dr
          WHERE dr.status='downloaded' AND dr.file_path IS NOT NULL",
     );
+    // 动态 WHERE：关键词 LIKE / 音质 quality_tier / 收藏 favorite。
+    // 用 Vec<&dyn ToSql> 持有参数引用，避免在迭代器存活期间因 Vec 重分配导致悬垂引用。
+    let mut text_vals: Vec<String> = Vec::new();
+    let mut fav_val: i64 = 0;
+    let mut has_fav = false;
+    let mut clauses: Vec<String> = Vec::new();
+    let mut idx = 1usize;
     if let Some(kw) = q {
-        if !kw.trim().is_empty() {
-            sql.push_str(" AND (dr.name LIKE ?1 OR dr.artist LIKE ?1 OR dr.album LIKE ?1)");
+        let kw = kw.trim();
+        if !kw.is_empty() {
+            text_vals.push(format!("%{kw}%"));
+            clauses.push(format!(
+                "(dr.name LIKE ?{idx} OR dr.artist LIKE ?{idx} OR dr.album LIKE ?{idx})"
+            ));
+            idx += 1;
         }
+    }
+    match quality {
+        Some("lossless") | Some("hires") => {
+            text_vals.push(quality.unwrap().to_string());
+            clauses.push(format!("dr.quality_tier = ?{idx}"));
+            idx += 1;
+        }
+        Some("lossless_up") => {
+            text_vals.push("lossless".to_string());
+            text_vals.push("hires".to_string());
+            clauses.push(format!(
+                "dr.quality_tier IN (?{idx}, ?{idx2})",
+                idx = idx,
+                idx2 = idx + 1
+            ));
+            idx += 2;
+        }
+        _ => {}
+    }
+    if favorite_only {
+        clauses.push(format!("dr.favorite = ?{idx}"));
+        fav_val = 1;
+        has_fav = true;
+        // idx 在 favorite 子句之后不再被读取（它是最后一个过滤条件），无需自增。
+    }
+    for c in &clauses {
+        sql.push_str(" AND ");
+        sql.push_str(c);
     }
     sql.push_str(" ORDER BY dr.artist, dr.name LIMIT 2000");
 
-    let map = track_from_row;
+    let mut args: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(text_vals.len() + 1);
+    for v in &text_vals {
+        args.push(v);
+    }
+    if has_fav {
+        args.push(&fav_val);
+    }
 
+    let map = track_from_row;
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(args), map)?;
     let mut out = Vec::new();
-    if let Some(kw) = q {
-        if !kw.trim().is_empty() {
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(params![format!("%{}%", kw)], map)?;
-            for r in rows {
-                out.push(r?);
-            }
-        } else {
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map((), map)?;
-            for r in rows {
-                out.push(r?);
-            }
-        }
-    } else {
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map((), map)?;
-        for r in rows {
-            out.push(r?);
-        }
+    for r in rows {
+        out.push(r?);
     }
     Ok(out)
 }
@@ -331,7 +384,7 @@ pub fn get_track_by_local_id(conn: &Connection, local_id: i64) -> Result<Option<
     let opt: Option<TrackView> = conn
         .query_row(
             "SELECT dr.local_id, dr.song_id, dr.name, dr.artist, dr.album, dr.format, dr.sample_rate,
-                    dr.bit_depth, dr.bitrate, dr.channels, dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at
+                    dr.bit_depth, dr.bitrate, dr.channels, dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at, dr.favorite
              FROM download_records dr
              WHERE dr.local_id=?1 AND dr.status='downloaded' AND dr.file_path IS NOT NULL
              ORDER BY dr.local_id DESC LIMIT 1",
@@ -340,6 +393,16 @@ pub fn get_track_by_local_id(conn: &Connection, local_id: i64) -> Result<Option<
         )
         .optional()?;
     Ok(opt)
+}
+
+/// 切换某曲目的收藏标记（按 local_id；只写 download_records.favorite 列）。
+/// 返回受影响的行数（0 表示该 local_id 不存在）。
+pub fn set_favorite(conn: &Connection, local_id: i64, favorite: bool) -> Result<usize> {
+    let n = conn.execute(
+        "UPDATE download_records SET favorite = ?1 WHERE local_id = ?2",
+        params![favorite as i64, local_id],
+    )?;
+    Ok(n)
 }
 
 /// 孤儿清理：删除 download_records 中 status='downloaded' 且 file_path 指向的文件在磁盘上
@@ -444,6 +507,8 @@ pub struct PlaylistItemView {
     pub file_path: String,
     pub imported_at: Option<i64>,
     pub created_at: Option<i64>,
+    /// 收藏标记（用户侧「已收藏」）。SQLite 存 INTEGER（0/1），读取转 bool。
+    pub favorite: bool,
 }
 
 /// 播放列表名称上限（按 Unicode 字符计）。
@@ -538,7 +603,7 @@ pub fn delete_playlist(conn: &Connection, playlist_id: i64) -> Result<()> {
 pub fn get_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<Vec<PlaylistItemView>> {
     let mut stmt = conn.prepare(
         "SELECT pi.position, dr.local_id, dr.name, dr.artist, dr.album, dr.format,
-                dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at
+                dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at, dr.favorite
          FROM playlist_items pi
          JOIN download_records dr ON dr.local_id = pi.local_id
          WHERE pi.playlist_id=?1
@@ -558,6 +623,7 @@ pub fn get_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<Vec<Pl
             file_path: r.get(9)?,
             imported_at: r.get(10)?,
             created_at: r.get(11)?,
+            favorite: r.get::<_, i64>(12)? != 0,
         })
     })?;
     let mut out = Vec::new();
@@ -700,7 +766,7 @@ pub fn list_artists(conn: &Connection) -> Result<Vec<GroupView>> {
 pub fn get_tracks_by_album(conn: &Connection, album: &str) -> Result<Vec<TrackView>> {
     let mut stmt = conn.prepare(
         "SELECT dr.local_id, dr.song_id, dr.name, dr.artist, dr.album, dr.format, dr.sample_rate,
-                dr.bit_depth, dr.bitrate, dr.channels, dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at
+                dr.bit_depth, dr.bitrate, dr.channels, dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at, dr.favorite
          FROM download_records dr
          WHERE dr.status='downloaded' AND dr.file_path IS NOT NULL
            AND COALESCE(NULLIF(dr.album,''),'未知专辑')=?1
@@ -714,7 +780,7 @@ pub fn get_tracks_by_album(conn: &Connection, album: &str) -> Result<Vec<TrackVi
 pub fn get_tracks_by_artist(conn: &Connection, artist: &str) -> Result<Vec<TrackView>> {
     let mut stmt = conn.prepare(
         "SELECT dr.local_id, dr.song_id, dr.name, dr.artist, dr.album, dr.format, dr.sample_rate,
-                dr.bit_depth, dr.bitrate, dr.channels, dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at
+                dr.bit_depth, dr.bitrate, dr.channels, dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at, dr.favorite
          FROM download_records dr
          WHERE dr.status='downloaded' AND dr.file_path IS NOT NULL
            AND COALESCE(NULLIF(dr.artist,''),'未知艺人')=?1

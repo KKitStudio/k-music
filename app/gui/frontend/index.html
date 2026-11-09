@@ -139,6 +139,17 @@
     </nav>
 
     <div class="list-pane" id="library-pane">
+      <!-- 全部曲库视图筛选条：音质 + 仅看收藏（仅本视图生效） -->
+      <div class="filter-bar" id="track-filter-bar">
+        <label class="filter-label" for="filter-quality">筛选</label>
+        <select id="filter-quality" class="md-select">
+          <option value="">全部音质</option>
+          <option value="lossless">仅无损</option>
+          <option value="hires">仅高解析</option>
+          <option value="lossless_up">无损及以上</option>
+        </select>
+        <button id="filter-fav" class="md-btn sm" type="button" aria-pressed="false">已收藏</button>
+      </div>
       <!-- 纵向：曲目详情内联到歌曲列表上方（把宽度让给列表），横向时隐藏 -->
       <div class="inline-detail" id="lib-detail" hidden>
         <div class="inline-cover" id="lib-detail-cover" hidden></div>

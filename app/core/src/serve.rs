@@ -49,6 +49,10 @@ struct AppState {
 #[derive(Deserialize)]
 struct TracksQuery {
     q: Option<String>,
+    /// 音质层级过滤：lossless / hires / lossless_up（无损+高解析）。空 = 不过滤。
+    quality: Option<String>,
+    /// 仅看已收藏。axum 的 Query 反序列化支持 bool（?favorite=true）。
+    favorite: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -305,6 +309,7 @@ fn build_router(
     };
     Router::new()
         .route("/api/tracks", get(tracks_handler))
+        .route("/api/tracks/:id/favorite", post(track_favorite_handler))
         .route("/api/tracks/delete", post(track_delete_handler))
         .route("/api/tracks/reveal", post(track_reveal_handler))
         .route("/api/track/:id", get(track_handler))
@@ -740,9 +745,11 @@ async fn tracks_handler(
 ) -> Response {
     let conn = st.conn.clone();
     let kw = q.q.clone();
+    let quality = q.quality.clone();
+    let fav = q.favorite.unwrap_or(false);
     let rows = blocking(move || {
         let c = conn.lock().unwrap();
-        db::list_tracks(&c, kw.as_deref())
+        db::list_tracks(&c, kw.as_deref(), quality.as_deref(), fav)
     })
     .await
     .unwrap_or_default();
@@ -759,6 +766,34 @@ async fn track_handler(State(st): State<AppState>, AxumPath(id): AxumPath<i64>) 
     .ok()
     .flatten();
     axum::Json(serde_json::json!({ "track": row })).into_response()
+}
+
+#[derive(Deserialize)]
+struct TrackFavoriteReq {
+    favorite: bool,
+}
+
+/// 切换某曲目的收藏标记（按 local_id，路径参数）。只写 download_records.favorite。
+async fn track_favorite_handler(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<i64>,
+    axum::Json(body): axum::Json<TrackFavoriteReq>,
+) -> Response {
+    if id <= 0 {
+        return err_json("local_id 无效");
+    }
+    let conn = st.conn.clone();
+    let res = blocking(move || {
+        let c = conn.lock().unwrap();
+        db::set_favorite(&c, id, body.favorite)
+    })
+    .await;
+    match res {
+        Ok(n) if n > 0 => axum::Json(serde_json::json!({ "ok": true, "favorite": body.favorite }))
+            .into_response(),
+        Ok(_) => err_json("未找到该曲目"),
+        Err(e) => err_json(&e.to_string()),
+    }
 }
 
 #[derive(Deserialize)]
@@ -1429,7 +1464,7 @@ async fn reorganize_handler(
     let scheme_inner = scheme.clone();
     match blocking(move || -> Result<serde_json::Value> {
         let c = conn.lock().unwrap();
-        let rows = db::list_tracks(&c, None)?;
+        let rows = db::list_tracks(&c, None, None, false)?;
         // 以新方案计算目标：先切换到新 scheme。
         let mut cfg = cfg;
         cfg.library.file_scheme = scheme_inner;

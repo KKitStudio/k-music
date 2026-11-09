@@ -58,6 +58,9 @@ const state = {
   duplicatesLogPath: '',
   duplicateGroups: [],
   tracks: [],
+  // 全部曲库视图的筛选状态（会话内有效，不持久化；音质 quality / 仅看收藏 favorite）。
+  tracksQuery: '',
+  trackFilters: { quality: '', favorite: false },
   current: null,
   // 分视图选中态：四个页面各自的「曲级选中」互不干扰。
   // value = { track: 列表中的曲目摘要, trx: /api/track 返回的完整详情 } 或 null。
@@ -129,6 +132,17 @@ function trackHeadHtml(cols) {
 }
 function trackCellsHtml(t, cols) {
   return cols.map((k) => `<td>${COLUMN_DEFS[k].render(t)}</td>`).join('');
+}
+// 序号列内嵌收藏心形（不新增独立列，避免破坏列宽 / 拖拽 / nth-child 回归断言）。
+// 四表共用：点击心形切换收藏，捕获阶段委托已阻止冒泡到行选中。
+function idxCellHtml(t, i) {
+  const fav = t.favorite ? '♥' : '♡';
+  const cls = t.favorite ? 'fav-btn active' : 'fav-btn';
+  return (
+    `<td class="idx-col"><button class="${cls}" type="button" data-id="${t.local_id}" ` +
+    `aria-label="收藏" aria-pressed="${!!t.favorite}">${fav}</button>` +
+    `<span class="idx-num">${i + 1}</span></td>`
+  );
 }
 
 // 四个页面（左侧导航入口）及其「纵向内联详情条」的 DOM 位置。
@@ -853,10 +867,76 @@ function renderConfigStatus() {
 
 // ---------- 曲库列表 ----------
 async function loadTracks(q) {
-  const { data } = await api('/api/tracks?q=' + encodeURIComponent(q || ''));
+  state.tracksQuery = q || '';
+  const params = new URLSearchParams();
+  if (state.tracksQuery) params.set('q', state.tracksQuery);
+  if (state.trackFilters.quality) params.set('quality', state.trackFilters.quality);
+  if (state.trackFilters.favorite) params.set('favorite', '1');
+  const { data } = await api('/api/tracks?' + params.toString());
   state.tracks = (data && data.tracks) || [];
   renderTracks();
 }
+
+// 切换某曲目收藏标记（按 local_id）。更新本地数据 + 所有表格里对应的心形按钮。
+async function toggleFavorite(id) {
+  const list =
+    state.tracks.find((t) => t.local_id === id) ||
+    state.playlistTracks.find((t) => t.local_id === id) ||
+    state.albumTracks.find((t) => t.local_id === id) ||
+    state.artistTracks.find((t) => t.local_id === id);
+  const next = !(list && list.favorite);
+  try {
+    const { data } = await api('/api/tracks/' + id + '/favorite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ favorite: next }),
+    });
+    if (!data || !data.ok) {
+      setHint((data && data.error) || '收藏失败');
+      return;
+    }
+    if (list) list.favorite = next;
+    document.querySelectorAll('.fav-btn[data-id="' + id + '"]').forEach((b) => {
+      b.textContent = next ? '♥' : '♡';
+      b.classList.toggle('active', next);
+      b.setAttribute('aria-pressed', String(next));
+    });
+  } catch (e) {
+    setHint('收藏请求失败：' + (e && e.message ? e.message : e));
+  }
+}
+
+// 收藏心形点击：捕获阶段委托，stopPropagation 避免误触发行选中 / 详情。
+document.addEventListener(
+  'click',
+  (e) => {
+    const btn = e.target.closest('.fav-btn');
+    if (!btn) return;
+    e.stopPropagation();
+    e.preventDefault();
+    toggleFavorite(Number(btn.dataset.id));
+  },
+  true
+);
+
+// 全部曲库视图筛选条（音质下拉 + 仅看收藏）。
+(function initTrackFilters() {
+  const fq = $('filter-quality');
+  const ff = $('filter-fav');
+  if (fq) {
+    fq.addEventListener('change', () => {
+      state.trackFilters.quality = fq.value;
+      loadTracks(state.tracksQuery);
+    });
+  }
+  if (ff) {
+    ff.addEventListener('click', () => {
+      state.trackFilters.favorite = !state.trackFilters.favorite;
+      ff.classList.toggle('active', state.trackFilters.favorite);
+      loadTracks(state.tracksQuery);
+    });
+  }
+})();
 
 function renderTracks() {
   const head = $('track-head');
@@ -869,7 +949,7 @@ function renderTracks() {
   state.tracks.forEach((t, i) => {
     const tr = document.createElement('tr');
     tr.dataset.id = t.local_id;
-    tr.innerHTML = `<td class="idx-col">${i + 1}</td>` + trackCellsHtml(t, cols);
+    tr.innerHTML = idxCellHtml(t, i) + trackCellsHtml(t, cols);
     tr.addEventListener('click', () => selectTrack(t, tr));
     tr.addEventListener('dblclick', () => { selectTrack(t, tr); playTrack(t); });
     tr.addEventListener('contextmenu', (e) => openTrackContextMenu(e, t, 'library', tr));
@@ -2451,7 +2531,7 @@ function renderPlaylistTracks() {
     '</tr></thead><tbody>';
   state.playlistTracks.forEach((t, i) => {
     html += `<tr data-id="${t.local_id}">` +
-      `<td class="idx-col">${i + 1}</td>` +
+      idxCellHtml(t, i) +
       trackCellsHtml(t, cols) +
       `<td class="pl-remove">` +
         `<button class="md-btn sm" type="button" data-act="up" title="上移">↑</button>` +
@@ -2657,7 +2737,7 @@ function renderBrowseTracks(boxId, tracks, emptyMsg) {
     '</tr></thead><tbody>';
   tracks.forEach((t, i) => {
     html += '<tr data-id="' + t.local_id + '">' +
-      '<td class="idx-col">' + (i + 1) + '</td>' +
+      idxCellHtml(t, i) +
       trackCellsHtml(t, cols) +
       '</tr>';
   });

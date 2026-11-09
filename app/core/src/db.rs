@@ -32,6 +32,9 @@ pub struct TrackView {
     pub created_at: Option<i64>,
     /// 收藏标记（用户侧「已收藏」）。SQLite 存储为 INTEGER（0/1），读取时转 bool。
     pub favorite: bool,
+    /// #28：曲级流派 / 发行年份（音频标签）。空串视为无流派，前端按「空字段不渲染」处理。
+    pub genre: Option<String>,
+    pub year: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -177,6 +180,24 @@ fn init_schema(conn: &Connection) -> Result<()> {
             "ALTER TABLE download_records ADD COLUMN favorite INTEGER DEFAULT 0;",
         )?;
     }
+    // #28：曲级流派 / 年份，无破坏迁移。旧记录两列保持 NULL，
+    // 由扫描增量门控识别为「从未抽取过标签」而下探一次（用户拍板的回填策略）。
+    // genre 约定：NULL=从未尝试；''=已尝试但文件无此标签；非空=实际流派。
+    for (col, decl) in [("genre", "TEXT"), ("year", "INTEGER")] {
+        let has_col: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('download_records') WHERE name=?1",
+                params![col],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        if !has_col {
+            conn.execute_batch(&format!(
+                "ALTER TABLE download_records ADD COLUMN {col} {decl};"
+            ))?;
+        }
+    }
     Ok(())
 }
 
@@ -201,6 +222,10 @@ pub fn upsert_local_record(
     file_size: i64,
     file_mtime: i64,
     created_at_ms: Option<i64>,
+    // #28：音频标签流派 / 年份。genre 为 None 时落空串（标记「已尝试抽取」），
+    // 使扫描增量门控不再对「文件本身没有流派标签」的记录反复下探。
+    genre: Option<&str>,
+    year: Option<i64>,
 ) -> Result<bool> {
     let existing: Option<i64> = conn
         .query_row(
@@ -215,11 +240,11 @@ pub fn upsert_local_record(
         conn.execute(
             "UPDATE download_records SET name=?1,artist=?2,album=?3,duration_ms=?4,format=?5,
                 sample_rate=?6,bit_depth=?7,bitrate=?8,channels=?9,quality_tier=?10,
-                file_size=?11,file_mtime=?12,created_at=?13
-             WHERE local_id=?14",
+                file_size=?11,file_mtime=?12,created_at=?13,genre=COALESCE(?14,''),year=?15
+             WHERE local_id=?16",
             params![
                 name, artist, album, duration_ms, format, sample_rate, bit_depth, bitrate,
-                channels, quality_tier, file_size, file_mtime, created_at_ms, rec_id
+                channels, quality_tier, file_size, file_mtime, created_at_ms, genre, year, rec_id
             ],
         )?;
         Ok(false)
@@ -228,12 +253,12 @@ pub fn upsert_local_record(
         conn.execute(
             "INSERT INTO download_records(song_id,source_kind,status,name,artist,album,duration_ms,
                 file_path,format,sample_rate,bit_depth,bitrate,channels,quality_tier,file_size,
-                file_mtime,imported_at,created_at,downloaded_at)
+                file_mtime,imported_at,created_at,downloaded_at,genre,year)
              VALUES(NULL,'local_scan','downloaded',?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,
-                    CAST(strftime('%s','now') AS INTEGER)*1000,?14,datetime('now'))",
+                    CAST(strftime('%s','now') AS INTEGER)*1000,?14,datetime('now'),COALESCE(?15,''),?16)",
             params![
                 name, artist, album, duration_ms, file_path, format, sample_rate, bit_depth,
-                bitrate, channels, quality_tier, file_size, file_mtime, created_at_ms
+                bitrate, channels, quality_tier, file_size, file_mtime, created_at_ms, genre, year
             ],
         )?;
         Ok(true)
@@ -283,6 +308,8 @@ fn track_from_row(row: &rusqlite::Row) -> rusqlite::Result<TrackView> {
         imported_at: row.get(14)?,
         created_at: row.get(15)?,
         favorite: row.get::<_, i64>(16)? != 0,
+        genre: row.get(17)?,
+        year: row.get(18)?,
     })
 }
 
@@ -297,7 +324,7 @@ pub fn list_tracks(
 ) -> Result<Vec<TrackView>> {
     let mut sql = String::from(
         "SELECT dr.local_id, dr.song_id, dr.name, dr.artist, dr.album, dr.format, dr.sample_rate,
-                dr.bit_depth, dr.bitrate, dr.channels, dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at, dr.favorite
+                dr.bit_depth, dr.bitrate, dr.channels, dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at, dr.favorite, dr.genre, dr.year
          FROM download_records dr
          WHERE dr.status='downloaded' AND dr.file_path IS NOT NULL",
     );
@@ -384,7 +411,7 @@ pub fn get_track_by_local_id(conn: &Connection, local_id: i64) -> Result<Option<
     let opt: Option<TrackView> = conn
         .query_row(
             "SELECT dr.local_id, dr.song_id, dr.name, dr.artist, dr.album, dr.format, dr.sample_rate,
-                    dr.bit_depth, dr.bitrate, dr.channels, dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at, dr.favorite
+                    dr.bit_depth, dr.bitrate, dr.channels, dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at, dr.favorite, dr.genre, dr.year
              FROM download_records dr
              WHERE dr.local_id=?1 AND dr.status='downloaded' AND dr.file_path IS NOT NULL
              ORDER BY dr.local_id DESC LIMIT 1",
@@ -484,6 +511,21 @@ pub fn get_cached_file_info(conn: &Connection, file_path: &str) -> Result<Option
     Ok(opt)
 }
 
+/// #28：判断该文件的记录是否已抽取过流派 / 年份标签。
+/// 约定 `genre IS NOT NULL` = 已尝试（文件无标签时落空串）；NULL = 迁移前的旧记录，
+/// 扫描增量门控据此下探一次 lofty 抽取回填，之后不再产生额外 I/O。
+pub fn tags_extracted(conn: &Connection, file_path: &str) -> Result<bool> {
+    let missing = conn
+        .query_row(
+            "SELECT 1 FROM download_records
+             WHERE file_path=?1 AND status='downloaded' AND genre IS NULL",
+            params![file_path],
+            |_| Ok(true),
+        )
+        .optional()?;
+    Ok(!missing.unwrap_or(false))
+}
+
 /// 播放列表（本地曲库内用户自建，local_id 体系，与网易云同步无关）。
 #[derive(Debug, Clone, Serialize)]
 pub struct PlaylistView {
@@ -509,6 +551,9 @@ pub struct PlaylistItemView {
     pub created_at: Option<i64>,
     /// 收藏标记（用户侧「已收藏」）。SQLite 存 INTEGER（0/1），读取转 bool。
     pub favorite: bool,
+    /// #28：曲级流派 / 发行年份（与 TrackView 同源）。
+    pub genre: Option<String>,
+    pub year: Option<i64>,
 }
 
 /// 播放列表名称上限（按 Unicode 字符计）。
@@ -603,7 +648,7 @@ pub fn delete_playlist(conn: &Connection, playlist_id: i64) -> Result<()> {
 pub fn get_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<Vec<PlaylistItemView>> {
     let mut stmt = conn.prepare(
         "SELECT pi.position, dr.local_id, dr.name, dr.artist, dr.album, dr.format,
-                dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at, dr.favorite
+                dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at, dr.favorite, dr.genre, dr.year
          FROM playlist_items pi
          JOIN download_records dr ON dr.local_id = pi.local_id
          WHERE pi.playlist_id=?1
@@ -624,6 +669,8 @@ pub fn get_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<Vec<Pl
             imported_at: r.get(10)?,
             created_at: r.get(11)?,
             favorite: r.get::<_, i64>(12)? != 0,
+            genre: r.get(13)?,
+            year: r.get(14)?,
         })
     })?;
     let mut out = Vec::new();
@@ -725,13 +772,21 @@ pub struct GroupView {
     pub name: String,
     pub track_count: i64,
     pub cover_id: Option<i64>,
+    /// #28：组内流派（字典序最小的非空流派）与年份范围，供歌手行 / 专辑卡片副信息展示。
+    /// 全组无标签时为 None，前端按「空字段不渲染」处理。
+    pub genre: Option<String>,
+    pub year_min: Option<i64>,
+    pub year_max: Option<i64>,
 }
 
-/// 列出全部专辑（按名称分组，含各专辑曲目数与代表曲目 id），NULL/空 album 折叠为「未知专辑」。
-/// 排序：按专辑名称字典序。
+/// 列出全部专辑（按名称分组，含曲目数 / 代表曲目 id / 流派 / 年份范围）。
+/// NULL/空 album 折叠为「未知专辑」；按专辑名称字典序。
+/// #28 的聚合全部在同一次 GROUP BY 内完成，不新增查询。
 pub fn list_albums(conn: &Connection) -> Result<Vec<GroupView>> {
     let mut stmt = conn.prepare(
-        "SELECT COALESCE(NULLIF(dr.album,''),'未知专辑') AS album, COUNT(*), MIN(dr.local_id)
+        "SELECT COALESCE(NULLIF(dr.album,''),'未知专辑') AS album, COUNT(*), MIN(dr.local_id),
+                MIN(CASE WHEN dr.genre IS NOT NULL AND dr.genre <> '' THEN dr.genre END),
+                MIN(dr.year), MAX(dr.year)
          FROM download_records dr
          WHERE dr.status='downloaded' AND dr.file_path IS NOT NULL
          GROUP BY COALESCE(NULLIF(dr.album,''),'未知专辑')
@@ -742,16 +797,21 @@ pub fn list_albums(conn: &Connection) -> Result<Vec<GroupView>> {
             name: r.get(0)?,
             track_count: r.get(1)?,
             cover_id: r.get(2)?,
+            genre: r.get(3)?,
+            year_min: r.get(4)?,
+            year_max: r.get(5)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-/// 列出全部歌手（按整字段分组，含各歌手曲目数与代表曲目 id），NULL/空 artist 折叠为「未知艺人」。
-/// 注：艺人字段可能含多人协作分隔符（如「A / B」），此处按整字段分组，不做拆分。
+/// 列出全部歌手（按整字段分组，含曲目数 / 代表曲目 id / 流派 / 年份范围）。
+/// NULL/空 artist 折叠为「未知艺人」；艺人字段含多人协作分隔符时不拆分。
 pub fn list_artists(conn: &Connection) -> Result<Vec<GroupView>> {
     let mut stmt = conn.prepare(
-        "SELECT COALESCE(NULLIF(dr.artist,''),'未知艺人') AS artist, COUNT(*), MIN(dr.local_id)
+        "SELECT COALESCE(NULLIF(dr.artist,''),'未知艺人') AS artist, COUNT(*), MIN(dr.local_id),
+                MIN(CASE WHEN dr.genre IS NOT NULL AND dr.genre <> '' THEN dr.genre END),
+                MIN(dr.year), MAX(dr.year)
          FROM download_records dr
          WHERE dr.status='downloaded' AND dr.file_path IS NOT NULL
          GROUP BY COALESCE(NULLIF(dr.artist,''),'未知艺人')
@@ -762,6 +822,9 @@ pub fn list_artists(conn: &Connection) -> Result<Vec<GroupView>> {
             name: r.get(0)?,
             track_count: r.get(1)?,
             cover_id: r.get(2)?,
+            genre: r.get(3)?,
+            year_min: r.get(4)?,
+            year_max: r.get(5)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -771,7 +834,7 @@ pub fn list_artists(conn: &Connection) -> Result<Vec<GroupView>> {
 pub fn get_tracks_by_album(conn: &Connection, album: &str) -> Result<Vec<TrackView>> {
     let mut stmt = conn.prepare(
         "SELECT dr.local_id, dr.song_id, dr.name, dr.artist, dr.album, dr.format, dr.sample_rate,
-                dr.bit_depth, dr.bitrate, dr.channels, dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at, dr.favorite
+                dr.bit_depth, dr.bitrate, dr.channels, dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at, dr.favorite, dr.genre, dr.year
          FROM download_records dr
          WHERE dr.status='downloaded' AND dr.file_path IS NOT NULL
            AND COALESCE(NULLIF(dr.album,''),'未知专辑')=?1
@@ -785,7 +848,7 @@ pub fn get_tracks_by_album(conn: &Connection, album: &str) -> Result<Vec<TrackVi
 pub fn get_tracks_by_artist(conn: &Connection, artist: &str) -> Result<Vec<TrackView>> {
     let mut stmt = conn.prepare(
         "SELECT dr.local_id, dr.song_id, dr.name, dr.artist, dr.album, dr.format, dr.sample_rate,
-                dr.bit_depth, dr.bitrate, dr.channels, dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at, dr.favorite
+                dr.bit_depth, dr.bitrate, dr.channels, dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at, dr.favorite, dr.genre, dr.year
          FROM download_records dr
          WHERE dr.status='downloaded' AND dr.file_path IS NOT NULL
            AND COALESCE(NULLIF(dr.artist,''),'未知艺人')=?1

@@ -155,6 +155,12 @@ pub struct Candidate {
     pub channels: Option<i64>,
     pub duration_ms: Option<i64>,
     pub quality_tier: String,
+    /// #28：音频标签流派 / 年份，随候选一并带到入库阶段（不参与三元组判重）。
+    /// `#[serde(default)]` 保证旧 pending JSON 反序列化兼容。
+    #[serde(default)]
+    pub genre: Option<String>,
+    #[serde(default)]
+    pub year: Option<i64>,
     pub mode: FileMode,
     pub origin: Origin,
     /// NCM 转换产物是临时文件；挂起时必须搬进 pending 目录，否则会被下次 scan 重新入库。
@@ -474,6 +480,8 @@ pub fn candidate_from_audio(
         channels: meta.channels.map(|v| v as i64),
         duration_ms: meta.duration_ms.map(|v| v as i64),
         quality_tier: quality_tier_of(&meta),
+        genre: meta.genre.clone(),
+        year: meta.year,
         mode,
         origin,
         is_temp: false,
@@ -801,6 +809,8 @@ fn import_candidate(_cfg: &Config, conn: &Connection, c: &Candidate) -> Result<b
         md.len() as i64,
         mtime_secs(&md),
         file_created_ms(&target),
+        c.genre.as_deref(),
+        c.year,
     )?;
     Ok(inserted)
 }
@@ -959,6 +969,8 @@ fn apply_one(cfg: &Config, conn: &Connection, group: &DuplicateGroup, choice: &s
         md.len() as i64,
         mtime_secs(&md),
         file_created_ms(&target),
+        chosen.genre.as_deref(),
+        chosen.year,
     )?;
     Ok(())
 }
@@ -1150,6 +1162,7 @@ mod tests {
                     name: "T".into(), artist: "A".into(), album: None, format: "flac".into(),
                     size: 100, mtime: 0, sample_rate: None, bit_depth: None, bitrate: None,
                     channels: None, duration_ms: None, quality_tier: "lossless".into(),
+                    genre: None, year: None,
                     mode: FileMode::Copy, origin: Origin::Manual, is_temp: false,
                 },
                 Candidate {
@@ -1157,6 +1170,7 @@ mod tests {
                     name: "T".into(), artist: "A".into(), album: None, format: "flac".into(),
                     size: 200, mtime: 0, sample_rate: None, bit_depth: None, bitrate: None,
                     channels: None, duration_ms: None, quality_tier: "lossless".into(),
+                    genre: None, year: None,
                     mode: FileMode::Copy, origin: Origin::Manual, is_temp: false,
                 },
             ],

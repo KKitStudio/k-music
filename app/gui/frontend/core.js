@@ -697,6 +697,10 @@ function detailModelOf(view) {
         { label: '声道', value: t.channels || null },
         { label: '时长', value: t.duration_ms ? fmtTime(t.duration_ms) : null },
         { label: '质量层级', value: t.quality_tier },
+        // #28：流派 / 年份。genre 空串或 year 为空时 detailValue → null，
+        // detailRowsHtml 会整行跳过，遵守「空字段不渲染、不用 —」约定。
+        { label: '流派', value: t.genre || null },
+        { label: '年份', value: t.year || null },
         // 空值传 null → detailRowsHtml 会整行跳过，不渲染「—」占位。
         { label: '导入时间', value: fmtDateTimeFull(t.imported_at) || null },
         { label: '创建时间', value: fmtDateTimeFull(t.created_at) || null },
@@ -2445,6 +2449,54 @@ function renderGroupList(listId, items, emptyText, keyField, selectedKey) {
   });
 }
 
+// #28：分组的年份 / 流派标签（GroupView 的 genre / year_min / year_max 聚合）。
+// 空字段一律返回 null，前端整行跳过，不渲染「—」占位（项目强约束）。
+function groupYearLabel(g) {
+  if (!g) return null;
+  const a = g.year_min, b = g.year_max;
+  if (a == null && b == null) return null;
+  if (a != null && b != null && a !== b) return `${a}–${b}`;
+  return String(a != null ? a : b);
+}
+function groupTagLine(g) {
+  if (!g) return null;
+  const parts = [];
+  const genre = detailValue(g && g.genre);
+  if (genre) parts.push(genre);
+  const yr = groupYearLabel(g);
+  if (yr) parts.push(yr);
+  return parts.length ? parts.join(' · ') : null;
+}
+
+// #28：歌手页二级列表 —— 在既有「名字 + 曲目数」行上追加「流派 · 年份范围」副信息。
+// 独立渲染，不改共用 renderGroupList（播放列表 / 专辑列表模式保持原样）。
+// li[data-name] / .selected 契约与 renderGroupList 完全一致：点击委托、双击整组播放、
+// selectArtist 选中高亮、FR-23 队列来源均不受影响。
+function renderArtistList() {
+  const ul = $('ar-list');
+  if (!ul) return;
+  const items = state.artists || [];
+  ul.innerHTML = '';
+  if (!items.length) {
+    ul.innerHTML = '<li class="pl-empty">暂无智能播放列表 · 歌手</li>';
+    return;
+  }
+  const selected = state.currentArtist ? state.currentArtist.name : null;
+  items.forEach((it) => {
+    const li = document.createElement('li');
+    li.dataset.name = it.name;
+    const name = detailValue(it.name);
+    const count = detailValue(it.track_count);
+    const sub = groupTagLine(it);
+    li.innerHTML =
+      '<span class="pl-name">' + (name !== null ? esc(name) : '') +
+        (sub ? `<small class="pl-sub">${esc(sub)}</small>` : '') + '</span>' +
+      (count !== null ? `<span class="pl-count">${esc(count)}</span>` : '');
+    if (selected !== null && it.name === selected) li.classList.add('selected');
+    ul.appendChild(li);
+  });
+}
+
 // #27：专辑集合「网格视图」——把同一批分组渲染为封面卡片。
 // 刻意复用 renderGroupList 的 `li[data-name]` / `.selected` 契约：点击委托、双击整组播放、
 // selectAlbum 的选中高亮、FR-23 播放队列来源全部无需改动；只影响二级栏 al-list 的呈现。
@@ -2468,10 +2520,16 @@ function renderGroupCards(listId, items, emptyText, selectedKey) {
     const cover = it.cover_id
       ? `<img src="/api/cover/${Number(it.cover_id)}" alt="" loading="lazy" />`
       : '';
+    // #28：副信息 = 年份 · N 首（对齐重设计稿的「歌手 · 年份 · N 首」，
+    // 分组模型暂无歌手字段故省略；年份为空时只显示曲目数）。
+    const metaParts = [];
+    const yr = groupYearLabel(it);
+    if (yr) metaParts.push(yr);
+    if (count !== null) metaParts.push(`${count} 首`);
     li.innerHTML =
       `<div class="gcard-art">${cover}<span class="gcard-fallback" aria-hidden="true">♫</span></div>` +
       (name !== null ? `<span class="gcard-name">${esc(name)}</span>` : '') +
-      (count !== null ? `<span class="gcard-count">${esc(count)} 首</span>` : '');
+      (metaParts.length ? `<span class="gcard-count">${esc(metaParts.join(' · '))}</span>` : '');
     if (selectedKey !== null && selectedKey !== undefined && it.name === selectedKey) {
       li.classList.add('selected');
     }
@@ -2884,13 +2942,8 @@ async function loadArtists() {
 }
 
 function renderArtists() {
-  renderGroupList(
-    'ar-list',
-    state.artists,
-    '暂无智能播放列表 · 歌手',
-    'name',
-    state.currentArtist ? state.currentArtist.name : null,
-  );
+  // #28：歌手页展示流派 / 年份副信息；其余分组仍走共用 renderGroupList。
+  renderArtistList();
 }
 
 $('ar-list').addEventListener('click', (e) => {

@@ -229,7 +229,12 @@ fn scan_file(
             if let Some(ms) = created_ms {
                 db::refresh_created_at(conn, &path_s, ms)?;
             }
-            return Ok(()); // 未变更，无需重抽
+            // #28（用户拍板）：genre IS NULL 的旧记录仍下探抽取一次，回填流派 / 年份。
+            // 抽取后即使文件没有这些标签，genre 也会落空串标记为「已尝试」，
+            // 因此这次额外 I/O 只发生一次，后续扫描恢复原有零 lofty 抽取的性能。
+            if db::tags_extracted(conn, &path_s)? {
+                return Ok(()); // 未变更且标签已抽取，无需重抽
+            }
         }
     }
     match duplicates::candidate_from_audio(cfg, path, FileMode::Scan, Origin::Scan) {

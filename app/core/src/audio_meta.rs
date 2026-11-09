@@ -16,6 +16,10 @@ pub struct AudioMeta {
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
+    /// #28：曲级流派 / 发行年份（来自音频标签）。`genre` 为 None 表示「标签无此字段」；
+    /// 入库时统一写成空串以标记「已尝试抽取」，供扫描增量门控区分从未抽取的旧记录。
+    pub genre: Option<String>,
+    pub year: Option<i64>,
 }
 
 fn ext_of(path: &Path) -> String {
@@ -49,7 +53,31 @@ pub fn extract(path: &Path) -> Result<AudioMeta> {
         if meta.album.is_none() {
             meta.album = tag.get_string(&ItemKey::AlbumTitle).map(str::to_string);
         }
-        if meta.title.is_some() && meta.artist.is_some() && meta.album.is_some() {
+        // #28：流派 / 年份。年份优先用 lofty 的 year()（数值），再回退 Year /
+        // RecordingDate 文本的前四位（ID3v2 TDRC 常形如 "2021-05-01"）。
+        if meta.genre.is_none() {
+            meta.genre = tag
+                .get_string(&ItemKey::Genre)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+        }
+        if meta.year.is_none() {
+            meta.year = tag.year().map(|v| v as i64).or_else(|| {
+                tag.get_string(&ItemKey::Year)
+                    .or_else(|| tag.get_string(&ItemKey::RecordingDate))
+                    .and_then(|s| {
+                        let head: String = s.trim().chars().take(4).collect();
+                        head.parse::<i64>().ok()
+                    })
+            });
+        }
+        if meta.title.is_some()
+            && meta.artist.is_some()
+            && meta.album.is_some()
+            && meta.genre.is_some()
+            && meta.year.is_some()
+        {
             break;
         }
     }

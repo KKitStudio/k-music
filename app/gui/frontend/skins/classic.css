@@ -325,6 +325,11 @@ body, .topbar, .toolbar, .sidebar, .detail-pane, .player, .modal,
 .pl-list li.pl-empty:hover { background: transparent; }
 .pl-list .pl-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pl-list .pl-count { flex: none; font-size: 12px; color: var(--text-soft); background: var(--chip-bg); border-radius: 999px; padding: 2px 9px; }
+/* #28：歌手行副信息「流派 · 年份范围」。空值时前端根本不创建该节点（不用「—」）。 */
+.pl-list .pl-sub {
+  display: block; font-size: 11px; font-weight: 400; color: var(--text-soft);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px;
+}
 
 /* ---------- #27 专辑网格 / 列表视图切换（只改 al-list 呈现） ----------
    颜色 / 圆角 / 阴影全部复用既有 CSS 令牌，两套皮肤共用（modern.css 经 @import 继承），

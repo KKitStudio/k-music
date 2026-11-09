@@ -62,7 +62,7 @@ const state = {
   tracksQuery: '',
   // #33：曲库筛选只保留音质；「已收藏」入口已删除（收藏是第 5 个一级视图）。
   trackFilters: { quality: '' },
-  // #31/#32：「我喜欢的音乐」= 第 5 个一级视图（activeTab==='favorites'），与专辑/歌手同级。
+  // #31/#32：「喜爱」= 第 5 个一级视图（activeTab==='favorites'），与专辑/歌手同级。
   // 集合是实时推导的播放来源快照，绝不写入 playlists 表；无二级栏，直接复用曲库表格。
   favoriteTracks: [],
   favoriteCount: 0,
@@ -920,7 +920,7 @@ async function toggleFavorite(id) {
       return;
     }
     if (list) list.favorite = next;
-    // #31：增量维护「我喜欢的音乐」缓存，不重新请求 /api/favorites；
+    // #31：增量维护「喜爱」缓存，不重新请求 /api/favorites；
     // 收藏模式下取消收藏立即从列表移除（实时推导语义）。
     if (next) {
       if (!state.favoriteTracks.some((t) => Number(t.local_id) === Number(id))) {
@@ -978,7 +978,7 @@ function setQualityFilter(value) {
   });
 })();
 
-// ---------- #31/#32：「我喜欢的音乐」独立智能列表（第 5 个一级视图）----------
+// ---------- #31/#32：「喜爱」独立智能列表（第 5 个一级视图）----------
 // 实时从 /api/favorites 推导收藏集合（绝不写 playlists 表）。boot / 切到本视图时取权威值，
 // 之后由 toggleFavorite() 增量维护；播放队列是 local_id[] 快照、生成后不读 DOM。
 async function loadFavorites(render) {
@@ -1016,8 +1016,7 @@ async function playAllFavorites() {
 (function initFavoritesEntry() {
   const play = $('favorites-play');
   if (play) play.addEventListener('click', playAllFavorites);
-  const back = $('favorites-back');
-  if (back) back.addEventListener('click', () => switchTab('library'));
+  // #35：无「返回曲库」按钮；喜爱与专辑/歌手同级，返回走侧栏「全部曲库」Tab。
   // boot 缓存一次集合供侧栏计数与双击整组播放；不渲染，首屏曲库表格零行为变化。
   loadFavorites(false);
 })();
@@ -1430,7 +1429,7 @@ function buildQueue(view, clickedId, named) {
 
 function queueTitle(view, named) {
   // #32：收藏是第 5 个一级视图，队列标题与曲库区分。
-  if (view === 'favorites') return '智能播放列表 · 我喜欢的音乐';
+  if (view === 'favorites') return '智能播放列表 · 喜爱';
   // FR-23：智能三视图（全部曲库 / 专辑 / 歌手）统一「智能播放列表 · …」前缀；
   // 有名播放列表仍属手工维护列表，标题不变。
   if (view === 'playlists' && state.currentPlaylist) {
@@ -2585,7 +2584,7 @@ $('ncm-organize-go').addEventListener('click', async () => {
 $('btn-refresh').addEventListener('click', () => loadTracks($('search').value));
 $('search').addEventListener('input', (e) => loadTracks(e.target.value));
 
-// ---------- 左侧 tab 选择栏（全部曲库 / 播放列表 / 专辑 / 歌手 / 我喜欢的音乐）----------
+// ---------- 左侧 tab 选择栏（全部曲库 / 播放列表 / 专辑 / 歌手 / 喜爱）----------
 // #32：收藏与专辑/歌手同级，只是没有二级栏：直接复用 #library-pane 的单张歌曲表格。
 function switchTab(tab) {
   closeTrackContextMenu();
@@ -2597,7 +2596,7 @@ function switchTab(tab) {
   if (toolbar) {
     toolbar.dataset.title = ({
       library: '全部曲库', playlists: '播放列表', albums: '专辑', artists: '歌手',
-      favorites: '我喜欢的音乐'
+      favorites: '喜爱'
     })[tab] || '全部曲库';
   }
   ['library', 'playlists', 'albums', 'artists', 'favorites'].forEach((v) => {

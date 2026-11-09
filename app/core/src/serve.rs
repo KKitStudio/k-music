@@ -781,7 +781,7 @@ async fn tracks_handler(
     axum::Json(serde_json::json!({ "tracks": rows, "count": rows.len() })).into_response()
 }
 
-/// 「我喜欢的音乐」独立智能列表：实时从 download_records 推导收藏集合。
+/// 「喜爱」独立智能列表（第 5 个一级视图）：实时从 download_records 推导收藏集合。
 /// 与 FR-23 一致——只读、不写 playlists 表、不建有名列表；前端拿到的是 local_id[] 快照来源。
 async fn favorites_handler(State(st): State<AppState>) -> Response {
     let conn = st.conn.clone();

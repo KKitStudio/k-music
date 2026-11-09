@@ -144,8 +144,8 @@
       <!-- #32：与专辑/歌手同级的第 5 个一级 Tab；无二级栏，直接显示歌曲列表。
            双击整组播放（FR-23 式实时推导快照，绝不写 playlists 表）。 -->
       <button class="tab-btn" id="btn-favorites" type="button" data-icon="♥"
-              title="我喜欢的音乐（双击整组播放）" aria-label="我喜欢的音乐">
-        <span>我喜欢的音乐</span><span class="fav-entry-count" id="fav-count">0</span>
+              title="喜爱（双击整组播放）" aria-label="喜爱">
+        <span>喜爱</span><span class="fav-entry-count" id="fav-count">0</span>
       </button>
       <button class="pane-handle" id="handle-sidebar" data-toggle="sidebar" type="button" data-tip="收起一级菜单" aria-label="收起一级菜单">‹</button>
       <div class="pane-resizer" data-resize="sidebar" title="拖动调整一级菜单宽度"></div>
@@ -162,12 +162,13 @@
           <button class="md-btn sm filter-chip" type="button" data-quality="lossless_up" aria-pressed="false">无损及以上</button>
         </div>
       </div>
-      <!-- #31：收藏独立智能列表视图条（仅收藏模式显示，届时上面的筛选条隐藏）。 -->
+      <!-- #31：收藏独立智能列表视图条（仅收藏视图显示，届时上面的筛选条隐藏）。
+           #35：删「返回曲库」按钮——喜爱是与专辑/歌手同级的第 5 个一级视图，
+           返回统一点侧栏「全部曲库」Tab，与另外两页一致。 -->
       <div class="favorites-bar" id="favorites-bar" hidden>
-        <span class="fav-bar-title">♥ 我喜欢的音乐</span>
+        <span class="fav-bar-title">♥ 喜爱</span>
         <span class="fav-bar-count" id="favorites-count">共 0 首</span>
         <button id="favorites-play" class="md-btn sm primary" type="button">播放全部</button>
-        <button id="favorites-back" class="md-btn sm" type="button">返回曲库</button>
       </div>
       <!-- 纵向：曲目详情内联到歌曲列表上方（把宽度让给列表），横向时隐藏 -->
       <div class="inline-detail" id="lib-detail" hidden>

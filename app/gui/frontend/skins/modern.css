@@ -20,7 +20,9 @@
   --surface: #fffdfa;
   --surface-2: #f8f6f0;
   --chip-bg: rgba(142, 59, 47, 0.08);
-  /* #30 rail 令牌（重设计稿左侧深色导航） */
+  /* #30 rail 令牌（重设计稿左侧深色导航）；
+     #37：--rail-base 是「无主题色」时的出厂深底，has-accent 时与 --primary 混合染色。 */
+  --rail-base: #191715;
   --rail: #191715;
   --rail-text: #ede8de;
   --rail-muted: #b3aca0;
@@ -40,6 +42,7 @@
   --surface: #1b1a18;
   --surface-2: #222019;
   --chip-bg: rgba(216, 121, 95, 0.12);
+  --rail-base: #0c0b0a;
   --rail: #0c0b0a;
   --rail-text: #ede8de;
   --rail-muted: #948e84;
@@ -53,6 +56,22 @@ html.skin-modern {
   --rail-head-h: 152px;
   --stage-head-h: 62px;
   --player-h: 80px;
+}
+
+/* ---------- #37：主题色联动（用户拍板：rail 底色派生 + 侧栏跟随）----------
+   只有 html.has-accent（手动选色或皮肤自动取色）时才改写，出厂默认深棕 rail 1:1 不变。
+   rail 连续深底由 html::before 提供，改 --rail 一处即整体生效；激活项 / 品牌 K 方块
+   本来就消费 --primary，会同步跟随。 */
+html.skin-modern.has-accent {
+  --rail: color-mix(in srgb, var(--primary) 26%, var(--rail-base));
+  /* :root 里三个派生令牌是硬编码棕 rgba，自定义主题色后会残留棕色，统一改为从 --primary 派生。 */
+  --primary-soft: color-mix(in srgb, var(--primary) 14%, transparent);
+  --primary-glow: color-mix(in srgb, var(--primary) 35%, transparent);
+  --chip-bg: color-mix(in srgb, var(--primary) 8%, transparent);
+}
+html.skin-modern.has-accent[data-theme="dark"] {
+  --primary-soft: color-mix(in srgb, var(--primary) 16%, transparent);
+  --chip-bg: color-mix(in srgb, var(--primary) 12%, transparent);
 }
 
 /* ============================================================
@@ -306,3 +325,44 @@ html.skin-modern #btn-favorites.active .fav-entry-count {
   background: rgba(255, 255, 255, 0.14); color: var(--rail-text);
 }
 html.skin-modern .favorites-bar { background: var(--surface-2); border-radius: var(--radius); }
+
+/* ============================================================
+   #37：皮肤背景下的布局修复 + 现代布局去掉伸缩条
+   ------------------------------------------------------------
+   根因（1280×800 无头浏览器实测）：classic.css:1121 的
+   `body.skin-active .topbar { backdrop-filter: blur(20px) }` 会让 .topbar 成为
+   其 position:fixed 后代（.status / .actions，内含设置按钮）的包含块 ——
+   设置按钮实测从 [169,654] 跑到 [169,101]，上移 553px 钻进顶栏。
+   modern 的 rail 是不透明卡片化布局，玻璃规则本就不该继承，故整体禁用。
+   ============================================================ */
+html.skin-modern body.skin-active { --surface: #fffdfa; --surface-glass: #fffdfa; }
+html.skin-modern[data-theme="dark"] body.skin-active { --surface: #1b1a18; --surface-glass: #1b1a18; }
+/* 与 classic.css 的 .skin-active 玻璃组一一对应，只覆盖 backdrop-filter。 */
+html.skin-modern body.skin-active .topbar,
+html.skin-modern body.skin-active .toolbar,
+html.skin-modern body.skin-active .sidebar,
+html.skin-modern body.skin-active .detail-pane,
+html.skin-modern body.skin-active .player,
+html.skin-modern body.skin-active .list-pane,
+html.skin-modern body.skin-active .playlists-pane .pl-sidebar,
+html.skin-modern body.skin-active .playlists-pane .pl-main,
+html.skin-modern body.skin-active .modal,
+html.skin-modern body.skin-active .modal .settings-section,
+html.skin-modern body.skin-active .track-table th,
+html.skin-modern body.skin-active .dl-table th,
+html.skin-modern body.skin-active .ncm-list-count {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+/* 玻璃态白色描边在 modern 浅色卡片上很突兀，恢复常规分隔线色。 */
+html.skin-modern body.skin-active .list-pane,
+html.skin-modern body.skin-active .detail-pane,
+html.skin-modern body.skin-active .sidebar,
+html.skin-modern body.skin-active .player,
+html.skin-modern body.skin-active .toolbar { border-color: var(--divider); }
+
+/* #37：现代布局不要伸缩条 —— 5 个 ‹/› 收起细条 + 4 个拖动改宽条全部隐藏。
+   收起态由 core.js::applyPaneLayout() 在 modern 下强制展开（只改 DOM class、
+   不动 state / 持久化），切回经典时原样恢复，避免出现 0 宽且无展开入口。 */
+html.skin-modern .pane-handle,
+html.skin-modern .pane-resizer { display: none; }

@@ -743,12 +743,7 @@
 
             <div class="settings-section">
               <h4>检查状态</h4>
-              <dl class="about-list">
-                <div class="about-row"><dt>当前版本</dt><dd id="net-current-version">—</dd></div>
-                <div class="about-row"><dt>检测到的最新版本</dt><dd id="net-latest-version">—</dd></div>
-                <div class="about-row"><dt>上次检查时间</dt><dd id="net-checked-at">—</dd></div>
-                <div class="about-row"><dt>状态</dt><dd id="net-status">—</dd></div>
-              </dl>
+              <p class="modal-hint">更新检测的详细结果（当前版本、检测到的最新版本、上次检查时间、更新状态与下载入口）已移至「关于」页面，仅在开启「是否允许新版本检测」后可见。</p>
               <div class="net-check-actions">
                 <button id="set-update-check-now" class="md-btn" type="button">立即检查</button>
                 <span class="net-check-hint" id="net-check-hint"></span>
@@ -770,6 +765,18 @@
           <div class="about-row"><dt>技术栈</dt><dd id="about-tech">—</dd></div>
         </dl>
         <p class="modal-hint" id="about-desc">—</p>
+      </div>
+
+      <div class="settings-section" id="about-update-section" hidden>
+        <h4>更新状态</h4>
+        <dl class="about-list">
+          <div class="about-row"><dt>当前版本</dt><dd id="about-update-current">—</dd></div>
+          <div class="about-row"><dt>检测到的最新版本</dt><dd id="about-update-latest">—</dd></div>
+          <div class="about-row"><dt>上次检查时间</dt><dd id="about-update-checked-at">—</dd></div>
+          <div class="about-row"><dt>更新状态</dt><dd id="about-update-status">—</dd></div>
+        </dl>
+        <p class="update-note" id="about-update-note" hidden></p>
+        <a class="md-btn about-update-download" id="about-update-download" href="#" target="_blank" rel="noopener" hidden>前往下载</a>
       </div>
 
       <div class="settings-section">

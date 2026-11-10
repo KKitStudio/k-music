@@ -166,6 +166,7 @@ body, .topbar, .toolbar, .sidebar, .detail-pane, .player, .modal,
 .md-btn {
   height: 38px; padding: 0 16px; border: none; border-radius: 8px;
   background: var(--chip-bg); color: var(--text); font-size: 14px; cursor: pointer;
+  font-family: inherit;
   white-space: nowrap; transition: background .15s, box-shadow .15s, transform .05s;
 }
 .md-btn:hover { filter: brightness(0.97); box-shadow: var(--shadow-sm); }
@@ -1644,6 +1645,10 @@ body.detail-collapsed .inline-detail::before { display: none; }
 .net-toggle-row.net-todo { color: var(--text-muted); cursor: not-allowed; opacity: .85; }
 .net-check-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
 .net-check-hint { font-size: 12px; color: var(--text-soft); line-height: 1.5; }
+/* 关于页「更新状态」区：红字提示 + 下载按钮（仅开启检测时可见）。 */
+.update-note { color: #ef4444; font-size: 12px; font-weight: 600; margin: 8px 0 0; }
+.about-update-download { display: inline-flex; align-items: center; justify-content: center; margin-top: 10px; text-decoration: none; }
+.settings-section[hidden], .update-note[hidden], .about-update-download[hidden] { display: none; }
 /* 皮肤激活时提示条仍要保证文字可读（玻璃拟态下补一层实底）。 */
 body.skin-active .update-bar { background: color-mix(in srgb, var(--primary-soft) 88%, var(--surface)); }
 

@@ -264,6 +264,7 @@ pub fn run() {
             let _ = win.show();
             Ok(())
         })
+        .plugin(tauri_plugin_shell::init())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
     // 正常退出时删除端口文件并关闭互斥体；崩溃时句柄由内核回收，

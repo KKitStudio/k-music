@@ -4872,7 +4872,36 @@ function applyUpdateUI() {
   const dotAbout = $('update-dot-about');
   if (dotAbout) dotAbout.hidden = !(gate && hasUpdate);
 
+  // 关于页「更新状态」区：仅开启新版本检测时可见（消除与联网页重复，未开启不打扰）。
+  const aboutSec = $('about-update-section');
+  if (aboutSec) aboutSec.hidden = !state.updateCheckEnabled;
+  renderAboutUpdateUI(hasUpdate, gate);
   renderNetworkUI(hasUpdate, gate);
+}
+
+// 关于页「更新状态」区（仅开启检测时可见）：版本信息 + 有更新时红字提示 + 下载入口。
+function renderAboutUpdateUI(hasUpdate, gate) {
+  const cache = readUpdateCache();
+  const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+  set('about-update-current', state.app_version ? ('v' + state.app_version) : '—');
+  // 缓存的 latestVersion 取自 GitHub tag_name（形如 v0.9.0，已含前缀 v），直接显示即可，勿重复加 v。
+  set('about-update-latest', cache.latestVersion ? cache.latestVersion : '—');
+  set('about-update-checked-at', fmtCheckedAt(cache.checkedAt));
+  let status = '检测未启用';
+  if (gate && hasUpdate) status = '发现新版本';
+  else if (gate && cache.latestVersion) status = '已是最新版本';
+  else if (gate) status = '等待检查';
+  set('about-update-status', status);
+
+  const note = $('about-update-note');
+  const dl = $('about-update-download');
+  if (hasUpdate) {
+    if (note) { note.textContent = '发现新版本 ' + cache.latestVersion + '（当前 v' + (state.app_version || '—') + '）'; note.hidden = false; }
+    if (dl) { dl.href = safeReleaseUrl(cache.htmlUrl); dl.hidden = false; }
+  } else {
+    if (note) note.hidden = true;
+    if (dl) dl.hidden = true;
+  }
 }
 
 function renderNetworkUI(hasUpdate, gate) {
@@ -4894,24 +4923,7 @@ function renderNetworkUI(hasUpdate, gate) {
   });
   const todo = $('set-lyrics-remote-todo');
   if (todo) todo.disabled = true;
-
-  const cache = readUpdateCache();
-  const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
-  set('net-current-version', state.app_version ? ('v' + state.app_version) : '—');
-  set('net-latest-version', cache.latestVersion || '—');
-  set('net-checked-at', fmtCheckedAt(cache.checkedAt));
-  const g = (gate === undefined) ? !!(state.networkEnabled && state.updateCheckEnabled) : gate;
-  // 事件回调可能不带参调用；此时自行从缓存推导，避免状态行短暂显示错误。
-  const local = String(state.app_version || '');
-  const remote = String(cache.latestVersion || '');
-  const derived = (remote && local) ? (compareVersions(remote, local) > 0) : false;
-  const up = (hasUpdate === undefined) ? derived : hasUpdate;
-  let status = '联网已关闭';
-  if (state.networkEnabled && !state.updateCheckEnabled) status = '检测未启用';
-  else if (g && up) status = '发现新版本（可自行下载）';
-  else if (g && cache.latestVersion) status = '已是最新版本';
-  else if (g) status = '等待检查';
-  set('net-status', status);
+  // 状态信息已迁至「关于」页（仅开启检测时可见），此处仅同步控制项。
 }
 
 function saveNetworkPrefs(patch) {
@@ -4922,6 +4934,15 @@ function saveNetworkPrefs(patch) {
   }).then(({ data }) => {
     if (!data || !data.ok) setHint((data && data.error) || '保存联网偏好失败');
   }).catch(() => {});
+}
+
+// 外链统一走系统默认浏览器（Tauri 不处理 target=_blank）；无插件时回退 window.open。
+function openExternal(url) {
+  try {
+    const t = window.__TAURI__;
+    if (t && t.shell && typeof t.shell.open === 'function') { t.shell.open(url); return; }
+  } catch (e) { /* 落到下方回退 */ }
+  window.open(url, '_blank', 'noopener');
 }
 
 function initUpdateEvents() {
@@ -4965,6 +4986,18 @@ function initUpdateEvents() {
     state.updateBarDismissed = true;   // 仅本次会话隐藏，不写缓存 → 重启按 A6 重现
     applyUpdateUI();
   });
+  // 外链：前往下载（提示条 / 关于页）+ 关于页项目主页，统一在系统浏览器打开。
+  const bindOpen = (id) => {
+    const el = $(id);
+    if (el) el.addEventListener('click', (e) => {
+      e.preventDefault();
+      const href = el.getAttribute('href');
+      if (href) openExternal(href);
+    });
+  };
+  bindOpen('update-bar-download');
+  bindOpen('about-update-download');
+  bindOpen('about-homepage');
   // A5：点一次「设置」即把设置红点标记为持久已读；关于红点不受影响。
   const settingsBtn = $('btn-settings');
   if (settingsBtn) settingsBtn.addEventListener('click', () => {

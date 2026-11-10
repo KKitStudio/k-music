@@ -1,4 +1,6 @@
 fn main() {
+    // 注册前端内联 capabilities（含 shell:allow-open，外链打开所需）；
+    // 权限随 app/gui/tauri.conf.json 的 app.capabilities 在编译期被 tauri_build 处理。
     tauri_build::build();
 
     // ---- 自动同步前端静态资源到发布目录 dist/frontend ----

@@ -463,7 +463,7 @@
       <div class="settings-head">
         <div class="settings-head-text">
           <h3>设置</h3>
-          <p>管理曲库、外观与导入选项</p>
+          <p>管理曲库、界面与导入选项</p>
         </div>
         <button id="settings-close" class="md-btn primary" type="button">关闭</button>
       </div>
@@ -472,7 +472,7 @@
         <nav class="settings-nav" aria-label="设置分类">
           <button class="settings-tab active" type="button" data-tab="appearance">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 3v18M12 3a9 9 0 0 1 0 18" /></svg>
-            <span><strong>外观</strong><small>主题 · 换肤 · 歌词</small></span>
+            <span><strong>界面</strong><small>主题 · 换肤 · 歌词</small></span>
           </button>
           <button class="settings-tab" type="button" data-tab="library">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7" /></svg>
@@ -504,10 +504,10 @@
 
         <div class="settings-content">
           <div class="settings-pane active" data-pane="appearance">
-            <div class="settings-pane-head"><h4>界面外观</h4><p>主题模式、皮肤背景与歌词面板</p></div>
+            <div class="settings-pane-head"><h4>界面</h4><p>主题模式、皮肤背景与歌词面板</p></div>
 
             <div class="settings-section">
-        <h4>外观（主题 / 换肤 / 歌词）</h4>
+        <h4>界面（主题 / 换肤 / 歌词）</h4>
         <div class="appearance-block">
           <div class="ap-label">主题模式</div>
           <div class="seg" id="ap-theme-seg">
@@ -572,6 +572,25 @@
           <div class="ap-subhint">数值越大底层背景图越柔和；0px 为原图直出，不影响界面文字与面板。</div>
         </div>
       </div>
+
+        <div class="settings-section" id="ap-tray-section">
+          <h4>窗口与托盘</h4>
+          <div class="appearance-block">
+            <label class="switch-row">
+              <span>关闭时最小化到托盘</span>
+              <input type="checkbox" id="ap-close-to-tray" />
+            </label>
+            <div class="ap-subhint">关闭主窗口（× / Alt+F4 / 任务栏右键关闭）时最小化到托盘而非退出。</div>
+          </div>
+          <div class="appearance-block">
+            <label class="switch-row">
+              <span>最小化时隐藏到托盘</span>
+              <input type="checkbox" id="ap-minimize-to-tray" />
+            </label>
+            <div class="ap-subhint">最小化主窗口时隐藏到托盘（任务栏按钮消失），仅托盘可唤回。</div>
+          </div>
+          <div class="ap-tray-hint" id="ap-tray-hint"></div>
+        </div>
           </div><!-- /pane: appearance -->
 
           <div class="settings-pane" data-pane="library">

@@ -533,6 +533,13 @@ pub struct UiConfig {
     /// 检查频率 `daily`(24h) / `weekly`(7d) / `monthly`(30d)：启动触发 + 间隔节流，无后台定时器。
     #[serde(default = "default_update_interval", deserialize_with = "de_ui_enum_string")]
     pub update_check_interval: String,
+    // ---- 交互增强（b 级）：托盘最小化 / 关闭行为（app 级 [ui]，默认 false = 不进托盘）----
+    /// 关闭主窗口（× / Alt+F4 / 任务栏右键关闭）时最小化到托盘而非退出。默认 false。
+    #[serde(default)]
+    pub close_to_tray: bool,
+    /// 最小化主窗口时隐藏到托盘（任务栏按钮消失）而非仅最小化。默认 false。
+    #[serde(default)]
+    pub minimize_to_tray: bool,
 }
 
 impl Default for UiConfig {
@@ -574,6 +581,8 @@ impl Default for UiConfig {
             update_check_enabled: false,
             update_source: default_update_source(),
             update_check_interval: default_update_interval(),
+            close_to_tray: false,
+            minimize_to_tray: false,
         }
     }
 }
@@ -1373,7 +1382,7 @@ pub fn update_meta_in_place(path: &Path, meta: &ConfigMeta) -> Result<()> {
 }
 
 /// `[ui]` 段的字段顺序（新增键按此顺序追加，保证输出稳定可读）。
-pub const UI_FIELD_ORDER: [&str; 36] = [
+pub const UI_FIELD_ORDER: [&str; 38] = [
     "track_columns",
     "track_columns_saved",
     "layout_library",
@@ -1414,7 +1423,41 @@ pub const UI_FIELD_ORDER: [&str; 36] = [
     // 此处一并补挂，使两项偏好真正持久化。
     "layout_skin",
     "list_density",
+    // 交互增强 b 级：托盘最小化 / 关闭行为（追加到段尾，保持既有键序不变）。
+    "close_to_tray",
+    "minimize_to_tray",
 ];
+
+/// 仅读取 `[ui]` 段中的托盘开关（供关闭 / 最小化时实时决策）。
+/// 轻量解析，避免触发 `load_startup` 的冲突备份逻辑；键缺失或文件不存在时回退 false。
+pub fn read_ui_tray_flags(path: &Path) -> (bool, bool) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return (false, false);
+    };
+    let mut close_to_tray = false;
+    let mut minimize_to_tray = false;
+    let mut in_ui = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t == "[ui]" {
+            in_ui = true;
+            continue;
+        }
+        if in_ui && t.starts_with('[') {
+            break; // 进入下一个表头，[ui] 段结束
+        }
+        if !in_ui {
+            continue;
+        }
+        let Some((k, v)) = t.split_once('=') else { continue };
+        match k.trim() {
+            "close_to_tray" => close_to_tray = v.trim() == "true",
+            "minimize_to_tray" => minimize_to_tray = v.trim() == "true",
+            _ => {}
+        }
+    }
+    (close_to_tray, minimize_to_tray)
+}
 
 /// 计算一行 TOML 中未闭合的括号深度（忽略字符串字面量与行注释内的括号）。
 ///
@@ -2587,7 +2630,7 @@ track_columns = ["name", "artist"]
             doc["ui"].clone().try_into().unwrap()
         };
         assert_eq!(back.auto_playlist_count, 33);
-        assert_eq!(UI_FIELD_ORDER.len(), 36);
+        assert_eq!(UI_FIELD_ORDER.len(), 38);
         assert_eq!(UI_FIELD_ORDER[20], "auto_playlist_count");
         assert_eq!(UI_FIELD_ORDER[26], "muted");
         assert_eq!(UI_FIELD_ORDER[27], "detail_collapsed");

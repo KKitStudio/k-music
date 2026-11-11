@@ -4,6 +4,39 @@
 const $ = (id) => document.getElementById(id);
 const audio = $('audio');
 
+// 交互增强 b 级：托盘菜单 / 媒体键的顶层命令入口（必须定义在 boot 之外，供 Rust 侧 window.eval 调用）。
+// 白名单：toggle-play / prev / next / toggle-mute / show-settings；其余命令被忽略。
+window.kqkCommand = function (cmd) {
+  switch (cmd) {
+    case 'toggle-play':
+      if (!audio.src) { if (state.playback.queue.length) playCurrent(); }
+      else if (audio.paused) { audio.play().catch(() => {}); $('btn-play').textContent = '⏸'; }
+      else { audio.pause(); $('btn-play').textContent = '▶'; }
+      break;
+    case 'prev': stepQueue(-1, false); break;
+    case 'next': stepQueue(1, false); break;
+    case 'toggle-mute':
+      state.muted = !state.muted;
+      if (!state.muted && state.volume === 0) state.volume = 100;
+      applyVolume();
+      savePanePrefs({ muted: state.muted, volume: Math.round(state.volume) });
+      break;
+    case 'show-settings': {
+      openSettings();
+      activateSettingsTab('appearance');
+      const sc = document.querySelector('.settings-content');
+      const sec = $('ap-tray-section');
+      if (sc && sec) {
+        const d = sec.getBoundingClientRect().top - sc.getBoundingClientRect().top;
+        sc.scrollTop = Math.max(0, sc.scrollTop + d - 8);
+        sec.classList.remove('focus-flash'); void sec.offsetWidth; sec.classList.add('focus-flash');
+      }
+      break;
+    }
+    default: break;
+  }
+};
+
 // 歌曲列表全部可选列（顺序即「设置 → 列表」里的默认顺序）。
 const ALL_COLUMN_KEYS = [
   'name', 'artist', 'album', 'quality_tier', 'duration_ms', 'file_size',
@@ -251,6 +284,10 @@ const progressState = {
   // 日志游标：已渲染到的 seq（后端日志「新的在前」，靠 seq 精确取增量，不重不漏）。
   logSeq: 0,
   visible: false,
+  // 空积压单行模式：renderProgress 直接 return，避免残留轮询帧覆盖「无积压」提示。
+  emptyMode: false,
+  // 自动消失定时器（空积压场景用）。
+  autoHideTimer: null,
 };
 
 // 动作 key → 中文文案（与后端 progress.rs 的 ImportAction 对应）。
@@ -272,17 +309,63 @@ function showProgressPanel(title) {
   state.progressTitle = title || '正在处理…';
   const panel = $('progress-panel');
   if (!panel) return;
+  clearAutoHideProgressPanel();
+  progressState.emptyMode = false;
   panel.hidden = false;
   progressState.visible = true;
   progressState.logSeq = 0;
   $('pp-title').textContent = state.progressTitle;
   $('pp-count').textContent = '';
+  // 复位空积压模式隐藏的子元素与进度条状态。
+  const bar = panel.querySelector('.pp-bar');
+  if (bar) { bar.hidden = false; bar.classList.remove('indeterminate'); }
+  const log = $('pp-log');
+  if (log) { log.hidden = false; log.innerHTML = ''; }
+  const cur = $('pp-current');
+  if (cur) cur.hidden = false;
+  const spin = panel.querySelector('.pp-spinner');
+  if (spin) spin.hidden = false;
   $('pp-current').textContent = '';
   $('pp-summary').textContent = '';
-  const log = $('pp-log');
-  if (log) log.innerHTML = '';
+  $('pp-summary').hidden = false;
   const fill = $('pp-bar-fill');
   if (fill) fill.style.width = '0%';
+}
+
+// 空积压 / 无任务：显示单行提示，隐藏留白进度条与日志，随后由 scheduleAutoHideProgressPanel 自动消失。
+function showProgressEmpty(line) {
+  const panel = $('progress-panel');
+  if (!panel) return;
+  progressState.emptyMode = true;
+  $('pp-title').textContent = state.progressTitle || '处理完成';
+  const bar = panel.querySelector('.pp-bar');
+  if (bar) { bar.hidden = true; bar.classList.remove('indeterminate'); }
+  const log = $('pp-log');
+  if (log) { log.hidden = true; log.innerHTML = ''; }
+  const cur = $('pp-current');
+  if (cur) { cur.hidden = true; cur.textContent = ''; }
+  const spin = panel.querySelector('.pp-spinner');
+  if (spin) spin.hidden = true;
+  $('pp-count').textContent = '';
+  const sum = $('pp-summary');
+  if (sum) { sum.hidden = false; sum.textContent = line; }
+}
+
+// 几秒后自动收起进度面板（空积压场景用）；重复调用不会叠加定时器。
+function scheduleAutoHideProgressPanel(ms) {
+  clearAutoHideProgressPanel();
+  progressState.autoHideTimer = setTimeout(() => {
+    progressState.autoHideTimer = null;
+    progressState.emptyMode = false;
+    hideProgressPanel();
+  }, ms);
+}
+
+function clearAutoHideProgressPanel() {
+  if (progressState.autoHideTimer) {
+    clearTimeout(progressState.autoHideTimer);
+    progressState.autoHideTimer = null;
+  }
 }
 
 // 启动进度轮询（每 400ms 拉一次）。幂等：重复调用不会起多个定时器。
@@ -308,6 +391,8 @@ function renderProgress(p) {
   const panel = $('progress-panel');
   if (!panel) return;
   if (!progressState.visible) return;
+  // 空积压单行模式：残留轮询帧不要覆盖「无积压」提示。
+  if (progressState.emptyMode) return;
 
   // 标题：后端给出本次任务来源（如「本地网易云曲库」）。
   const title = $('pp-title');
@@ -387,6 +472,8 @@ function renderProgress(p) {
 
 function hideProgressPanel() {
   stopProgressPolling();
+  clearAutoHideProgressPanel();
+  progressState.emptyMode = false;
   const panel = $('progress-panel');
   if (panel) panel.hidden = true;
   progressState.visible = false;
@@ -497,6 +584,9 @@ async function refreshStatus() {
     if (typeof data.group_collapsed === 'boolean') state.groupCollapsed = data.group_collapsed;
     if (data.volume !== undefined) state.volume = Math.min(100, Math.max(0, Number(data.volume) || 0));
     if (typeof data.muted === 'boolean') state.muted = data.muted;
+    // 交互增强 b 级：托盘最小化 / 关闭行为开关（app 级 [ui]）。
+    state.closeToTray = typeof data.close_to_tray === 'boolean' ? data.close_to_tray : false;
+    state.minimizeToTray = typeof data.minimize_to_tray === 'boolean' ? data.minimize_to_tray : false;
     applyPaneLayout();
     applyVolume();
     // 启动自动扫描 / 上次扫描发现的散落 .ncm：提示处理（用户已明确忽略的不重复弹）。
@@ -2256,6 +2346,65 @@ $('seek').addEventListener('input', () => {
   if (audio.duration) audio.currentTime = audio.duration * ($('seek').value / 1000);
 });
 
+// 交互增强 b 级：播放状态变化 → 推送托盘 + 更新系统媒体键元数据（事件驱动，零轮询）。
+audio.addEventListener('play', () => { notifyTrayState(); updateMediaSessionPlaybackState('playing'); });
+audio.addEventListener('pause', () => { notifyTrayState(); updateMediaSessionPlaybackState('paused'); });
+audio.addEventListener('loadedmetadata', () => { updateMediaSessionMetadata(); notifyTrayState(); });
+audio.addEventListener('ended', () => { notifyTrayState(); });
+
+// 当前曲目元信息（标题 / 歌手），优先播放队列 meta，回退到选中曲目。
+function currentTrackMeta() {
+  const pb = state.playback;
+  const id = pb && pb.queue ? pb.queue[pb.index] : undefined;
+  const m = (id !== undefined && pb.meta) ? (pb.meta[id] || {}) : {};
+  const t = state.current || {};
+  return { title: m.name || t.name || '', artist: m.artist || t.artist || '' };
+}
+
+// 推送托盘状态（事件驱动，零轮询）。
+function notifyTrayState() {
+  const meta = currentTrackMeta();
+  api('/api/tray/state', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: meta.title,
+      artist: meta.artist,
+      playing: !audio.paused && !audio.ended,
+      muted: !!state.muted,
+      has_track: !!state.current,
+    }),
+  }).catch(() => {});
+}
+
+// 系统媒体键 / 锁屏控件（无 artwork，避免加载失败）。
+function updateMediaSessionMetadata() {
+  if (!('mediaSession' in navigator)) return;
+  const meta = currentTrackMeta();
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: meta.title || '未在播放',
+    artist: meta.artist || 'K music',
+    album: 'K music',
+  });
+}
+function updateMediaSessionPlaybackState(s) {
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.playbackState = s;
+}
+function setupMediaSession() {
+  if (!('mediaSession' in navigator)) return;
+  const map = {
+    play: () => window.kqkCommand('toggle-play'),
+    pause: () => window.kqkCommand('toggle-play'),
+    previoustrack: () => window.kqkCommand('prev'),
+    nexttrack: () => window.kqkCommand('next'),
+    stop: () => { audio.pause(); },
+  };
+  Object.keys(map).forEach((action) => {
+    try { navigator.mediaSession.setActionHandler(action, map[action]); } catch (e) { /* 不支持的动作忽略 */ }
+  });
+}
+
 $('btn-prev').addEventListener('click', () => stepQueue(-1, false));
 $('btn-next').addEventListener('click', () => stepQueue(1, false));
 $('btn-shuffle').addEventListener('click', () => {
@@ -3892,6 +4041,15 @@ async function applyNcmTool(inputId, copyId) {
   state.ncm_tool = data.tool_path || '';
   if (data.backlog) {
     const b = data.backlog;
+    const empty = b.imported === 0 && b.pending === 0 && b.failed === 0
+      && b.skipped === 0 && b.held === 0;
+    if (empty) {
+      // 空积压：显示单行「无积压 .ncm / 0 首」而非留白进度条，几秒后自动消失。
+      showProgressEmpty('无积压 .ncm / 0 首');
+      setHint('NCM 工具已应用：' + data.tool_path + '；无积压 .ncm');
+      scheduleAutoHideProgressPanel(3000);
+      return;
+    }
     setHint(`NCM 工具已应用：${data.tool_path}；pendingNcm 积压转换：入库 ${b.imported}，待转换 ${b.pending}，失败 ${b.failed}`);
   } else {
     setHint('NCM 工具已应用：' + data.tool_path);
@@ -4349,6 +4507,10 @@ function renderAppearanceUI() {
   const bv = clampSkinBlur(a.skinBlur);
   if (sb) sb.value = String(bv);
   if (sbOut) sbOut.textContent = bv + 'px';
+  // 交互增强 b 级：托盘开关回显。
+  const ctt = $('ap-close-to-tray'), mtt = $('ap-minimize-to-tray');
+  if (ctt) ctt.checked = !!state.closeToTray;
+  if (mtt) mtt.checked = !!state.minimizeToTray;
 }
 
 // ---------- 布局切换（classic / modern）----------
@@ -4462,6 +4624,17 @@ function initAppearanceEvents() {
   if (densitySeg) densitySeg.addEventListener('click', (e) => {
     const b = e.target.closest('.seg-btn');
     if (b && densitySeg.contains(b)) applyListDensity(b.dataset.density, true);
+  });
+  // 交互增强 b 级：托盘开关（关闭→托盘 / 最小化→托盘）。
+  const ctt = $('ap-close-to-tray');
+  if (ctt) ctt.addEventListener('change', () => {
+    state.closeToTray = ctt.checked;
+    savePanePrefs({ close_to_tray: ctt.checked });
+  });
+  const mtt = $('ap-minimize-to-tray');
+  if (mtt) mtt.addEventListener('change', () => {
+    state.minimizeToTray = mtt.checked;
+    savePanePrefs({ minimize_to_tray: mtt.checked });
   });
 
   const pick = $('ap-skin-pick');
@@ -5028,6 +5201,7 @@ function startUpdateCheckOnce() {
 window.KQK = window.KQK || {};
 window.KQK.boot = function boot() {
   initAppearanceEvents();
+  setupMediaSession();
   applyAppearance();
   loadAbout();
   // FR-30：联网页交互绑定先于 refreshStatus()，保证读回 [ui] 后所有投射函数都已就绪。

@@ -5,13 +5,17 @@ REM
 REM  Usage: double-click this file, or run  tools\package_gui.bat
 REM
 REM  WHAT IT DOES
-REM    [1/2] cargo build --release -p mt-gui -p mt-cli
-REM    [2/2] copy target\release\mt-gui.exe -> dist\k_music.exe (GUI entry)
+REM    [1/3] cargo build --release -p mt-gui -p mt-cli
+REM    [2/3] copy target\release\mt-gui.exe -> dist\k_music.exe (GUI entry)
 REM          copy target\release\mt-cli.exe -> dist\ + README
+REM    [3/3] sync app\gui\frontend -> dist\frontend via robocopy (incremental-build fallback)
 REM
-REM  The frontend static assets (index.html / styles.css / app.js) are copied
-REM    automatically by app/gui/build.rs at compile time into dist\frontend,
-REM    so this script does NOT need to copy them.
+REM  The frontend static assets are normally copied by app/gui/build.rs at compile
+REM    time, but build.rs only re-runs when frontend SOURCES change (rerun-if-changed).
+REM    On an incremental build after dist was wiped, build.rs is skipped and
+REM    dist\frontend is NOT restored. This script therefore ALSO syncs frontend
+REM    explicitly via robocopy as an idempotent fallback (build.rs and this step are
+REM    equivalent: a plain recursive copy of app\gui\frontend -> dist\frontend).
 REM
 REM  *** RUNTIME CONFIG FILES ARE NEVER DELETED OR OVERWRITTEN ***
 REM    Everything under dist\ that is produced at runtime is preserved:
@@ -39,7 +43,7 @@ REM ============================================================================
 setlocal
 cd /d "%~dp0.."
 
-echo [1/2] Building release (mt-gui + mt-cli) ...
+echo [1/3] Building release (mt-gui + mt-cli) ...
 cargo build --release -p mt-gui -p mt-cli
 if errorlevel 1 (
   echo [ERR] Build failed. Make sure the Rust toolchain 'cargo' is installed
@@ -47,7 +51,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [2/2] Copying exe / README into dist\ ...
+echo [2/3] Copying exe / README into dist\ ...
 if not exist dist mkdir dist
 copy /Y target\release\mt-gui.exe dist\k_music.exe >nul
 if errorlevel 1 (
@@ -62,12 +66,20 @@ if errorlevel 1 (
 if exist dist\mt-gui.exe del /f /q dist\mt-gui.exe >nul 2>&1
 if exist tools\dist_readme.md copy /Y tools\dist_readme.md dist\README.md >nul
 
+echo [3/3] Syncing frontend into dist\frontend (robocopy; fallback when incremental build skips build.rs) ...
+if not exist dist\frontend mkdir dist\frontend
+robocopy app\gui\frontend dist\frontend /E
+if errorlevel 8 (
+  echo [ERR] Frontend sync failed, robocopy exit code %errorlevel%
+  exit /b 1
+)
+
 echo Done.
 echo.
 echo  Publish folder: dist\
 echo     k_music.exe   GUI entry - double-click it, no CLI needed
 echo     mt-cli.exe    CLI tool (scan / import / serve / import-netease / ncm-organize)
-echo     frontend\     Frontend assets - synced automatically by build.rs
+echo     frontend\     Frontend assets - synced explicitly by this script via robocopy
 echo     README.md    Full Chinese documentation
 echo.
 echo  Preserved runtime config (never deleted or overwritten by this build):

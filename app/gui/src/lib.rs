@@ -3,8 +3,11 @@
 //! → 接收服务实际端口 → 打开 WebView 窗口加载该地址（同源，前端用相对路径调用 /api）。
 //! 网易云服务端登录/下载已于 2026-10-29 移除；本地导入源仅「从本地网易云音乐曲库更新」按钮。
 use mt_core::{config, db, log, serve};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::Duration;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::TrayIconBuilder;
 use tauri::Manager;
 
 mod single_instance;
@@ -15,11 +18,24 @@ mod window_state;
 /// 因此无需手写 Win32、也不依赖 WebView 的 IPC 权限（CLI serve 模式未注册则空转）。
 static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
+/// 托盘是否成功创建（创建失败则两开关强制按 false 生效，R1 降级）。
+static TRAY_AVAILABLE: OnceLock<Arc<AtomicBool>> = OnceLock::new();
+/// 应用配置路径（供关闭 / 最小化时实时读取托盘开关，避免过期内存副本）。
+static APP_CFG_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
+
 fn window_control(action: &'static str) {
     let Some(app) = APP_HANDLE.get() else { return };
     let Some(win) = app.get_webview_window("main") else { return };
+    let tray_ok = TRAY_AVAILABLE.get().map(|a| a.load(Ordering::Relaxed)).unwrap_or(false);
+    let (close_to_tray, minimize_to_tray) = match APP_CFG_PATH.get() {
+        Some(p) => config::read_ui_tray_flags(p),
+        None => (false, false),
+    };
     match action {
-        "minimize" => { let _ = win.minimize(); }
+        "minimize" => {
+            if tray_ok && minimize_to_tray { let _ = win.hide(); }
+            else { let _ = win.minimize(); }
+        }
         "toggle-maximize" => {
             let _ = if win.is_maximized().unwrap_or(false) {
                 win.unmaximize()
@@ -27,7 +43,10 @@ fn window_control(action: &'static str) {
                 win.maximize()
             };
         }
-        "close" => { let _ = win.close(); }
+        "close" => {
+            if tray_ok && close_to_tray { let _ = win.hide(); }
+            else { let _ = win.close(); }
+        }
         "drag" => { let _ = win.start_dragging(); }
         _ => {}
     }
@@ -139,6 +158,151 @@ mod native_titlebar {
     }
 }
 
+/// 隐藏态二次启动（单实例 /api/focus）必须先把窗口显示出来再置前，否则 SetForegroundWindow 对隐藏窗口无效。
+fn focus_main_window() {
+    let Some(app) = APP_HANDLE.get() else { return };
+    let Some(win) = app.get_webview_window("main") else { return };
+    let _ = win.show();
+    let _ = win.unminimize();
+    let _ = win.set_focus();
+}
+
+/// 托盘菜单项句柄（创建后存入，供 apply_tray_state 零 JS 反调更新文案 / 灰显）。
+struct TrayMenuItems {
+    title: tauri::menu::MenuItem<tauri::Wry>,
+    show_hide: tauri::menu::MenuItem<tauri::Wry>,
+    play_pause: tauri::menu::MenuItem<tauri::Wry>,
+    prev: tauri::menu::MenuItem<tauri::Wry>,
+    next: tauri::menu::MenuItem<tauri::Wry>,
+    mute: tauri::menu::MenuItem<tauri::Wry>,
+}
+static TRAY_ITEMS: OnceLock<TrayMenuItems> = OnceLock::new();
+
+/// 托盘菜单项文案 / 灰显状态（零 JS 反调，仅经已注册 sink 更新；sink 未注册时静默无操作）。
+fn apply_tray_state(s: mt_core::serve::TrayState) {
+    let Some(app) = APP_HANDLE.get() else { return };
+    let Some(win) = app.get_webview_window("main") else { return };
+    let Some(items) = TRAY_ITEMS.get() else { return };
+    let title_text = if !s.has_track {
+        "未在播放".to_string()
+    } else if s.playing {
+        format!("{} - {}", s.title, s.artist)
+    } else {
+        format!("已暂停：{} - {}", s.title, s.artist)
+    };
+    let _ = items.title.set_text(&title_text);
+    let _ = items.title.set_enabled(false);
+    let visible = win.is_visible().unwrap_or(true);
+    let _ = items.show_hide.set_text(if visible { "隐藏主窗口" } else { "显示主窗口" });
+    let _ = items.play_pause.set_text(if s.playing { "暂停" } else { "播放" });
+    let _ = items.play_pause.set_enabled(s.has_track);
+    let _ = items.prev.set_enabled(s.has_track);
+    let _ = items.next.set_enabled(s.has_track);
+    let _ = items.mute.set_text(if s.muted { "取消静音" } else { "静音" });
+}
+
+/// 由托盘菜单项触发的前端命令（白名单，计划 N2/N5）。仅 `eval` 顶层 `window.kqkCommand`。
+fn tray_eval(app: &tauri::AppHandle, cmd: &str) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.eval(&format!("window.kqkCommand('{}')", cmd));
+    }
+}
+
+/// 创建系统托盘 + 右键菜单；失败返回 false（R1 降级：两开关强制按 false 生效）。
+#[cfg(windows)]
+fn create_tray(app: &tauri::AppHandle) -> bool {
+    let icon = match app.default_window_icon() {
+        Some(i) => i.clone(),
+        None => { eprintln!("托盘创建失败：缺少窗口图标"); return false; }
+    };
+    let title_item = match MenuItem::with_id(app, "tray_title", "未在播放", false, None::<&str>) {
+        Ok(m) => m,
+        Err(e) => { eprintln!("托盘菜单创建失败: {e}"); return false; }
+    };
+    let show_hide_item = MenuItem::with_id(app, "show_hide", "隐藏主窗口", true, None::<&str>).unwrap();
+    let sep1 = PredefinedMenuItem::separator(app).unwrap();
+    let play_pause_item = MenuItem::with_id(app, "play_pause", "暂停", true, None::<&str>).unwrap();
+    let prev_item = MenuItem::with_id(app, "prev", "上一首", true, None::<&str>).unwrap();
+    let next_item = MenuItem::with_id(app, "next", "下一首", true, None::<&str>).unwrap();
+    let sep2 = PredefinedMenuItem::separator(app).unwrap();
+    let mute_item = MenuItem::with_id(app, "mute", "静音", true, None::<&str>).unwrap();
+    let settings_item = MenuItem::with_id(app, "settings", "设置…", true, None::<&str>).unwrap();
+    let sep3 = PredefinedMenuItem::separator(app).unwrap();
+    let quit_item = MenuItem::with_id(app, "quit", "退出 K music", true, None::<&str>).unwrap();
+    let items: &[&dyn tauri::menu::IsMenuItem<tauri::Wry>] = &[
+        &title_item,
+        &show_hide_item,
+        &sep1,
+        &play_pause_item,
+        &prev_item,
+        &next_item,
+        &sep2,
+        &mute_item,
+        &settings_item,
+        &sep3,
+        &quit_item,
+    ];
+    let menu = match Menu::with_items(app, items) {
+        Ok(m) => m,
+        Err(e) => { eprintln!("托盘菜单创建失败: {e}"); return false; }
+    };
+    let tray = TrayIconBuilder::with_id("main")
+        .icon(icon)
+        .tooltip("K music")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| {
+            match event.id.as_ref() {
+                "show_hide" => {
+                    if let Some(w) = app.get_webview_window("main") {
+                        if w.is_visible().unwrap_or(false) { let _ = w.hide(); }
+                        else { let _ = w.show(); let _ = w.unminimize(); let _ = w.set_focus(); }
+                    }
+                }
+                "play_pause" => tray_eval(app, "toggle-play"),
+                "prev" => tray_eval(app, "prev"),
+                "next" => tray_eval(app, "next"),
+                "mute" => tray_eval(app, "toggle-mute"),
+                "settings" => tray_eval(app, "show-settings"),
+                "quit" => app.exit(0),
+                _ => {}
+            }
+        })
+        .build(app);
+    let tray = match tray {
+        Ok(t) => t,
+        Err(e) => { eprintln!("托盘图标创建失败: {e}"); return false; }
+    };
+    // 左键点击 = 显示/隐藏主窗口（右键由 .menu 弹出）。
+    app.on_tray_icon_event(|app, event| {
+        if let tauri::tray::TrayIconEvent::Click {
+            button: tauri::tray::MouseButton::Left,
+            button_state: tauri::tray::MouseButtonState::Up,
+            ..
+        } = event
+        {
+            if let Some(w) = app.get_webview_window("main") {
+                if w.is_visible().unwrap_or(false) { let _ = w.hide(); }
+                else { let _ = w.show(); let _ = w.unminimize(); let _ = w.set_focus(); }
+            }
+        }
+    });
+    let _ = TRAY_ITEMS.set(TrayMenuItems {
+        title: title_item,
+        show_hide: show_hide_item,
+        play_pause: play_pause_item,
+        prev: prev_item,
+        next: next_item,
+        mute: mute_item,
+    });
+    true
+}
+
+#[cfg(not(windows))]
+fn create_tray(_app: &tauri::AppHandle) -> bool {
+    false
+}
+
 pub fn run() {
     // 创建 Tauri 窗口前预检 WebView2 运行时：缺失时原生弹窗提示并打开下载页后退出，
     // 避免 WebView 创建失败导致的白屏/崩溃（此时 WebView 自身还不可用，必须用原生 MessageBox）。
@@ -229,8 +393,12 @@ pub fn run() {
             // 原生对话框（rfd）关闭后恢复主窗口焦点，避免「主窗口无响应 / 点击不生效」。
             #[cfg(windows)]
             serve::set_post_dialog_focus_sink(native_titlebar::refocus);
+            // 交互增强 b 级：托盘状态 sink（前端推送）、隐藏态二次启动唤起 sink。
+            serve::set_focus_window_sink(focus_main_window);
+            serve::set_tray_state_sink(apply_tray_state);
             // #32：登记窗口句柄与自绘控制条回调，供 /api/window/control 调用。
             let _ = APP_HANDLE.set(app.handle().clone());
+            let _ = APP_CFG_PATH.set(app_cfg_path.clone());
             serve::set_window_control_sink(window_control);
             let uri = tauri::Url::parse(&url).expect("无效的服务地址");
             // 恢复上次窗口位置：先校验坐标仍落在当前某台显示器上（外接屏拔掉 /
@@ -252,7 +420,14 @@ pub fn run() {
             if let Some(g) = geom {
                 window_state::restore(&win, &g);
             }
-            window_state::track(&win, window_state_path.clone());
+            // 交互增强 b 级：先建托盘状态原子（供 track 共享），再建托盘；
+            // 关闭行为按「开关 + 托盘可用性」决策（R1：托盘失败则开关强制 false）。
+            let tray_atomic = Arc::new(AtomicBool::new(false));
+            let _ = TRAY_AVAILABLE.set(tray_atomic.clone());
+            window_state::track(&win, window_state_path.clone(), tray_atomic.clone(), app_cfg_path.clone());
+            let tray_ok = create_tray(app.handle());
+            tray_atomic.store(tray_ok, Ordering::Relaxed);
+            serve::set_tray_available(tray_ok);
             #[cfg(windows)]
             {
                 // HWND 是 `windows` crate 的 newtype `HWND(pub *mut c_void)`，需取 .0 再转地址值。

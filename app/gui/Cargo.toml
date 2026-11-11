@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 mt-core = { path = "../core" }
-tauri = { version = "2" }
+tauri = { version = "2", features = ["tray-icon"] }
 # 外链：用系统默认浏览器打开下载页 / 项目主页（Tauri 默认不处理 target=_blank）。
 tauri-plugin-shell = "2"
 # WebView2 运行时预检：复用 Tauri 已链接的 webview2-com-sys 官方检测函数（零新增体积）。

@@ -11,8 +11,11 @@
 //! 因此统一在窗口创建后用 `set_position(Position::Physical)` /
 //! `set_size(Size::Physical)` 恢复。
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Monitor, PhysicalPosition, PhysicalSize, Position, Size, WebviewWindow, WindowEvent};
+
+use mt_core::config;
 
 pub const STATE_FILE: &str = "kqk-window.state";
 /// #32：与 `WebviewWindowBuilder::min_inner_size(1280, 720)` 保持一致。
@@ -162,7 +165,12 @@ fn persist(state: &SharedGeometry, path: &Path, win: &WebviewWindow) {
 
 /// 注册窗口事件：拖动 / 缩放更新缓存，关闭时一次性落盘。
 /// 最大化期间跳过几何更新，保留最大化之前的正常矩形，避免把边框负偏移写进状态。
-pub fn track(win: &WebviewWindow, path: PathBuf) {
+pub fn track(
+    win: &WebviewWindow,
+    path: PathBuf,
+    tray_available: Arc<AtomicBool>,
+    app_cfg_path: PathBuf,
+) {
     let loaded = load(&path);
     let dirty = loaded.is_some();
     let state: SharedGeometry =
@@ -195,7 +203,18 @@ pub fn track(win: &WebviewWindow, path: PathBuf) {
                 guard.1 = true;
             }
         }
-        WindowEvent::CloseRequested { .. } => persist(&s_close, &p_close, &w_close),
+        WindowEvent::CloseRequested { api, .. } => {
+            // 交互增强 b 级：关闭时若开启了「关闭→托盘」且托盘可用，拦截默认关闭并隐藏到托盘，
+            // 与自绘 × 按钮（/api/window/control close）语义一致；否则沿用原退出逻辑。
+            if tray_available.load(Ordering::Relaxed) {
+                let (close_to_tray, _minimize_to_tray) = config::read_ui_tray_flags(&app_cfg_path);
+                if close_to_tray {
+                    api.prevent_close();
+                    let _ = event_win.hide();
+                }
+            }
+            persist(&s_close, &p_close, &w_close);
+        }
         WindowEvent::Destroyed => persist(&s_destroy, &p_destroy, &w_destroy),
         _ => {}
     });

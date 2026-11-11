@@ -1547,6 +1547,25 @@ body.group-collapsed .pl-sidebar .pane-mini-icon { display: none; }
   margin-bottom: 12px; font-size: 13px; font-weight: 600; color: var(--text-soft);
 }
 .detail-pane > .pane-mini-icon { display: none; }
+
+/* ============================================================
+   交互增强 b 级：窗口与托盘开关（设置 → 界面）
+   ============================================================ */
+.switch-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  font-size: 13px; color: var(--text);
+}
+.switch-row span { flex: 1 1 auto; min-width: 0; }
+.switch-row input[type="checkbox"] {
+  flex: none; width: 18px; height: 18px; margin: 0;
+  accent-color: var(--primary); cursor: pointer;
+}
+.ap-tray-hint {
+  margin-top: 8px; font-size: 12px; line-height: 1.5;
+  color: var(--text-soft);
+}
+.ap-tray-hint:empty { display: none; }
+.ap-tray-hint.warn { color: #c0392b; }
 /* 贯穿全高细条：相对所属栏（position:relative）绝对定位，外移一个 --pane-rail-w
    正好落在该栏与相邻栏的 12px 间隙上，不占布局宽度、不压列表文字与计数徽标。
    一级栏/二级栏贴右间隙、详情栏贴左间隙；折叠前后横向偏移恒定。 */

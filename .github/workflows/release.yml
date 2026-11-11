@@ -60,14 +60,14 @@ jobs:
           name: k-music-dist
           path: k-music-*.zip
 
-      # 仅标签推送时创建 Release；release 说明默认自动生成（可发布后在 GitHub 编辑）
+      # 仅标签推送时创建 Release；release 说明来自仓库根 release-note.md（内联变更内容，由发布流程生成后打进 public 树）
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           name: K music ${{ github.ref_name }}
           files: k-music-*.zip
-          generate_release_notes: true
+          body_path: release-note.md
 
 # 备注（已知风险，首次跑后按需调整）：
 #   - WebView2 SDK：Tauri 编译期会自动从网络下载 WebView2 SDK。GitHub Runner 有网络，

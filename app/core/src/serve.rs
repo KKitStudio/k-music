@@ -143,6 +143,47 @@ pub fn set_window_control_sink(f: fn(&'static str)) {
     let _ = WINDOW_CONTROL_SINK.set(f);
 }
 
+/// 托盘状态（前端事件驱动推送，零轮询）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct TrayState {
+    pub title: String,
+    pub artist: String,
+    pub playing: bool,
+    pub muted: bool,
+    pub has_track: bool,
+}
+
+/// 托盘菜单项文案 / 灰显状态由 GUI 壳经此 sink 更新（无捕获 `fn` 指针，跨线程安全）。
+static TRAY_STATE_SINK: OnceLock<fn(TrayState)> = OnceLock::new();
+
+/// 由 GUI 壳在创建托盘后注册（捕获托盘句柄）；重复注册忽略（OnceLock 语义）。
+pub fn set_tray_state_sink(f: fn(TrayState)) {
+    let _ = TRAY_STATE_SINK.set(f);
+}
+
+/// 推送托盘状态给已注册的 sink（未注册则空转）。
+fn notify_tray_state(s: TrayState) {
+    if let Some(sink) = TRAY_STATE_SINK.get() {
+        sink(s);
+    }
+}
+
+/// 隐藏态二次启动唤起 sink（GUI 壳注册：show + unminimize + set_focus）。
+static FOCUS_WINDOW_SINK: OnceLock<fn()> = OnceLock::new();
+
+/// 由 GUI 壳注册：隐藏态二次启动（/api/focus）时把主窗口显示并置前。
+pub fn set_focus_window_sink(f: fn()) {
+    let _ = FOCUS_WINDOW_SINK.set(f);
+}
+
+/// 托盘是否可用（GUI 壳在创建托盘后设置），经 /api/status 透出给前端做降级提示。
+static TRAY_AVAILABLE_STATUS: OnceLock<bool> = OnceLock::new();
+
+/// 由 GUI 壳注册：托盘创建成功与否（失败则前端显示降级提示，两开关强制按 false 生效）。
+pub fn set_tray_available(available: bool) {
+    let _ = TRAY_AVAILABLE_STATUS.set(available);
+}
+
 /// 解析 `#RRGGBB`（兼容 `#RGB`），返回 Windows COLORREF `0x00BBGGRR`。
 fn parse_colorref(s: &str) -> Option<u32> {
     let h = s.trim().trim_start_matches('#');
@@ -380,6 +421,7 @@ fn build_router(
         .route("/api/update-check/log", post(update_check_log_handler))
         .route("/api/playstate", get(playstate_get_handler).post(playstate_post_handler))
         .route("/api/focus", get(focus_handler))
+        .route("/api/tray/state", post(tray_state_handler))
         .route("/api/about", get(about_handler))
         .route("/api/appearance/titlebar", post(titlebar_color_handler))
         .route("/api/downloads", get(downloads_handler))
@@ -463,7 +505,27 @@ mod boot_appearance_tests {
 /// CLI `serve` 未注册 sink 时为空操作，端点仍返回 ok，便于端到端冒烟。
 /// 只监听 127.0.0.1 且无状态变更，GET 无副作用风险。
 async fn focus_handler() -> Response {
+    // 交互增强 b 级：隐藏态二次启动必须先把窗口显示出来再置前（否则 SetForegroundWindow 对隐藏窗口无效）。
+    if let Some(sink) = FOCUS_WINDOW_SINK.get() {
+        sink();
+    }
     restore_focus_after_dialog();
+    axum::Json(serde_json::json!({ "ok": true })).into_response()
+}
+
+/// 前端在播放状态变化（play / pause / ended / loadedmetadata / 选中曲目）时推送托盘状态。
+/// 字段语义见 `TrayState`；事件驱动、零轮询。Rust 侧经 `TRAY_STATE_SINK` 更新托盘菜单项文案。
+async fn tray_state_handler(
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Response {
+    let state = TrayState {
+        title: body.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        artist: body.get("artist").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        playing: body.get("playing").and_then(|v| v.as_bool()).unwrap_or(false),
+        muted: body.get("muted").and_then(|v| v.as_bool()).unwrap_or(false),
+        has_track: body.get("has_track").and_then(|v| v.as_bool()).unwrap_or(false),
+    };
+    notify_tray_state(state);
     axum::Json(serde_json::json!({ "ok": true })).into_response()
 }
 
@@ -531,6 +593,7 @@ async fn status_handler(State(st): State<AppState>) -> Response {
         .unwrap_or(0);
     axum::Json(
         serde_json::json!({
+            "tray_available": TRAY_AVAILABLE_STATUS.get().copied().unwrap_or(false),
             "library_configured": library_configured,
             "library_dir": library_dir,
             "library_name": library_name,
@@ -1697,6 +1760,9 @@ async fn ui_prefs_get_handler(State(st): State<AppState>) -> Response {
         "update_check_enabled": ui.update_check_enabled,
         "update_source": ui.update_source,
         "update_check_interval": ui.update_check_interval,
+        // 交互增强 b 级：托盘最小化 / 关闭行为开关。
+        "close_to_tray": ui.close_to_tray,
+        "minimize_to_tray": ui.minimize_to_tray,
     }))
     .into_response()
 }
@@ -1845,6 +1911,13 @@ async fn ui_prefs_post_handler(
     if let Some(v) = body.get("update_check_interval").and_then(|v| v.as_str()) {
         ui.update_check_interval = config::clamp_update_interval(v);
     }
+    // 交互增强 b 级：托盘最小化 / 关闭行为开关（部分更新语义，严格 bool 判定）。
+    if let Some(v) = body.get("close_to_tray").and_then(|v| v.as_bool()) {
+        ui.close_to_tray = v;
+    }
+    if let Some(v) = body.get("minimize_to_tray").and_then(|v| v.as_bool()) {
+        ui.minimize_to_tray = v;
+    }
     // 布局：classic / modern（部分更新语义，非法值由 sanitize() 回退默认）。
     if let Some(v) = body.get("layout_skin").and_then(|v| v.as_str()) {
         if matches!(v, "classic" | "modern") {
@@ -1887,6 +1960,9 @@ async fn ui_prefs_post_handler(
         "update_check_enabled": ui.update_check_enabled,
         "update_source": ui.update_source,
         "update_check_interval": ui.update_check_interval,
+        // 交互增强 b 级：托盘最小化 / 关闭行为开关。
+        "close_to_tray": ui.close_to_tray,
+        "minimize_to_tray": ui.minimize_to_tray,
     }))
     .into_response()
 }

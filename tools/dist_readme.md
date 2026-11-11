@@ -2,7 +2,7 @@
 
 本文件夹是**一键启动的干净发布目录**，直接从这里双击 `k_music.exe` 即可使用，无需先开命令行 / CLI。
 
-当前版本：**v0.9.3**（版本号取自项目根 `Cargo.toml` 的 `[workspace.package] version`，窗口标题与「设置 → 关于」同步显示）。
+当前版本：**v0.9.5**（版本号取自项目根 `Cargo.toml` 的 `[workspace.package] version`，窗口标题与「设置 → 关于」同步显示）。
 
 > ⚠️ **若双击 `k_music.exe` 后窗口打不开 / 白屏**：多为系统缺少 **Microsoft Edge WebView2 运行时**（GUI 基于 Tauri 2 + 系统 WebView2）。
 > 请访问微软官网下载安装 **WebView2 Evergreen 引导器**：<https://go.microsoft.com/fwlink/p/?LinkId=2124703>

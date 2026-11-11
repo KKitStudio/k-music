@@ -1,8 +1,9 @@
 /* ============================================================
    K music 前端样式
    设计系统：浅色 / 暗色主题（data-theme） + 换肤玻璃拟态（body.skin-active）
-   FR-29：主题色固定为 --primary / --primary-dark（浅 #4f7cff / 暗 #6e92ff），不可由设置或背景图派生；
-   皮肤只在界面底层画一张模糊背景图；歌词面板半透明且透明度可调。
+   #37：--primary / --primary-dark 的出厂值见 :root / [data-theme=dark]；
+   用户可选主题色或由皮肤背景自动提取主色，由 :root 行内覆盖（html.has-accent 同步染色）。
+   皮肤在界面底层画一张模糊背景图；歌词面板半透明且透明度可调。
    ============================================================ */
 
 /* ---------- 浅色主题（默认） ---------- */
@@ -1066,11 +1067,44 @@ input[type="radio"], input[type="checkbox"] {
 }
 .seg-btn:hover { color: var(--text); }
 .seg-btn.active { background: var(--primary); color: var(--on-primary); font-weight: 600; box-shadow: 0 2px 6px color-mix(in srgb, var(--primary) 40%, transparent); }
-/* #33：布局皮肤 / 列表密度复用同一分段控件；文案较长时允许换行，不溢出设置面板。 */
+/* #33：布局 / 列表密度复用同一分段控件；文案较长时允许换行，不溢出设置面板。 */
 .appearance-block .seg { max-width: 100%; flex-wrap: wrap; }
 
-/* FR-29：主题色色板 / 自定义取色器（.accent-row / .swatch / .custom-color）已整体删除，勿复活。
-   歌词不透明度与皮肤模糊两个数值滑块共用这一行布局。 */
+/* #37（用户拍板推翻 FR-29 的「勿复活」条目）：主题色色板 / 自定义取色器恢复。
+   这些是通用控件样式，两套布局共用；既有规则一字未改。 */
+.accent-row { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.accent-row .swatches { flex: 0 1 auto; min-width: 0; }
+.accent-row .custom-color { flex: 0 0 auto; margin-left: 0; }
+.swatches { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.swatch {
+  width: 30px; height: 30px; border-radius: 50%; border: 2px solid transparent; cursor: pointer;
+  box-shadow: var(--shadow-sm); transition: transform .12s, border-color .12s; position: relative;
+}
+.swatch:hover { transform: scale(1.12); }
+.swatch.active { border-color: var(--text); transform: scale(1.12); }
+.swatch.active::after {
+  content: "✓"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 14px; text-shadow: 0 1px 2px rgba(0,0,0,.4);
+}
+.custom-color { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-soft); cursor: pointer; margin-left: 4px; }
+.custom-color input[type="color"] {
+  width: 30px; height: 30px; border: none; border-radius: 50%; padding: 0; background: none; cursor: pointer;
+}
+.custom-color input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+.custom-color input[type="color"]::-webkit-color-swatch { border: 2px solid var(--divider); border-radius: 50%; }
+
+/* #37：仅在用户设定主题色（或皮肤自动取色）时改写派生令牌与侧栏底色。
+   html.has-accent 由首屏脚本 + applyAppearance() 同步维护；未设置时 classic 1:1 不变。 */
+html.has-accent {
+  --primary-soft: color-mix(in srgb, var(--primary) 14%, transparent);
+  --chip-bg: color-mix(in srgb, var(--primary) 9%, transparent);
+}
+html.has-accent .sidebar,
+html.has-accent .pl-sidebar {
+  background: color-mix(in srgb, var(--primary) 12%, var(--surface));
+}
+
+/* 歌词不透明度与皮肤模糊两个数值滑块共用这一行布局。 */
 .ap-range-row { display: flex; align-items: center; gap: 12px; }
 .ap-range-row input[type="range"] {
   flex: 1 1 auto; min-width: 120px; max-width: 320px;

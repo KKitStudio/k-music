@@ -1670,8 +1670,8 @@ async fn update_check_log_handler(
 // ---------- 界面偏好（布局风格 + 列宽比例）----------
 
 /// 读取界面偏好：各视图布局风格（1=横向 / 2=纵向）+ 歌曲列表各列宽度占比（%，总和 100）
-/// + 外观主题方案（theme / skin_* / lyrics_opacity / skin_blur；accent / skin_accent 为废弃遗留字段，
-///   自定义皮肤图片本体不落配置）+ FR-30 联网四键（network_enabled / update_check_enabled /
+/// + 外观主题方案（theme / skin_* / lyrics_opacity / skin_blur；accent / skin_accent 为 #37 恢复的主题色字段，
+///   前端首屏脚本 / applyAppearance() 消费；自定义皮肤图片本体不落配置）+ FR-30 联网四键（network_enabled / update_check_enabled /
 ///   update_source / update_check_interval，默认全关）。
 async fn ui_prefs_get_handler(State(st): State<AppState>) -> Response {
     let ui = st.cfg.lock().unwrap().ui.clone();
@@ -1710,7 +1710,7 @@ fn appearance_json(ui: &config::UiConfig) -> serde_json::Value {
         "skin_preset": ui.skin_preset,
         "skin_accent": ui.skin_accent,
         "saved": ui.appearance_saved,
-        // 布局皮肤：classic / modern（与底层背景皮肤 skin_type 正交）。
+        // 布局：classic / modern（与底层背景皮肤 skin_type 正交）。
         "layout_skin": ui.layout_skin,
         "list_density": ui.list_density,
         // FR-29：两个可调数值也走同一份注入（首屏脚本据此预设 CSS 变量，避免启动闪烁）。
@@ -1731,7 +1731,7 @@ fn appearance_json(ui: &config::UiConfig) -> serde_json::Value {
 ///   非法 view 或非法风格值忽略（不报错，避免前端脏数据写坏配置）。
 /// - `column_widths`：列 key → 占比（%）；写入后统一归一化（总和 100，单列 ≥ 4%）。
 /// - `appearance`：主题方案；非法值交给 `UiConfig::sanitize()` 回退，空串表示恢复默认。
-///   `accent` / `skin_accent` 为 FR-29 废弃的兼容遗留字段（仍可读写，但前端不再消费）；
+///   `accent` / `skin_accent` 自 #37 起恢复消费（手动主题色 / 皮肤自动取色，均为 #RRGGBB）；
 ///   `lyrics_opacity` / `skin_blur` 为数值型，缺失时保持原值，越界由 `config::clamp_*` 钳制。
 /// - `network_enabled` / `update_check_enabled`：布尔总闸与子项（FR-30，默认 false）。
 /// - `update_source` / `update_check_interval`：枚举字符串，非法值由 `config::clamp_update_*` 回退默认。
@@ -1845,7 +1845,7 @@ async fn ui_prefs_post_handler(
     if let Some(v) = body.get("update_check_interval").and_then(|v| v.as_str()) {
         ui.update_check_interval = config::clamp_update_interval(v);
     }
-    // 布局皮肤：classic / modern（部分更新语义，非法值由 sanitize() 回退默认）。
+    // 布局：classic / modern（部分更新语义，非法值由 sanitize() 回退默认）。
     if let Some(v) = body.get("layout_skin").and_then(|v| v.as_str()) {
         if matches!(v, "classic" | "modern") {
             ui.layout_skin = v.to_string();

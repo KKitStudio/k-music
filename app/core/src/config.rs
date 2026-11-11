@@ -453,9 +453,8 @@ pub struct UiConfig {
     /// 主题模式：light(浅色) / system(跟随系统) / dark(暗色)。默认 system。
     #[serde(default = "default_theme")]
     pub theme: String,
-    /// 【FR-29 已废弃 · 兼容遗留字段】原「主题色」（#RRGGBB）。前端自 v0.7.8 起不再消费，
-    /// 主题色固定由 styles.css 的明暗主题变量给出；字段保留只为不改动配置 schema / 不写迁移。
-    /// **勿复活**：不要重新读取它去设置 `--primary`，也不要恢复取色器。
+    /// 手动主题色（#RRGGBB，空串表示用各布局皮肤的出厂默认色）。
+    /// #37 起恢复消费：前端写 `--primary` / `--primary-dark`，并同步原生标题栏颜色。
     #[serde(default)]
     pub accent: String,
     /// 皮肤类型：""(无皮肤) / preset(预设渐变) / custom(自定义图片)。
@@ -464,8 +463,8 @@ pub struct UiConfig {
     /// 预设皮肤 id（仅 skin_type=preset 有效，如 aurora / sakura / mint / purple / ocean）。
     #[serde(default)]
     pub skin_preset: String,
-    /// 【FR-29 已废弃 · 兼容遗留字段】原「从皮肤背景图提取的强调色」（#RRGGBB）。
-    /// 皮肤现在只画底层模糊背景图，不再解码取色；字段保留只为兼容旧配置与既有接口契约。
+    /// 皮肤背景自动提取的强调色（#RRGGBB）。#37 起恢复消费：选图片时 64×64 canvas 取色，
+    /// 落盘后首屏脚本可提前预设，重启无需重新解码图片；无皮肤时应为空串。
     #[serde(default)]
     pub skin_accent: String,
     /// 布局皮肤（界面整体风格）：classic(经典) / modern(现代)。默认 classic。

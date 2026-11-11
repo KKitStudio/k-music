@@ -10,10 +10,10 @@
   // 才应用外观，浏览器会先画出一帧默认浅色再切换（可见闪烁）。
   // 权威源是后端注入的 kqk-app.toml [ui] 段（见 serve.rs::index_handler）；GUI 本地服务
   // 端口是动态的，而 localStorage 按 origin 隔离（含端口），端口回退时缓存必然失效，
-  // 因此不能只依赖本地缓存。此处仅做「明暗 + 歌词透明度 / 皮肤模糊」最小预置，完整外观仍由
-  // app.js 的 applyAppearance() 应用（同一套值，覆盖时不会产生可见变化）。
-  // FR-29 起主题色固定由 styles.css 的明暗变量给出，首屏脚本不再写 --primary / --primary-dark；
-  // 注入 JSON 里的 accent / skin_accent 是废弃遗留字段，绝不消费。
+  // 因此不能只依赖本地缓存。此处仅做「明暗 + 主题色 + 歌词透明度 / 皮肤模糊」最小预置，
+  // 完整外观仍由 core.js 的 applyAppearance() 应用（同一套值，覆盖时不会产生可见变化）。
+  // #37：主题色恢复后首屏必须一起预设 --primary / --primary-dark 与 html.has-accent，
+  // 否则会先画一帧皮肤默认色再跳到用户选的主题色（可见闪烁）。
   (function () {
     var boot = window.__KQK_BOOT_APPEARANCE__, local = null;
     try { local = JSON.parse(localStorage.getItem('kqk_appearance') || 'null'); } catch (e) {}
@@ -37,6 +37,20 @@
     if (!isFinite(blur) || blur < 0 || blur > 40) blur = 18;
     root.style.setProperty('--skin-blur', Math.round(blur) + 'px');
 
+    // #37：主题色（配置注入用下划线键名；皮肤激活时 skin_accent 优先于手动 accent）。
+    // 只接受 #RRGGBB，与后端 UiConfig::sanitize() 的 is_hex_color 同口径。
+    var hex = (src.skin_type && src.skin_accent) ? src.skin_accent : (src.accent || '');
+    if (!hex && local && local.skin && local.skin.enabled && local.skin.accent) hex = local.skin.accent;
+    if (/^#[0-9a-fA-F]{6}$/.test(hex)) {
+      root.style.setProperty('--primary', hex);
+      var num = parseInt(hex.slice(1), 16);
+      var dm = dark ? 0.72 : 0.78;
+      var hx = function (x) { return ('0' + Math.round(Math.max(0, Math.min(255, x))).toString(16)).slice(-2); };
+      root.style.setProperty('--primary-dark', '#' + hx(((num >> 16) & 255) * dm) +
+        hx(((num >> 8) & 255) * dm) + hx((num & 255) * dm));
+      root.classList.add('has-accent'); // rail / 侧栏染色与派生色令牌的开关
+    }
+
     // 让 body 末尾 app.js 的 applyAppearance() 读到同一份权威值：否则它会拿
     // 陈旧的 localStorage 缓存把刚设好的主题覆盖回去，仍会闪一下。
     // 只覆盖轻量字段；自定义皮肤图片本体（skin.src）只存在 localStorage，必须原样保留。
@@ -48,6 +62,7 @@
       try {
         localStorage.setItem('kqk_appearance', JSON.stringify({
           theme: theme,
+          accent: hex || null,
           lyricsOpacity: Math.round(pct),
           skinBlur: Math.round(blur),
           skin: {
@@ -55,7 +70,8 @@
             type: type || null,
             src: enabled ? (prevSkin.src || null) : null,
             gradient: enabled ? (prevSkin.gradient || null) : null,
-            name: enabled ? (prevSkin.name || null) : null
+            name: enabled ? (prevSkin.name || null) : null,
+            accent: enabled ? (boot.skin_accent || prevSkin.accent || null) : null
           }
         }));
       } catch (e) { /* 存储不可用时首屏属性已生效，交由 applyAppearance() 兜底 */ }
@@ -502,13 +518,22 @@
           <div class="ap-subhint" id="ap-theme-hint"></div>
         </div>
         <div class="appearance-block">
-          <div class="ap-label">布局皮肤</div>
+          <div class="ap-label" id="ap-layout-label">布局</div>
           <!-- 与上方「主题模式」同款分段控件，不再用下拉。 -->
-          <div class="seg" id="ap-layout-skin" role="group" aria-label="布局皮肤">
+          <div class="seg" id="ap-layout-skin" role="group" aria-label="布局">
             <button class="seg-btn active" type="button" data-skin="classic" aria-pressed="true">经典（默认）</button>
             <button class="seg-btn" type="button" data-skin="modern" aria-pressed="false">现代</button>
           </div>
           <div class="ap-subhint">切换整体界面风格（配色 / 视觉），实时生效并自动保存，下次启动沿用。</div>
+        </div>
+        <!-- #37：主题色恢复。色板 + 自定义取色器；选皮肤背景时也会自动提取主色覆盖。 -->
+        <div class="appearance-block">
+          <div class="ap-label">主题色</div>
+          <div class="accent-row">
+            <div class="swatches" id="ap-accent-swatches"></div>
+            <label class="custom-color"><input type="color" id="ap-accent-custom" /> 自定义</label>
+          </div>
+          <div class="ap-subhint">影响按钮、选中态、顶栏与左侧栏；选皮肤背景后自动改由图片主色决定。</div>
         </div>
         <div class="appearance-block">
           <div class="ap-label">列表密度</div>
@@ -520,7 +545,7 @@
           <div class="ap-subhint">调整曲库 / 列表行高与内边距，实时生效并自动保存，下次启动沿用。</div>
         </div>
         <div class="appearance-block">
-          <div class="ap-label">皮肤背景（在界面底部绘制并模糊所选图片）</div>
+          <div class="ap-label">皮肤背景（在界面底部绘制并模糊所选图片，自动提取主题色）</div>
           <div class="skins" id="ap-skins"></div>
           <div class="skin-actions">
             <button id="ap-skin-pick" class="md-btn" type="button">选择本地图片…</button>

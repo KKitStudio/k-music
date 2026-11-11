@@ -770,11 +770,11 @@ function syncDetailVisibility() {
   // 右侧独立详情栏：纵向时隐藏（宽度让给列表）。
   // 横向且已收起时窄条必须常驻（图标按钮就在这里，是唯一的展开入口），
   // 只有「展开态 + 该页无任何内容」才整体隐藏，避免留下一条空栏。
-  $('detail-pane').hidden = inline || (!state.detailShown[view] && !state.detailCollapsed);
+  $('detail-pane').hidden = inline || (!state.detailShown[view] && !paneCollapsed('detail'));
   // 内联详情条：仅当前页 + 纵向 +（有内容 或 处于收起态）时显示。
   VIEW_KEYS.forEach((v) => {
     const el = $(LAYOUT_VIEWS[v].wrap);
-    if (el) el.hidden = !(inline && v === styleView && (state.detailShown[view] || state.detailCollapsed));
+    if (el) el.hidden = !(inline && v === styleView && (state.detailShown[view] || paneCollapsed('detail')));
   });
   // FR-25 第五轮：详情细条始终跟着「当前真正可见的详情区」走（横向=右侧栏，纵向=内联水平条）。
   const dh = $('handle-detail');
@@ -3919,8 +3919,10 @@ async function applyScheme() {
 // 主题方案以 **app 级配置文件 kqk-app.toml 的 [ui] 段为准**（与布局风格 / 列宽同源），
 // localStorage 只作为首屏即时缓存 + 自定义皮肤图片本体（base64，体积大，不写 TOML）。
 // 每次改动防抖 POST /api/ui-prefs 落盘；启动时由 /api/status 读回并覆盖本地缓存。
-// FR-29：主题色功能已移除，--primary / --primary-dark 恒由 styles.css 的明暗主题变量给出；
-// 配置里的 accent / skin_accent 是「兼容遗留」字段，前端一律不读、不写、不派生（勿复活）。
+// #37（用户拍板推翻 FR-29 的「勿复活」条目）：主题色恢复。
+// --primary / --primary-dark 由「手动主题色」或「皮肤背景自动提取主色」写入 :root 行内；
+// 未设置时 active 不注入，让 classic / modern 各自 CSS 的明暗默认色生效（两套布局 1:1 保留）。
+// 配置里的 accent / skin_accent 是后端既有字段（含 #RRGGBB 校验），无需改 Rust。
 const APPEARANCE_KEY = 'kqk_appearance';
 
 // FR-29 数值范围（与 config.rs 的常量保持一致；前端先钳一次，后端再钳一次）。
@@ -3935,13 +3937,25 @@ function clampSkinBlur(v) {
   return isFinite(n) ? Math.min(SKIN_BLUR_MAX, Math.max(SKIN_BLUR_MIN, Math.round(n))) : SKIN_BLUR_DEFAULT;
 }
 
-// 预设皮肤：CSS 渐变（无需图片文件），只作为底层背景，不再派生任何主题色。
+// #37：主题色预设（8 色）。名字只描述颜色，不与布局「经典 / 现代」混淆。
+const ACCENT_PRESETS = [
+  { name: '品牌蓝', hex: '#4F7CFF' },
+  { name: '青绿', hex: '#00897b' },
+  { name: '靛蓝', hex: '#3949ab' },
+  { name: '紫', hex: '#7e57c2' },
+  { name: '品红', hex: '#e91e63' },
+  { name: '橙', hex: '#fb8c00' },
+  { name: '红', hex: '#e53935' },
+  { name: '青蓝', hex: '#00acc1' },
+];
+
+// 预设皮肤：CSS 渐变（无需图片文件），并预置匹配的主题色（#37 恢复自动取色链路）。
 const SKIN_PRESETS = [
-  { id: 'aurora', name: '极光', gradient: 'linear-gradient(135deg,#0f2027,#203a43,#2c5364)' },
-  { id: 'sakura', name: '樱粉', gradient: 'linear-gradient(135deg,#ffecd2,#fcb69f)' },
-  { id: 'mint', name: '薄荷', gradient: 'linear-gradient(135deg,#a1ffce,#faffd1)' },
-  { id: 'purple', name: '紫霞', gradient: 'linear-gradient(135deg,#667eea,#764ba2)' },
-  { id: 'ocean', name: '深海', gradient: 'linear-gradient(135deg,#2193b0,#6dd5ed)' },
+  { id: 'aurora', name: '极光', gradient: 'linear-gradient(135deg,#0f2027,#203a43,#2c5364)', accent: '#38bdf8' },
+  { id: 'sakura', name: '樱粉', gradient: 'linear-gradient(135deg,#ffecd2,#fcb69f)', accent: '#fb8c00' },
+  { id: 'mint', name: '薄荷', gradient: 'linear-gradient(135deg,#a1ffce,#faffd1)', accent: '#00897b' },
+  { id: 'purple', name: '紫霞', gradient: 'linear-gradient(135deg,#667eea,#764ba2)', accent: '#7e57c2' },
+  { id: 'ocean', name: '深海', gradient: 'linear-gradient(135deg,#2193b0,#6dd5ed)', accent: '#0288d1' },
 ];
 
 // 顶栏主题切换图标（SVG，避免依赖图片资源）。
@@ -3960,13 +3974,13 @@ function resolveTheme(mode) {
 }
 
 function defaultAppearance() {
-  // 默认跟随系统：未保存过偏好时不做任何显式主题假设。
-  // FR-29：两个数值与皮肤同属外观方案，随配置一起持久化；皮肤对象不再含 accent。
+  // 默认跟随系统：未保存过偏好时不做任何显式主题假设；accent 为空表示用皮肤自带默认色。
   return {
     theme: 'system',
+    accent: null,
     lyricsOpacity: LYRICS_OPACITY_DEFAULT,
     skinBlur: SKIN_BLUR_DEFAULT,
-    skin: { enabled: false, type: null, src: null, gradient: null, name: null },
+    skin: { enabled: false, type: null, src: null, gradient: null, name: null, accent: null },
   };
 }
 function loadAppearance() {
@@ -3996,10 +4010,12 @@ function appearanceToConfig(a) {
   const type = s.enabled ? (s.type === 'custom' ? 'custom' : (preset ? 'preset' : '')) : '';
   return {
     theme: ['light', 'system', 'dark'].includes(a.theme) ? a.theme : 'system',
+    accent: a.accent || '',
     skin_type: type,
     skin_preset: (type === 'preset' && preset) ? preset.id : '',
-    // FR-29：两个可调数值随外观一起落盘。后端 appearance 段是部分更新语义，
-    // 不再提交废弃的 accent / skin_accent（旧值留在配置里但没有任何消费者）。
+    // #37：皮肤激活时把自动提取的主色落盘，重启后首屏脚本可提前预设，无需重新解码图片。
+    skin_accent: (s.enabled && s.accent) ? s.accent : '',
+    // 后端 appearance 段是部分更新语义，两个可调数值随外观一起落盘。
     lyrics_opacity: clampLyricsOpacity(a.lyricsOpacity),
     skin_blur: clampSkinBlur(a.skinBlur),
   };
@@ -4016,14 +4032,17 @@ function appearanceFromConfig(cfg) {
   if (cfg.skin_type === 'preset' && preset) {
     skin = {
       enabled: true, type: 'preset', gradient: preset.gradient,
-      name: preset.name, src: null,
+      accent: cfg.skin_accent || preset.accent, name: preset.name, src: null,
     };
   } else if (cfg.skin_type === 'custom' && local.skin && local.skin.type === 'custom' && local.skin.src) {
-    skin = Object.assign({}, local.skin, { enabled: true });
+    skin = Object.assign({}, local.skin, {
+      enabled: true, accent: cfg.skin_accent || local.skin.accent || null,
+    });
   }
   // 旧版 localStorage 里的驼峰键名也兼容；配置注入用下划线键名。
   return {
     theme,
+    accent: cfg.accent || null,
     lyricsOpacity: clampLyricsOpacity(cfg.lyrics_opacity === undefined ? local.lyricsOpacity : cfg.lyrics_opacity),
     skinBlur: clampSkinBlur(cfg.skin_blur === undefined ? local.skinBlur : cfg.skin_blur),
     skin,
@@ -4053,7 +4072,7 @@ function saveAppearance(a) {
 //   saved=true  → 配置为准，覆盖本地缓存后重新应用；
 //   saved=false → 旧版本从未写外观，把 localStorage 里的老偏好一次性迁移进配置（不反向覆盖）。
 function syncAppearanceFromStatus(cfg) {
-  // 布局皮肤：即使外观尚未「被用户触碰」也照常应用（boot 时已按注入值预设，这里与状态对齐）。
+  // 布局：即使外观尚未「被用户触碰」也照常应用（boot 时已按注入值预设，这里与状态对齐）。
   if (cfg && cfg.layout_skin) applyLayoutSkin(cfg.layout_skin, false);
   // 列表密度：同理，启动即与状态对齐（默认 comfortable）。
   if (cfg && cfg.list_density) applyListDensity(cfg.list_density, false);
@@ -4067,8 +4086,72 @@ function syncAppearanceFromStatus(cfg) {
   }
 }
 
-// FR-29：主题色功能已移除，原先的颜色转换工具与 extractDominantColor()（64×64 canvas 取色）
-// 一并删除 —— 选皮肤不再解码图片取色，只把压缩后的图片作为底层背景。勿复活。
+// ---------- #37：主题色工具（FR-29 前实现，按用户拍板恢复）----------
+function hexToRgb(hex) {
+  let s = String(hex).replace('#', '');
+  if (s.length === 3) s = s.split('').map((c) => c + c).join('');
+  const n = parseInt(s, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function rgbToHex(r, g, b) {
+  const h = (x) => ('0' + Math.round(Math.max(0, Math.min(255, x))).toString(16)).slice(-2);
+  return '#' + h(r) + h(g) + h(b);
+}
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, s = 0, l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+      case g: h = (b - r) / d + 2; break;
+      case b: h = (r - g) / d + 4; break;
+    }
+    h /= 6;
+  }
+  return [h, s, l];
+}
+function hslToRgb(h, s, l) {
+  let r, g, b;
+  if (s === 0) { r = g = b = l; }
+  else {
+    const hue2rgb = (p, q, t) => {
+      if (t < 0) t += 1; if (t > 1) t -= 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    };
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    r = hue2rgb(p, q, h + 1 / 3); g = hue2rgb(p, q, h); b = hue2rgb(p, q, h - 1 / 3);
+  }
+  return [r * 255, g * 255, b * 255];
+}
+/** 从图片取稳定主色：保留色相，规范化饱和度/明度（随明暗主题调亮度）。选图时一次性执行。 */
+function extractDominantColor(img, theme) {
+  const c = document.createElement('canvas');
+  const w = (c.width = 64), h = (c.height = 64);
+  const ctx = c.getContext('2d');
+  try { ctx.drawImage(img, 0, 0, w, h); } catch (e) { return null; }
+  const data = ctx.getImageData(0, 0, w, h).data;
+  let r = 0, g = 0, b = 0, count = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < 125) continue; // 跳过透明像素
+    r += data[i]; g += data[i + 1]; b += data[i + 2]; count++;
+  }
+  if (!count) return null;
+  let [hue, sat] = rgbToHsl(Math.round(r / count), Math.round(g / count), Math.round(b / count));
+  if (sat < 0.12) return theme === 'dark' ? '#6e92ff' : '#4F7CFF'; // 近灰阶回退
+  sat = 0.58;
+  const lig = theme === 'dark' ? 0.62 : 0.48;
+  const [nr, ng, nb] = hslToRgb(hue, sat, lig);
+  return rgbToHex(nr, ng, nb);
+}
+/** 只接受 #RRGGBB（与后端 is_hex_color 同口径），避免脏数据写进 CSS 变量。 */
+function isAccentHex(v) { return typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v); }
 
 // 将用户选择的图片压缩为适合做背景的数据 URL（控制 localStorage 体积）。
 function fileToSkinDataURL(file, maxDim, cb) {
@@ -4092,7 +4175,7 @@ function fileToSkinDataURL(file, maxDim, cb) {
 
 // ---------- 原生窗口标题栏颜色同步 ----------
 // WebView 内容里的 .topbar 用 --primary 渐变着色，而窗口标题栏由 Windows DWM 绘制。
-// FR-29：主题色固定，每次外观变化后上报的是明暗主题对应的品牌蓝常量（与 styles.css 一致）。
+// #37：每次外观变化都上报当前生效的 --primary（含主题色/皮肤自动取色），保持同色。
 // CLI serve / 浏览器预览下没有原生窗口，请求失败静默忽略。
 function syncNativeTitlebar(hex, effective) {
   try {
@@ -4112,10 +4195,22 @@ function applyAppearance() {
   root.setAttribute('data-theme', eff);
   root.setAttribute('data-theme-mode', a.theme); // 保留设置值，便于诊断与后续样式扩展
 
-  // FR-29：主题色固定由 styles.css 的 [data-theme] 变量给出（浅 #4f7cff / 暗 #6e92ff）。
-  // 显式清掉可能残留的行内覆盖（旧版页面 / 旧缓存注入），否则 CSS 变量永远被行内值压住。
-  root.style.removeProperty('--primary');
-  root.style.removeProperty('--primary-dark');
+  // #37：决定强调色 —— 皮肤激活时优先用皮肤提取色，否则用手动主题色；两者都空则
+  // 清掉行内覆盖，让 classic（品牌蓝）/ modern（棕）各自的 CSS 默认色生效。
+  const accent = (a.skin && a.skin.enabled && a.skin.accent)
+    ? a.skin.accent
+    : (a.accent || '');
+  if (isAccentHex(accent)) {
+    const [pr, pg, pb] = hexToRgb(accent);
+    const darkMix = eff === 'dark' ? 0.72 : 0.78; // 派生更深的悬停色
+    root.style.setProperty('--primary', accent);
+    root.style.setProperty('--primary-dark', rgbToHex(pr * darkMix, pg * darkMix, pb * darkMix));
+    root.classList.add('has-accent'); // rail / 侧栏染色 + 派生令牌开关（首屏脚本同步预设）
+  } else {
+    root.style.removeProperty('--primary');
+    root.style.removeProperty('--primary-dark');
+    root.classList.remove('has-accent');
+  }
 
   // 两个可调数值：applyAppearance() 是运行期唯一入口，首屏脚本只提前预设同值防闪烁。
   const lyrics = clampLyricsOpacity(a.lyricsOpacity);
@@ -4140,21 +4235,23 @@ function applyAppearance() {
     btn.title = a.theme === 'system' ? '切换明暗主题（当前：跟随系统）' : '切换明暗主题';
   }
 
-  // 标题栏与顶栏同色：所有外观变化路径都汇聚到这里，天然保持同步。
-  syncNativeTitlebar(eff === 'dark' ? '#6e92ff' : '#4F7CFF', eff);
+  // 标题栏与顶栏同色：读当前计算出的 --primary（含各皮肤默认色），避免写死品牌蓝。
+  const titleColor = getComputedStyle(root).getPropertyValue('--primary').trim()
+    || (eff === 'dark' ? '#6e92ff' : '#4F7CFF');
+  syncNativeTitlebar(titleColor, eff);
 }
 
 function setSkin(skin) {
   const a = loadAppearance();
   a.skin = skin
     ? Object.assign({ enabled: true }, skin)
-    : { enabled: false, type: null, src: null, gradient: null, name: null };
+    : { enabled: false, type: null, src: null, gradient: null, name: null, accent: null };
   saveAppearance(a);
   applyAppearance();
   renderAppearanceUI();
 }
 
-// #33：外观页「布局皮肤 / 列表密度」换成与主题模式同款 .seg 分段控件后，
+// #33：外观页「布局 / 列表密度」换成与主题模式同款 .seg 分段控件后，
 // 回显统一走这里；applyLayoutSkin / applyListDensity / renderAppearanceUI 三处共用，
 // 避免只换 DOM 却漏掉选中态同步。dataKey 传 'skin' / 'density'（对应 data-* 属性）。
 function syncSegGroup(groupId, dataKey, value) {
@@ -4176,7 +4273,7 @@ function renderAppearanceUI() {
   document.querySelectorAll('#ap-theme-seg .seg-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.theme === a.theme);
   });
-  // #33：布局皮肤 / 列表密度分段控件回显（layoutSkin / listDensity 在 boot 时已设置）。
+  // #33：布局 / 列表密度分段控件回显（layoutSkin / listDensity 在 boot 时已设置）。
   syncSegGroup('ap-layout-skin', 'skin', layoutSkin);
   syncSegGroup('ap-list-density', 'density', listDensity);
   const hint = $('ap-theme-hint');
@@ -4186,7 +4283,30 @@ function renderAppearanceUI() {
       : (a.theme === 'dark' ? '已固定为深色主题' : '已固定为浅色主题');
   }
 
-  // FR-29：主题色色板 / 自定义取色器已整体删除，勿复活。
+  // #37：主题色色板（仅首次构建）+ 回显。皮肤激活时色板不高亮（主色由皮肤决定）。
+  const sw = $('ap-accent-swatches');
+  if (sw && !sw.children.length) {
+    ACCENT_PRESETS.forEach((p) => {
+      const el = document.createElement('button');
+      el.className = 'swatch'; el.type = 'button'; el.title = p.name;
+      el.style.background = p.hex; el.dataset.hex = p.hex;
+      el.addEventListener('click', () => {
+        const aa = loadAppearance();
+        aa.accent = p.hex;
+        if (aa.skin) aa.skin.enabled = false; // 手动选色视为退出皮肤派生
+        saveAppearance(aa); applyAppearance(); renderAppearanceUI();
+      });
+      sw.appendChild(el);
+    });
+  }
+  const curAccent = (a.skin && a.skin.enabled && a.skin.accent) ? a.skin.accent : (a.accent || '');
+  if (sw) sw.querySelectorAll('.swatch').forEach((el) => {
+    el.classList.toggle('active', !(a.skin && a.skin.enabled) &&
+      !!curAccent && curAccent.toLowerCase() === el.dataset.hex.toLowerCase());
+  });
+  const cc = $('ap-accent-custom');
+  if (cc) cc.value = isAccentHex(a.accent) ? a.accent : '#4F7CFF';
+
   // 皮肤缩略图（仅首次构建）
   const sk = $('ap-skins');
   if (sk && !sk.children.length) {
@@ -4199,7 +4319,7 @@ function renderAppearanceUI() {
       const el = document.createElement('button');
       el.className = 'skin-thumb'; el.type = 'button'; el.title = p.name;
       el.style.background = p.gradient; el.dataset.id = p.id;
-      el.addEventListener('click', () => setSkin({ type: 'preset', gradient: p.gradient, name: p.name }));
+      el.addEventListener('click', () => setSkin({ type: 'preset', gradient: p.gradient, accent: p.accent, name: p.name }));
       sk.appendChild(el);
     });
   }
@@ -4209,14 +4329,14 @@ function renderAppearanceUI() {
     else el.classList.toggle('active', on && a.skin.type === 'preset' && a.skin.gradient === el.style.background);
   });
 
-  // 当前皮肤说明：FR-29 起只说明底层背景，不再提「自动提取主题色」。
+  // 当前皮肤说明（#37：恢复自动提取主题色的提示）。
   const cur = $('ap-skin-current');
   if (cur) {
     if (a.skin && a.skin.enabled) {
       const label = a.skin.type === 'preset' ? ('预设「' + (a.skin.name || '') + '」') : '自定义图片';
-      cur.textContent = `当前皮肤：${label}（仅作底层背景，模糊 ${clampSkinBlur(a.skinBlur)}px，不改变主题色）`;
+      cur.textContent = `当前皮肤：${label}，主题色已根据背景自动设为 ${a.skin.accent || '-'}（模糊 ${clampSkinBlur(a.skinBlur)}px）`;
     } else {
-      cur.textContent = '当前：无皮肤（模糊滑块在选择皮肤后生效）';
+      cur.textContent = '当前：无皮肤（使用上方主题色，模糊滑块在选择皮肤后生效）';
     }
   }
 
@@ -4231,7 +4351,7 @@ function renderAppearanceUI() {
   if (sbOut) sbOut.textContent = bv + 'px';
 }
 
-// ---------- 布局皮肤切换（classic / modern）----------
+// ---------- 布局切换（classic / modern）----------
 // 共享 core.js 引擎，仅换 CSS：boot 时已按 layout_skin 预设 <link> 与 html.skin-modern 类，
 // 这里提供运行时切换 + 持久化。皮肤是「整体配色 / 视觉」层，与底层背景皮肤（skin_type）正交。
 let layoutSkin = 'classic';
@@ -4269,6 +4389,9 @@ function applyLayoutSkin(name, persist) {
     syncAlbumWall();
   }
   syncSegGroup('ap-layout-skin', 'skin', name);
+  // #37：布局切换后立即按新布局重算三栏收起态与详情区显隐（modern 恒展开）。
+  applyPaneLayout();
+  if ($('detail-pane')) syncDetailVisibility();
   if (persist) {
     fetch('/api/ui-prefs', {
       method: 'POST',
@@ -4304,6 +4427,14 @@ function initAppearanceEvents() {
       saveAppearance(a); applyAppearance(); renderAppearanceUI();
     });
   });
+  // #37：自定义取色器。手动选色即退出皮肤派生，走与色板相同的保存链路。
+  const accentCustom = $('ap-accent-custom');
+  if (accentCustom) accentCustom.addEventListener('input', (e) => {
+    const a = loadAppearance();
+    a.accent = e.target.value;
+    if (a.skin) a.skin.enabled = false;
+    saveAppearance(a); applyAppearance(); renderAppearanceUI();
+  });
   // FR-29：两个数值滑块。input 连续触发，但 saveAppearance() 内部已有 200ms 防抖，
   // 一次拖动最多产生一次 /api/ui-prefs 写盘。这里不调用 renderAppearanceUI()，
   // 避免把滑块 value 重设成 step 对齐后的值导致拖动中跳动；只同步右侧读数。
@@ -4321,7 +4452,7 @@ function initAppearanceEvents() {
   bindRange('ap-lyrics-opacity', 'ap-lyrics-opacity-value', 'lyricsOpacity', clampLyricsOpacity, '%');
   bindRange('ap-skin-blur', 'ap-skin-blur-value', 'skinBlur', clampSkinBlur, 'px');
 
-  // #33：布局皮肤 / 列表密度分段按钮（与主题模式同款），点击委托到各自的 seg 容器。
+  // #33：布局 / 列表密度分段按钮（与主题模式同款），点击委托到各自的 seg 容器。
   const layoutSeg = $('ap-layout-skin');
   if (layoutSeg) layoutSeg.addEventListener('click', (e) => {
     const b = e.target.closest('.seg-btn');
@@ -4339,11 +4470,18 @@ function initAppearanceEvents() {
   if (file) file.addEventListener('change', (e) => {
     const f = e.target.files && e.target.files[0];
     if (!f) return;
-    // FR-29：只把压缩后的图片设为底层背景，不再二次解码取色（少一次 Image 解码 + canvas 取样）。
+    // #37：压缩图片作底层背景，并从同一张已解码的图里 64×64 canvas 取一次主色。
     fileToSkinDataURL(f, 1600, (dataUrl) => {
       if (!dataUrl) { setHint('图片读取失败'); return; }
-      setSkin({ type: 'custom', src: dataUrl, name: '自定义' });
-      setHint('已应用自定义皮肤（仅作底层背景，不改变主题色）');
+      const img = new Image();
+      img.onload = () => {
+        const eff = resolveTheme(loadAppearance().theme);
+        const accent = extractDominantColor(img, eff) || (eff === 'dark' ? '#6e92ff' : '#4F7CFF');
+        setSkin({ type: 'custom', src: dataUrl, accent, name: '自定义' });
+        setHint('已应用自定义皮肤，主题色已根据图片自动调整');
+      };
+      img.onerror = () => { setHint('图片解码失败'); };
+      img.src = dataUrl;
     });
     e.target.value = '';
   });
@@ -4392,30 +4530,39 @@ function setPaneTip(el, text) {
 function updatePaneHandleArrows() {
   const sh = $('handle-sidebar');
   if (sh) {
-    sh.textContent = state.sidebarCollapsed ? '›' : '‹';
-    setPaneTip(sh, state.sidebarCollapsed ? '展开一级菜单' : '收起一级菜单');
+    sh.textContent = paneCollapsed('sidebar') ? '›' : '‹';
+    setPaneTip(sh, paneCollapsed('sidebar') ? '展开一级菜单' : '收起一级菜单');
   }
   document.querySelectorAll('.pane-handle.group-handle').forEach((b) => {
-    b.textContent = state.groupCollapsed ? '›' : '‹';
-    setPaneTip(b, state.groupCollapsed ? '展开二级列表' : '收起二级列表');
+    b.textContent = paneCollapsed('group') ? '›' : '‹';
+    setPaneTip(b, paneCollapsed('group') ? '展开二级列表' : '收起二级列表');
   });
   const dh = $('handle-detail');
   if (dh) {
     const inline = document.body.classList.contains('detail-inline');
     dh.textContent = inline
-      ? (state.detailCollapsed ? '⌄' : '⌃')
-      : (state.detailCollapsed ? '‹' : '›');
-    setPaneTip(dh, (state.detailCollapsed ? '展开' : '收起') + (inline ? '歌曲详情' : '歌曲信息栏'));
+      ? (paneCollapsed('detail') ? '⌄' : '⌃')
+      : (paneCollapsed('detail') ? '‹' : '›');
+    setPaneTip(dh, (paneCollapsed('detail') ? '展开' : '收起') + (inline ? '歌曲详情' : '歌曲信息栏'));
   }
 }
 // 统一把内存状态投射到 DOM：宽度用 CSS 变量（body class 决定收起态），按钮常驻可展开。
+// #37：现代布局隐藏了全部伸缩条，若沿用经典下保存的收起态会出现「0 宽且无展开入口」。
+// 这里在渲染层把 modern 视为恒展开；state / 持久化配置完全不动，切回经典原样恢复。
+// 用 <html> 的 skin-modern 类判断，避免依赖后面才声明的 layoutSkin 变量（无 TDZ 风险）。
+function paneCollapsed(which) {
+  if (document.documentElement.classList.contains('skin-modern')) return false;
+  if (which === 'sidebar') return !!state.sidebarCollapsed;
+  if (which === 'group') return !!state.groupCollapsed;
+  return !!state.detailCollapsed;
+}
 function applyPaneLayout() {
   document.documentElement.style.setProperty('--sidebar-w', state.sidebarWidth + 'px');
   document.documentElement.style.setProperty('--group-w', state.groupWidth + 'px');
-  document.body.classList.toggle('sidebar-collapsed', !!state.sidebarCollapsed);
-  document.body.classList.toggle('group-collapsed', !!state.groupCollapsed);
+  document.body.classList.toggle('sidebar-collapsed', paneCollapsed('sidebar'));
+  document.body.classList.toggle('group-collapsed', paneCollapsed('group'));
   // FR-25：歌曲信息栏收缩态（含封面），与两侧栏共用同一套持久化语义。
-  document.body.classList.toggle('detail-collapsed', !!state.detailCollapsed);
+  document.body.classList.toggle('detail-collapsed', paneCollapsed('detail'));
   updatePaneHandleArrows();
 }
 // 所有 [ui] 写入都走 /api/ui-prefs（后端 save_ui_in_place，绝不 save_app 整份重写）。

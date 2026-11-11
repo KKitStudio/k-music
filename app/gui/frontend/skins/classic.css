@@ -1,0 +1,1615 @@
+/* ============================================================
+   K music 前端样式
+   设计系统：浅色 / 暗色主题（data-theme） + 换肤玻璃拟态（body.skin-active）
+   FR-29：主题色固定为 --primary / --primary-dark（浅 #4f7cff / 暗 #6e92ff），不可由设置或背景图派生；
+   皮肤只在界面底层画一张模糊背景图；歌词面板半透明且透明度可调。
+   ============================================================ */
+
+/* ---------- 浅色主题（默认） ---------- */
+:root {
+  --bg: #f6f7f9;
+  --bg-grad: linear-gradient(180deg, #fbfcfd 0%, #eef1f6 100%);
+  --surface: #ffffff;
+  --surface-2: #f2f4f8;
+  --surface-glass: rgba(255, 255, 255, 0.62);
+  --primary: #4f7cff;
+  --primary-dark: #3a66e8;
+  --primary-soft: #eaf0ff;
+  --on-primary: #ffffff;
+  --text: #1a1d21;
+  --text-soft: #6b7280;
+  --text-muted: #9ca3af;
+  --divider: #e5e8ec;
+  --divider-strong: #d7dce2;
+  --chip-bg: rgba(20, 30, 60, 0.06);
+  --success: #10b981;
+  --hint-bg: #fff8e1;
+  --hint-text: #7a5b00;
+  --warn-bg: #fff3e0;
+  --warn-text: #b26a00;
+  --shadow-sm: 0 1px 2px rgba(20, 30, 60, 0.08);
+  --shadow: 0 6px 20px rgba(20, 30, 60, 0.10), 0 2px 6px rgba(20, 30, 60, 0.06);
+  --shadow-lg: 0 16px 48px rgba(20, 30, 60, 0.22);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --glass-blur: 20px;
+  --th-bg: #f3f5fa;
+  /* FR-29：两个可调外观数值。JS 会把配置值写到 :root 行内覆盖这两个默认值；
+     首屏脚本先预设同值，避免 styles.css 默认帧与配置帧之间可见跳变。 */
+  --lyrics-alpha: 82%;
+  --skin-blur: 18px;
+}
+
+/* ---------- 暗色主题 ---------- */
+[data-theme="dark"] {
+  --bg: #0e1220;
+  --bg-grad: linear-gradient(180deg, #121830 0%, #0b0f1c 100%);
+  --surface: #171c2b;
+  --surface-2: #1d2334;
+  --surface-glass: rgba(20, 26, 42, 0.60);
+  --primary: #6e92ff;
+  --primary-dark: #3a66e8;
+  --primary-soft: rgba(110, 146, 255, 0.16);
+  --on-primary: #06101f;
+  --text: #e8ebf3;
+  --text-soft: #9aa3b6;
+  --text-muted: #717a8c;
+  --divider: rgba(255, 255, 255, 0.10);
+  --divider-strong: rgba(255, 255, 255, 0.16);
+  --chip-bg: rgba(255, 255, 255, 0.10);
+  --success: #34d399;
+  --hint-bg: rgba(255, 196, 80, 0.14);
+  --hint-text: #ffd479;
+  --warn-bg: rgba(255, 150, 60, 0.14);
+  --warn-text: #ffb259;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 18px 50px rgba(0, 0, 0, 0.6);
+  --th-bg: #1b2233;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; height: 100%;
+  font-family: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--bg-grad);
+  background-attachment: fixed;
+}
+body { display: flex; flex-direction: column; overflow: hidden; }
+
+/* 平滑切换主题 */
+body, .topbar, .toolbar, .sidebar, .detail-pane, .player, .modal,
+.tab-btn, .track-table th, .md-btn, .pl-list li, .cover, .settings-section {
+  transition: background-color .28s ease, color .28s ease, box-shadow .28s ease,
+              border-color .28s ease, backdrop-filter .28s ease;
+}
+
+/* 自定义滚动条（Webkit / WebView2） */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-soft) 40%, transparent);
+  border-radius: 8px; border: 2px solid transparent; background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--text-soft) 60%, transparent); background-clip: padding-box; }
+
+/* ---------- 顶栏 ---------- */
+.topbar {
+  display: flex; align-items: center; gap: 16px;
+  padding: 0 124px 0 20px; height: 60px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+  box-shadow: var(--shadow); z-index: 5;
+}
+.brand {
+  font-size: 21px; font-weight: 700; letter-spacing: .8px; flex: none; white-space: nowrap;
+  display: flex; align-items: center; gap: 9px;
+}
+/* #34：版本号徽标只在现代皮肤的左栏品牌区显示，经典顶栏保持 1:1 不加字。 */
+.brand-version { display: none; }
+.brand::before {
+  content: ""; width: 22px; height: 22px; border-radius: 6px;
+  background: rgba(255, 255, 255, 0.22);
+  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z'/></svg>") center / 16px no-repeat;
+          mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z'/></svg>") center / 16px no-repeat;
+}
+.status { font-size: 13px; opacity: .92; flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 顶栏曲库名称：可点击切换曲库。 */
+.library-name {
+  font-size: 14px; font-weight: 500; flex: none; max-width: 34%;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: pointer; opacity: .92; user-select: none;
+  transition: opacity .15s ease;
+}
+.library-name:hover { opacity: 1; text-decoration: underline; }
+/* 顶栏「切换曲库」铅笔按钮：透明背景 + 白色线稿图标（顶栏为蓝底白字）。 */
+#btn-switch-library {
+  width: 28px; height: 28px; padding: 0; flex: none;
+  border: none; border-radius: 8px;
+  background: transparent; color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer; opacity: .85;
+  transition: background .15s ease, opacity .15s ease;
+}
+#btn-switch-library:hover { background: rgba(255, 255, 255, .16); opacity: 1; }
+#btn-switch-library:active { transform: translateY(1px); }
+#btn-switch-library svg { width: 18px; height: 18px; display: block; }
+.actions { display: flex; gap: 8px; margin-left: auto; flex: none; }
+
+/* ---------- 工具栏 ---------- */
+.toolbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; align-content: flex-start;
+  padding: 12px 20px; background: var(--surface);
+  border-bottom: 1px solid var(--divider);
+  box-shadow: var(--shadow-sm);
+}
+.toolbar #search {
+  flex: 1; max-width: 380px; height: 38px; padding: 0 16px;
+  border: 1px solid var(--divider); border-radius: 8px; font-size: 14px;
+  background: var(--surface-2); color: var(--text);
+  transition: border-color .2s, box-shadow .2s, background-color .2s;
+}
+.toolbar #search:focus {
+  outline: none; border-color: var(--primary); background: var(--surface);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent);
+}
+.toolbar .track-count {
+  font-size: 13px; color: var(--text-soft); white-space: nowrap;
+  background: var(--chip-bg); border-radius: 999px; padding: 5px 14px; align-self: center;
+}
+
+/* ---------- 按钮（Material 风，增强） ---------- */
+.md-btn {
+  height: 38px; padding: 0 16px; border: none; border-radius: 8px;
+  background: var(--chip-bg); color: var(--text); font-size: 14px; cursor: pointer;
+  white-space: nowrap; transition: background .15s, box-shadow .15s, transform .05s;
+}
+.md-btn:hover { filter: brightness(0.97); box-shadow: var(--shadow-sm); }
+.md-btn:active { transform: translateY(1px); }
+.md-btn.primary {
+  background: var(--primary); color: var(--on-primary);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--primary) 45%, transparent);
+}
+.md-btn.primary:hover { background: var(--primary-dark); filter: none; }
+.md-btn:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
+.md-btn.round { width: 44px; height: 44px; border-radius: 50%; font-size: 16px; padding: 0; box-shadow: var(--shadow-sm); }
+.md-btn.icon-btn {
+  width: 40px; height: 40px; padding: 0; border-radius: 10px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(255, 255, 255, 0.18); color: #fff;
+}
+.md-btn.icon-btn:hover { background: rgba(255, 255, 255, 0.30); filter: none; }
+.md-btn.icon-btn svg { width: 20px; height: 20px; }
+
+.hint-bar {
+  min-height: 26px; padding: 5px 20px; font-size: 13px;
+  color: var(--hint-text); background: var(--hint-bg);
+  border-bottom: 1px solid var(--divider);
+}
+
+/* ---------- 导入进度面板（右下角浮层） ---------- */
+.progress-panel {
+  position: fixed; right: 18px; bottom: 18px; z-index: 60;
+  width: 400px; max-width: calc(100vw - 36px);
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 14px 16px 12px;
+  background: var(--surface); border: 1px solid var(--divider);
+  border-radius: var(--radius); box-shadow: var(--shadow-lg);
+}
+.progress-panel[hidden] { display: none; }
+
+.pp-head { display: flex; align-items: center; gap: 8px; }
+.pp-title { font-size: 14px; font-weight: 600; color: var(--text); flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-count { font-size: 12px; color: var(--text-soft); font-variant-numeric: tabular-nums; flex: none; }
+.pp-close {
+  flex: none; width: 24px; height: 24px; line-height: 1; padding: 0;
+  border: none; border-radius: 6px; cursor: pointer;
+  background: transparent; color: var(--text-soft); font-size: 18px;
+}
+.pp-close:hover { background: var(--chip-bg); color: var(--text); }
+
+/* 旋转指示器 */
+.pp-spinner {
+  flex: none; width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid var(--divider); border-top-color: var(--primary);
+  animation: pp-spin 0.9s linear infinite;
+}
+@keyframes pp-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .pp-spinner { animation: none; } }
+
+/* 进度条 */
+.pp-bar { height: 5px; border-radius: 999px; background: var(--chip-bg); overflow: hidden; }
+.pp-bar-fill { height: 100%; width: 0; border-radius: 999px; background: var(--primary); transition: width 0.25s ease; }
+/* 总数未知（扫描阶段）：不确定态进度条 */
+.pp-bar.indeterminate .pp-bar-fill { animation: pp-indet 1.2s ease-in-out infinite; }
+@keyframes pp-indet {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(330%); }
+}
+@media (prefers-reduced-motion: reduce) { .pp-bar.indeterminate .pp-bar-fill { animation: none; width: 100%; } }
+
+/* 当前正在处理的文件 */
+.pp-current {
+  font-size: 12.5px; color: var(--text); line-height: 1.4;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-height: 18px;
+}
+
+/* 动作日志 */
+.pp-log {
+  list-style: none; margin: 0; padding: 0;
+  max-height: 168px; overflow-y: auto;
+  font-size: 12px; line-height: 1.5;
+  border-top: 1px solid var(--divider); padding-top: 6px;
+}
+.pp-log-item {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px;
+  padding: 1px 0; color: var(--text-soft);
+}
+.pp-log-verb { flex: none; font-weight: 600; color: var(--primary); }
+.pp-log-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.pp-log-status { flex: none; }
+/* 说明消息独占一行并允许换行：NCM 工具报错、暂存原因等长文本不被裁切 */
+.pp-log-msg {
+  flex: 0 0 100%; max-width: 100%;
+  white-space: normal; overflow: visible; text-overflow: clip;
+  word-break: break-word; line-height: 1.45; color: var(--text-soft);
+}
+/* 状态着色：失败红、待转换橙、跳过灰 */
+.pp-log-item.st-failed .pp-log-status { color: #d32f2f; font-weight: 600; }
+.pp-log-item.st-pending .pp-log-status { color: var(--warn-text); font-weight: 600; }
+.pp-log-item.st-skipped .pp-log-status { color: var(--text-soft); }
+.pp-log-item.st-imported .pp-log-status { color: var(--success); }
+
+/* 底部汇总 */
+.pp-summary { font-size: 12px; color: var(--text-soft); border-top: 1px solid var(--divider); padding-top: 6px; }
+
+/* ---------- 主体布局 ---------- */
+.layout { flex: 1; display: flex; min-height: 0; gap: 12px; padding: 12px; position: relative; }
+
+/* 左侧 tab 选择栏（卡片化） */
+.sidebar {
+  width: var(--sidebar-w, 144px); flex: none; display: flex; flex-direction: column; gap: 6px; position: relative;
+  padding: 12px 8px; background: var(--surface); border-radius: var(--radius);
+  border: 1px solid var(--divider); box-shadow: var(--shadow-sm);
+}
+.tab-btn {
+  text-align: left; height: 42px; padding: 0 14px; border: none; border-radius: 8px;
+  background: transparent; color: var(--text); font-size: 14px; cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.tab-btn:hover { background: var(--chip-bg); }
+.tab-btn.active { background: var(--primary); color: var(--on-primary); font-weight: 600; box-shadow: 0 2px 8px color-mix(in srgb, var(--primary) 40%, transparent); }
+
+.list-pane {
+  flex: 1; min-width: 0; overflow: auto; padding: 4px 6px;
+  background: var(--surface); border-radius: var(--radius);
+  border: 1px solid var(--divider); box-shadow: var(--shadow-sm);
+}
+.list-pane[hidden], .playlists-pane[hidden] { display: none; }
+.detail-pane {
+  /* #34：用户拍板两套皮肤统一收窄 300 → 240px，给歌曲表格多让出 60px。 */
+  width: 240px; flex: none; border-radius: var(--radius);
+  background: var(--surface); border: 1px solid var(--divider);
+  padding: 16px 8px; overflow: visible; box-shadow: var(--shadow-sm);
+  display: flex; flex-direction: column; position: relative;
+}
+/* FR-25 第五轮：滚动条只在 .detail-scroll 内容区出现；栏本体 overflow:visible 让左侧间隙里的
+   贯穿全高细条可见，且滚动条不会挤动细条的水平位置。 */
+.detail-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+/* 详情内联到内容区上方的页面（歌手页）隐藏独立右侧详情栏，把 240px 宽度让给列表。 */
+.detail-pane[hidden] { display: none; }
+
+/* ---------- 播放列表面板 ---------- */
+.playlists-pane { flex: 1; display: flex; min-height: 0; gap: 12px; background: transparent; border: none; box-shadow: none; padding: 0; }
+.pl-sidebar {
+  width: var(--group-w, 230px); flex: none; display: flex; flex-direction: column; position: relative;
+  border-radius: var(--radius); background: var(--surface);
+  border: 1px solid var(--divider); box-shadow: var(--shadow-sm); min-height: 0;
+}
+.pl-sidebar-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; border-bottom: 1px solid var(--divider); font-size: 14px; font-weight: 600;
+}
+.pl-sidebar-head .md-btn { height: 30px; padding: 0 10px; font-size: 13px; }
+.pl-list { list-style: none; margin: 0; padding: 8px; overflow-y: auto; flex: 1; }
+.pl-list li:not(.pl-empty) {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 12px; border-radius: 9px; cursor: pointer; font-size: 14px;
+}
+.pl-list li.pl-empty { padding: 10px 12px; border-radius: 9px; cursor: default; }
+.pl-list li:hover { background: color-mix(in srgb, var(--primary) 10%, transparent); }
+.pl-list li.selected { background: color-mix(in srgb, var(--primary) 18%, transparent); font-weight: 600; }
+.pl-list li.pl-empty { color: var(--text-soft); cursor: default; }
+.pl-list li.pl-empty:hover { background: transparent; }
+.pl-list .pl-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pl-list .pl-count { flex: none; font-size: 12px; color: var(--text-soft); background: var(--chip-bg); border-radius: 999px; padding: 2px 9px; }
+/* #28：歌手行副信息「流派 · 年份范围」。空值时前端根本不创建该节点（不用「—」）。 */
+.pl-list .pl-sub {
+  display: block; font-size: 11px; font-weight: 400; color: var(--text-soft);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px;
+}
+
+/* ---------- #27 专辑网格 / 列表视图切换（只改 al-list 呈现） ----------
+   颜色 / 圆角 / 阴影全部复用既有 CSS 令牌，两套皮肤共用（modern.css 经 @import 继承），
+   不引入硬编码色值；al-content 曲目表格、列宽与播放队列完全不受影响。 */
+.group-view-seg {
+  display: flex; flex: none; align-items: center;
+  border: 1px solid var(--divider-strong); border-radius: var(--radius-sm);
+  overflow: hidden; background: var(--surface);
+}
+.group-view-seg button {
+  height: 24px; min-width: 28px; padding: 0 6px; border: 0; border-radius: 0;
+  background: transparent; color: var(--text-soft); cursor: pointer;
+  font-size: 13px; line-height: 1;
+}
+.group-view-seg button + button { border-left: 1px solid var(--divider); }
+.group-view-seg button:hover { color: var(--primary); }
+.group-view-seg button.on { background: var(--primary-soft); color: var(--primary); }
+
+/* 网格视图：li 变封面卡片；列数随二级栏宽度自适应（栏宽可调，FR-24 已有能力）。 */
+.pl-list.grid-view {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 10px; align-content: start; padding: 10px;
+}
+.pl-list.grid-view li:not(.pl-empty) {
+  display: flex; flex-direction: column; align-items: stretch; gap: 4px;
+  padding: 6px; border: 1px solid var(--divider); border-radius: var(--radius-sm);
+  background: var(--surface-2); font-size: 12px; min-width: 0;
+}
+.pl-list.grid-view li.pl-empty { grid-column: 1 / -1; }
+.pl-list.grid-view li.selected { border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+.gcard-art {
+  position: relative; width: 100%; aspect-ratio: 1; border-radius: var(--radius-sm);
+  overflow: hidden; background: var(--surface-glass);
+  display: flex; align-items: center; justify-content: center;
+}
+.gcard-art img { position: relative; z-index: 1; width: 100%; height: 100%; object-fit: cover; display: block; }
+.gcard-fallback {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 24px; color: var(--text-muted);
+}
+.gcard-name { font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gcard-count { font-size: 11px; color: var(--text-soft); }
+body.density-compact .pl-list.grid-view { gap: 6px; padding: 6px; }
+body.density-compact .pl-list.grid-view li:not(.pl-empty) { padding: 4px; gap: 2px; }
+
+.pl-main {
+  flex: 1; display: flex; flex-direction: column; min-height: 0;
+  background: var(--surface); border-radius: var(--radius);
+  border: 1px solid var(--divider); box-shadow: var(--shadow-sm); overflow: hidden;
+}
+.pl-main-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 18px; font-size: 15px; font-weight: 600; color: var(--text);
+  border-bottom: 1px solid var(--divider); background: var(--surface-2);
+}
+.pl-head-actions { display: flex; gap: 8px; flex: none; }
+.pl-head-actions .md-btn { height: 30px; padding: 0 12px; font-size: 13px; }
+/* FR-25 第五轮·表头真机反馈：去掉顶部内边距，让 sticky 表头直接顶到详情条 / 标题栏下沿，
+   滚动时歌曲行不会从表头上方的留白区露出；空态占位文字单独补回上边距。 */
+.pl-content { flex: 1; overflow: auto; padding: 0 16px 16px; }
+.pl-content > .placeholder { padding: 16px 0; }
+
+.md-btn.sm { height: 28px; padding: 0 10px; font-size: 13px; }
+/* 列表内已移除 ▶ 播放按钮列（用户要求），故不再保留 th:nth-child(2) 的 46px 规则：
+   表格现在只有 # 序号列 + 业务列（+ 播放列表页的移除列），若留着该规则会把曲名列压成 46px。 */
+/* 移除列是固定宽度列（不参与列宽比例调整）：th 也要给宽度，
+   否则 table-layout:fixed 下首行（thead）宽度不定，列宽分配会失准。 */
+.pl-table th.pl-remove-col, .pl-table td.pl-remove { width: 72px; text-align: center; padding-left: 4px; padding-right: 4px; }
+.pl-table td.pl-remove .md-btn { height: 28px; padding: 0 8px; font-size: 12px; }
+
+/* ---------- 歌曲表格 ---------- */
+.track-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 14px; table-layout: fixed; }
+.track-table th {
+  text-align: left; color: var(--text-soft); font-weight: 600;
+  padding: 10px 12px; border-bottom: 2px solid var(--divider); position: sticky; top: 0;
+  background: var(--th-bg); backdrop-filter: blur(6px);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; z-index: 2;
+}
+.track-table td {
+  padding: 9px 12px; border-bottom: 1px solid color-mix(in srgb, var(--divider) 60%, transparent);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* 导入时间 / 创建时间：短格式节省列宽，完整值在 title 里；等宽数字让多行对齐。 */
+.track-table td .dt-cell { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.track-table th.idx-col, .track-table td.idx-col {
+  width: 56px; text-align: center; color: var(--text-soft); padding-left: 6px; padding-right: 4px;
+}
+.track-table td.idx-col { display: flex; align-items: center; justify-content: center; gap: 3px; }
+.track-table td.idx-col .idx-num { font-variant-numeric: tabular-nums; min-width: 14px; text-align: right; }
+.track-table tbody tr { cursor: pointer; }
+.track-table tbody tr:hover { background: color-mix(in srgb, var(--primary) 9%, transparent); }
+.track-table tbody tr.selected { background: color-mix(in srgb, var(--primary) 18%, transparent); }
+.track-table tbody tr.selected td:first-child { box-shadow: inset 3px 0 0 var(--primary); }
+
+/* 序号列内嵌的收藏心形按钮（四表共用，不占独立列，不参与业务列宽分配）。 */
+.fav-btn {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 1px 2px;
+  color: var(--text-dim, #9aa0a6);
+  transition: color 0.15s ease, transform 0.1s ease;
+  user-select: none;
+  flex: none;
+}
+.fav-btn:hover { color: var(--primary); transform: scale(1.15); }
+.fav-btn.active { color: #e5484d; }
+.fav-btn.active:hover { color: #f2555a; }
+
+/* ---------- 全部曲库筛选条（#33：音质四档平铺按钮，无下拉、无「已收藏」） ---------- */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border, rgba(128, 128, 128, 0.18));
+}
+.filter-label { font-size: 12px; color: var(--text-dim, #9aa0a6); flex: none; }
+.filter-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.filter-chip { white-space: nowrap; flex: none; }
+/* 选中态沿用主题模式分段按钮的 primary 高亮，全令牌化、不写死色值。 */
+.filter-chip.active {
+  background: var(--primary); color: var(--on-primary); font-weight: 600;
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--primary) 40%, transparent);
+}
+
+/* ---------- #32：无边框窗口自绘控制条 ---------- */
+.win-controls {
+  position: fixed; top: 0; right: 0; z-index: 60;
+  display: flex; align-items: center; gap: 2px; height: 60px; padding: 0 8px;
+  color: #fff;
+}
+.win-btn {
+  width: 34px; height: 34px; border: none; border-radius: 8px;
+  background: transparent; color: inherit; font-size: 15px; line-height: 1;
+  cursor: pointer; opacity: .8; transition: background .15s, opacity .15s;
+}
+.win-btn:hover { background: rgba(255, 255, 255, 0.18); opacity: 1; }
+.win-btn.win-close:hover { background: var(--danger, #d33a3a); color: #fff; }
+
+/* ---------- #31/#32/#35：「喜爱」独立智能列表（第 5 个一级视图） ---------- */
+/* 两条栏都设了 display:flex，必须显式处理 hidden（作者 display 会盖过 UA 的 [hidden]）。 */
+.filter-bar[hidden], .favorites-bar[hidden] { display: none; }
+/* #32：收藏是第 5 个同级 Tab，完全沿用 .tab-btn 样式，只在右侧加计数徽标。 */
+.tab-btn .fav-entry-count {
+  float: right; font-size: 11px; color: var(--text-soft);
+  background: var(--chip-bg); border-radius: 999px; padding: 1px 7px;
+}
+.tab-btn.active .fav-entry-count {
+  color: var(--on-primary); background: rgba(255, 255, 255, 0.22);
+}
+.favorites-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px; background: var(--surface-2);
+  border-bottom: 1px solid var(--border, rgba(128, 128, 128, 0.18));
+}
+.fav-bar-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.fav-bar-count { font-size: 12px; color: var(--text-soft); }
+/* #35：只剩「播放全部」一个按钮，第二个按钮的 margin 复位规则已删。 */
+.favorites-bar .md-btn { margin-left: auto; }
+
+/* ---------- 列表密度（comfortable 默认 / compact 紧凑）----------
+   纯布局呈现，不改数据；两套皮肤共用（modern.css 经 @import 继承）。
+   仅压缩行高 / 内边距，不触碰颜色令牌，避免与主题 / 皮肤背景冲突。 */
+body.density-compact .track-table th { padding: 6px 12px; }
+body.density-compact .track-table td { padding: 5px 12px; }
+body.density-compact .pl-list li:not(.pl-empty) { padding: 6px 12px; }
+body.density-compact .pl-list li.pl-empty { padding: 6px 12px; }
+
+/* ---------- 列宽可调（表头分隔线拖拽） ---------- */
+/* 业务列（带 data-col-key）右侧放一条可拖拽的手柄；拖动时该列与右邻列宽度此消彼长，
+   总宽不变，因此不会撑破表格。列宽以「占比 %」存储，窗口缩放时按占比重新分配。 */
+.track-table th.col-resizable { cursor: default; }
+.col-resizer {
+  position: absolute; top: 0; right: 0; width: 7px; height: 100%;
+  cursor: col-resize; z-index: 6; user-select: none;
+}
+.col-resizer::after {
+  content: ''; position: absolute; left: 3px; top: 5px; bottom: 5px; width: 2px;
+  background: transparent; border-radius: 1px; transition: background .12s;
+}
+.track-table th.col-resizable:hover .col-resizer::after,
+.col-resizer.active::after { background: var(--primary); }
+/* 拖拽中：全局禁用文本选中并固定光标 */
+body.col-resizing { user-select: none; cursor: col-resize !important; }
+body.col-resizing * { cursor: col-resize !important; }
+
+/* ---------- 详情面板 ---------- */
+.cover {
+  width: min(100%, 220px); aspect-ratio: 1/1; margin: 0 auto 16px;
+  background: var(--surface-2); border-radius: var(--radius);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-soft); overflow: hidden; box-shadow: var(--shadow-sm);
+  border: 1px solid var(--divider);
+}
+.cover img { width: 100%; height: 100%; object-fit: cover; }
+.detail-fields > div { padding: 5px 0; font-size: 13px; line-height: 1.55; }
+.detail-fields b { font-size: 15px; }
+.placeholder { color: var(--text-muted); }
+
+/* ---------- 纵向：详情内联条（封面 + 文字）位于歌曲列表上方 ---------- */
+/* 原独立右侧详情栏（240px）会把歌曲表格挤窄，导致「艺人/专辑」列文字被省略号截断。
+   内联为横向条带后：宽度让给表格，高度只占封面高度，字段横向换行排列。
+   .inline-detail 为四个页面共用的通用类；.ar-detail 为歌手页的历史类名（保留兼容）。 */
+.inline-detail,
+.ar-detail {
+  flex: none; display: flex; align-items: center; gap: 16px; position: relative;
+  padding: 12px 18px; border-bottom: 1px solid var(--divider);
+  background: var(--surface-2);
+}
+.inline-detail[hidden] { display: none; }
+/* 详情区控件的「隐藏即消失」契约（公共组件 DetailRegion 使用）：
+   封面控件、字段区在无数据时加 hidden → 必须彻底不占位、不显示占位文字。 */
+.inline-cover[hidden],
+.ar-detail-cover[hidden],
+.inline-fields[hidden],
+.ar-detail-fields[hidden],
+.cover[hidden],
+.detail-fields[hidden] { display: none; }
+.inline-cover,
+.ar-detail-cover {
+  width: 80px; height: 80px; flex: none; overflow: hidden;
+  border-radius: var(--radius); background: var(--surface);
+  border: 1px solid var(--divider); box-shadow: var(--shadow-sm);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-soft); font-size: 12px;
+}
+.inline-cover img,
+.ar-detail-cover img { width: 100%; height: 100%; object-fit: cover; }
+.inline-fields,
+.ar-detail-fields {
+  flex: 1; min-width: 0;
+  display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: 2px 26px;
+}
+.inline-fields > div,
+.ar-detail-fields > div { font-size: 13px; line-height: 1.6; color: var(--text-soft); white-space: nowrap; }
+.inline-fields > div:first-child,
+.ar-detail-fields > div:first-child { width: 100%; }
+.inline-fields b,
+.ar-detail-fields b { font-size: 15px; color: var(--text); }
+.inline-fields .placeholder,
+.ar-detail-fields .placeholder { color: var(--text-muted); }
+
+/* 全部曲库页：内联详情条固定在列表上方，歌曲表格在下方独立滚动区里。 */
+.list-pane { display: flex; flex-direction: column; }
+.list-scroll { flex: 1; min-height: 0; overflow: auto; }
+
+/* 歌手页歌曲表：窄窗（如 900px 最小窗口）下保底宽度，避免「艺人 / 专辑」列被省略号截断；
+   容器 .pl-content 已是 overflow:auto，宽度不足时横向滚动（同下载表格的既有做法）。 */
+#ar-content .pl-table { min-width: 600px; }
+/* min-width:0 —— 允许该 flex 项收缩到小于内容固有宽度（表格 min-width 600px），
+   否则会把整个 .layout 撑宽、导致页面级横向滚动；滚动收敛在 .pl-content 内部。
+   两处都要：.playlists-pane 是 .layout 的 flex 项，.pl-main 是它的 flex 项，
+   任一保持 min-width:auto 都会让内容固有宽度顶穿父级。 */
+#artists-pane { min-width: 0; }
+#artists-pane .pl-main { min-width: 0; }
+
+/* ---------- 播放栏 ----------
+   #35：两套皮肤统一把控件组整体左移。现代皮肤左侧 rail 占 236px，1280×720 下
+   .player 可用宽度不足以容纳 13 个固定宽度控件，最右 #volume 会被 body overflow:hidden 裁掉。
+   收窄文字区 + 两处 gap 共回收约 94px（控件左移 68px），进度条 #seek 吸收剩余空间。 */
+.player {
+  display: flex; align-items: center; gap: 12px;
+  height: 70px; padding: 0 22px; background: var(--surface);
+  border-top: 1px solid var(--divider); box-shadow: 0 -4px 18px rgba(20, 30, 60, 0.08);
+}
+.player-info { width: 176px; flex: none; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.now-playing { min-width: 0; font-size: 13px; color: var(--text-soft);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.queue-title { min-width: 0; font-size: 11px; color: var(--text-soft); opacity: .78;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.controls { flex: 1; display: flex; align-items: center; gap: 8px; }
+.controls .time { font-size: 12px; color: var(--text-soft); width: 42px; text-align: center; }
+#seek { flex: 1; accent-color: var(--primary); height: 6px; cursor: pointer; min-width: 60px; }
+.md-btn.round.sm { width: 32px; height: 32px; font-size: 13px; }
+.md-btn.is-active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+/* ---------- 播放队列面板 ---------- */
+.queue-drawer {
+  position: fixed; right: 18px; bottom: 86px; z-index: 45;
+  width: min(440px, calc(100vw - 36px)); max-height: 60vh;
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--surface); border: 1px solid var(--divider);
+  border-radius: var(--radius); box-shadow: var(--shadow-lg);
+}
+.queue-drawer[hidden] { display: none; }
+.queue-drawer-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+  border-bottom: 1px solid var(--divider); }
+.queue-drawer-title { font-weight: 600; font-size: 14px; flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.queue-count { font-size: 12px; color: var(--text-soft); flex: none; }
+.queue-list { list-style: none; margin: 0; padding: 6px 0; overflow-y: auto; flex: 1; }
+.queue-list li { display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+  font-size: 13px; cursor: pointer; }
+.queue-list li:hover { background: color-mix(in srgb, var(--primary) 9%, transparent); }
+.queue-list li.is-current { background: color-mix(in srgb, var(--primary) 16%, transparent);
+  font-weight: 600; }
+.queue-list li.is-invalid { opacity: .55; }
+.queue-list .q-idx { width: 26px; flex: none; text-align: right; color: var(--text-soft); }
+.queue-list .q-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.queue-list .q-artist { width: 100px; flex: none; color: var(--text-soft);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.queue-list .q-next { flex: none; }
+
+/* ---------- 歌曲列表右键菜单 ---------- */
+.ctx-menu {
+  position: fixed; z-index: 70; min-width: 224px;
+  max-width: min(300px, calc(100vw - 16px)); max-height: min(70vh, 520px);
+  overflow-y: auto; padding: 6px 0; box-sizing: border-box;
+  background: var(--surface); border: 1px solid var(--divider);
+  border-radius: var(--radius); box-shadow: var(--shadow-lg);
+}
+.ctx-menu[hidden] { display: none; }
+.ctx-menu-head {
+  padding: 7px 14px 9px; margin: 0 0 4px; font-size: 12px; font-weight: 600;
+  color: var(--text-soft); border-bottom: 1px solid var(--divider);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ctx-menu-items { display: flex; flex-direction: column; }
+.ctx-item {
+  display: flex; align-items: center; gap: 9px; width: 100%; box-sizing: border-box;
+  padding: 8px 14px; border: 0; background: transparent; color: var(--text);
+  font: inherit; font-size: 13px; line-height: 1.3; text-align: left; cursor: pointer;
+}
+.ctx-item:hover { background: color-mix(in srgb, var(--primary) 10%, transparent); }
+.ctx-item .ctx-icon { width: 18px; flex: none; text-align: center; opacity: .85; }
+.ctx-item .ctx-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ctx-item.ctx-danger { color: var(--danger, #d33a3a); }
+.ctx-item.ctx-danger:hover { background: color-mix(in srgb, var(--danger, #d33a3a) 12%, transparent); }
+.ctx-sep { height: 1px; background: var(--divider); margin: 5px 8px; }
+.ctx-group-title { padding: 6px 14px 3px; font-size: 11px; color: var(--text-soft); }
+.ctx-empty { padding: 4px 14px 7px; font-size: 12px; color: var(--text-soft); }
+
+/* 删除确认等对话框的说明文字包含换行，需要保留换行（其它对话框无换行，不受影响） */
+#pl-dialog-text { white-space: pre-line; }
+
+/* ---------- 播放列表通用对话框 ---------- */
+.pl-dialog { width: min(520px, calc(100vw - 36px)); }
+.pl-dialog-head { padding: 18px 20px 8px; }
+.pl-dialog-head h3 { margin: 0; font-size: 17px; }
+.pl-dialog-body { padding: 6px 20px 12px; }
+.pl-dialog-input { width: 100%; height: 36px; padding: 0 10px; font-size: 14px;
+  border: 1px solid var(--divider); border-radius: 8px;
+  background: var(--surface); color: var(--text); box-sizing: border-box; }
+.pl-dialog-input:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
+.pl-dialog-report { list-style: none; margin: 8px 0 0; padding: 8px 10px; max-height: 220px;
+  overflow-y: auto; border: 1px solid var(--divider); border-radius: 8px; font-size: 12px; }
+.pl-dialog-report li { padding: 3px 0; color: var(--text-soft); }
+
+/* ---------- 歌词面板（播放器上方浮层） ---------- */
+.lyrics-drawer {
+  position: fixed; right: 18px; bottom: 86px; z-index: 40;
+  width: min(420px, calc(100vw - 36px)); max-height: 46vh;
+  display: flex; flex-direction: column; overflow: hidden;
+  /* FR-29：底色半透明（--lyrics-alpha 由设置页滑块控制），再叠一层毛玻璃保证文字可读。
+     先写不透明兜底，老 WebView2 不支持 color-mix 时退回实心面板而不是透明到看不清。 */
+  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) var(--lyrics-alpha, 82%), transparent);
+  backdrop-filter: blur(14px) saturate(130%);
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
+  border: 1px solid var(--divider);
+  border-radius: var(--radius); box-shadow: var(--shadow-lg);
+}
+.lyrics-drawer[hidden] { display: none; }
+.lyrics-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px 10px 14px; border-bottom: 1px solid var(--divider);
+}
+.lyrics-title {
+  flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lyrics-source {
+  flex: none; font-size: 11px; color: var(--text-soft);
+  background: var(--chip-bg); padding: 2px 8px; border-radius: 999px;
+}
+.lyrics-source:empty { display: none; }
+.lyrics-body { flex: 1 1 auto; overflow-y: auto; padding: 10px 12px; scroll-behavior: smooth; }
+.lyric-line {
+  padding: 6px 8px; border-radius: 6px; cursor: pointer;
+  font-size: 13px; line-height: 1.6; color: var(--text-soft);
+  transition: color .15s, background-color .15s, font-size .15s;
+}
+.lyric-line:hover { background: var(--surface-2); }
+.lyric-line.current { color: var(--primary); font-weight: 600; font-size: 14px; }
+
+/* ---------- #29 正在播放 / 全屏歌词（覆盖主内容区，底部播放栏保留）---------- */
+.now-view {
+  position: fixed; inset: 0 0 70px 0; z-index: 45; /* 70px = .player 固定高度 */
+  display: grid; grid-template-columns: minmax(220px, 36%) minmax(0, 1fr);
+  gap: 28px; padding: 26px 32px; overflow: hidden;
+  /* 与 .lyrics-drawer 同一套 FR-29 半透明规则：皮肤图仍从 body::before 底层透出。
+     先写不透明兜底，老 WebView2 不支持 color-mix 时退回实心面板。 */
+  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) var(--lyrics-alpha, 82%), transparent);
+  backdrop-filter: blur(14px) saturate(130%);
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
+  border-bottom: 1px solid var(--divider);
+}
+.now-view[hidden] { display: none; }
+.nv-left { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; min-width: 0; }
+.nv-eyebrow { font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--text-soft); }
+.nv-cover { width: min(300px, 86%); margin: 0; position: relative; box-shadow: var(--shadow-lg); }
+.nv-cover img { position: relative; z-index: 1; }
+.nv-fallback { font-size: 42px; color: var(--text-soft); }
+/* fallback 常驻且被封面盖住；/api/cover 失败时 JS 只隐藏 img、露出它。 */
+.nv-cover img + .nv-fallback {
+  position: absolute; inset: 0; z-index: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.nv-title { margin: 0; font-size: 22px; font-weight: 600; line-height: 1.35; text-align: center; color: var(--text); }
+.nv-meta { margin: 0; font-size: 12px; text-align: center; color: var(--text-soft); }
+.nv-meta:empty { display: none; }
+.nv-right { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.nv-head { display: flex; align-items: center; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--divider); }
+.nv-head b { font-size: 12px; letter-spacing: .12em; color: var(--text-soft); }
+.nv-src { flex: 1 1 auto; font-size: 11px; color: var(--text-soft); background: var(--chip-bg); padding: 2px 8px; border-radius: 999px; }
+.nv-src:empty { display: none; }
+.nv-lyrics {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 22px 8px 40px;
+  scroll-behavior: smooth;
+  mask-image: linear-gradient(180deg, transparent, black 12%, black 84%, transparent);
+  -webkit-mask-image: linear-gradient(180deg, transparent, black 12%, black 84%, transparent);
+}
+.nv-lyrics .lyric-line {
+  font-size: 17px; line-height: 2; padding: 3px 8px; color: var(--text-soft);
+  transition: color .2s, font-size .2s;
+}
+.nv-lyrics .lyric-line:hover { background: var(--surface-2); }
+.nv-lyrics .lyric-line.current {
+  color: var(--primary); font-size: 20px; font-weight: 600; background: transparent;
+}
+.nv-lyrics .lyric-line.current::before {
+  content: ''; display: inline-block; width: 3px; height: 15px;
+  background: var(--primary); margin-right: 9px; vertical-align: -2px; border-radius: 2px;
+}
+@media (max-width: 900px) {
+  .now-view { grid-template-columns: minmax(160px, 32%) minmax(0, 1fr); gap: 16px; padding: 16px 18px; }
+  .nv-cover { width: min(180px, 86%); }
+  .nv-title { font-size: 17px; }
+  .nv-lyrics .lyric-line { font-size: 14px; line-height: 1.9; }
+  .nv-lyrics .lyric-line.current { font-size: 16px; }
+}
+
+/* ---------- 弹窗 ---------- */
+.modal-mask {
+  position: fixed; inset: 0; background: rgba(8, 12, 24, 0.5);
+  backdrop-filter: blur(2px);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+  padding: 20px 16px;             /* 小窗口下弹框不贴边 */
+}
+.modal-mask[hidden] { display: none; }
+.modal {
+  background: var(--surface); color: var(--text); border-radius: 16px; padding: 26px; width: 320px;
+  text-align: left; box-shadow: var(--shadow-lg); border: 1px solid var(--divider);
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 40px);  /* 内容超高时改为弹框内部滚动，不越出视口 */
+  overflow-y: auto;
+}
+.modal h3 { margin: 0 0 8px; font-size: 18px; line-height: 1.35; }
+.modal-hint { font-size: 12px; color: var(--text-soft); margin: 0 0 16px; line-height: 1.65; }
+.library-dir-modal { width: min(520px, calc(100vw - 32px)); }
+.library-dir-modal label { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 600; color: var(--text-soft); }
+/* 目录输入框：提升为全局统一（原先只覆盖 library-dir / settings，初始化向导 4 个输入框漏样式）。
+   更具体的 #settings-modal / .import-modal 规则在后面，优先级更高，仍各自生效。 */
+.directory-picker { display: flex; align-items: center; gap: 8px; }
+.directory-picker input {
+  flex: 1; min-width: 0; height: 40px; padding: 0 12px;
+  border: 1px solid var(--divider); border-radius: 8px; font-size: 14px;
+  background: var(--surface-2); color: var(--text);
+}
+.directory-picker input::placeholder { color: var(--text-soft); opacity: .8; }
+.directory-picker input:focus {
+  outline: none; border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent);
+}
+.directory-picker > .md-btn { flex: none; height: 40px; }
+/* 动作栏允许换行 + 按钮限宽：任意窗口尺寸下按钮都不会被挤出弹框边界 */
+.modal-actions {
+  display: flex; justify-content: flex-end; align-items: center;
+  flex-wrap: wrap; gap: 10px; margin-top: 18px;
+}
+.modal-actions .md-btn { max-width: 100%; }
+
+/* ---------- 导入文件夹弹窗（宽版左对齐 + 卡片式单选，作用域仅限此弹窗） ---------- */
+.import-modal {
+  width: min(460px, calc(100vw - 32px)); padding: 0; text-align: left;
+  max-height: calc(100vh - 40px);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.import-modal .imp-head { flex: none; }
+.import-modal .imp-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.import-modal .modal-actions.imp-actions { flex: none; }
+.import-modal .imp-head {
+  display: flex; align-items: center; gap: 12px;
+  padding: 18px 22px 16px; border-bottom: 1px solid var(--divider);
+  background: var(--surface-2); border-radius: 16px 16px 0 0;
+}
+.imp-icon {
+  flex: none; width: 38px; height: 38px; border-radius: 11px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 13%, transparent);
+}
+.imp-icon svg { width: 21px; height: 21px; }
+.imp-head-text { flex: 1; min-width: 0; }
+.import-modal .imp-head h3 { margin: 0; font-size: 17px; font-weight: 600; line-height: 1.3; }
+.imp-head-text p { margin: 3px 0 0; font-size: 12px; color: var(--text-soft); }
+.imp-close {
+  flex: none; width: 30px; height: 30px; border: none; border-radius: 8px;
+  background: transparent; color: var(--text-soft); font-size: 21px; line-height: 1;
+  cursor: pointer; padding: 0;
+}
+.imp-close:hover { background: var(--chip-bg); color: var(--text); }
+
+.imp-body { padding: 18px 22px 20px; }
+.imp-field + .imp-field { margin-top: 20px; }
+.imp-label {
+  display: block; margin: 0 0 8px; font-size: 12px; font-weight: 600;
+  color: var(--text-soft); letter-spacing: .4px;
+}
+.import-modal .directory-picker.imp-picker { gap: 8px; }
+/* 修复：原全局 input 样式仅覆盖 library-dir-modal / settings-modal，此处补上统一外观 */
+.import-modal .imp-picker input {
+  flex: 1; min-width: 0; height: 40px; padding: 0 12px;
+  border: 1px solid var(--divider); border-radius: 9px; font-size: 13px;
+  background: var(--surface); color: var(--text);
+  transition: border-color .15s, box-shadow .15s;
+}
+.import-modal .imp-picker input::placeholder { color: var(--text-soft); opacity: .8; }
+.import-modal .imp-picker input:focus {
+  outline: none; border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 20%, transparent);
+}
+.import-modal .imp-browse {
+  flex: none; height: 40px; padding: 0 14px; border-radius: 9px;
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--surface-2); color: var(--text); font-size: 13px;
+  border: 1px solid var(--divider);
+}
+.import-modal .imp-browse:hover { border-color: var(--primary); filter: none; box-shadow: none; }
+.imp-browse svg { width: 15px; height: 15px; }
+.imp-help { margin: 8px 0 0; font-size: 12px; color: var(--text-soft); line-height: 1.5; }
+
+/* 卡片式单选：radio 恒定左对齐，选中态由 :has() 高亮，附带 .is-checked 兼容旧 WebView */
+.import-modal .scheme-options.imp-options { gap: 9px; margin: 0; }
+.import-modal .imp-option {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 11px 13px; border: 1px solid var(--divider); border-radius: 8px;
+  background: var(--surface); cursor: pointer;
+  transition: border-color .15s, background-color .15s, box-shadow .15s;
+}
+.import-modal .imp-option:hover { border-color: color-mix(in srgb, var(--primary) 50%, var(--divider)); }
+.import-modal .imp-option:has(input:checked),
+.import-modal .imp-option.is-checked {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 8%, var(--surface));
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+.import-modal .imp-option input[type="radio"] {
+  flex: none; width: 16px; height: 16px; margin: 2px 0 0;
+  accent-color: var(--primary); cursor: pointer;
+}
+.imp-option-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.imp-option-title { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--text); }
+.imp-badge {
+  padding: 3px 6px; border-radius: 5px; font-size: 10px; font-weight: 600; line-height: 1;
+  color: var(--primary); background: color-mix(in srgb, var(--primary) 15%, transparent);
+}
+.imp-option-desc { font-size: 12px; color: var(--text-soft); line-height: 1.45; }
+.import-modal .modal-actions.imp-actions {
+  margin: 0; padding: 14px 22px; gap: 10px;
+  border-top: 1px solid var(--divider); background: var(--surface-2);
+  border-radius: 0 0 16px 16px;
+}
+.import-modal .imp-actions .md-btn { height: 38px; padding: 0 18px; font-size: 13px; }
+/* 换肤玻璃态下，导入弹窗内部区块保持可读 */
+body.skin-active .import-modal .imp-head,
+body.skin-active .import-modal .imp-actions { background: color-mix(in srgb, var(--surface-glass) 92%, var(--primary) 8%); }
+body.skin-active .import-modal .imp-option { background: var(--surface-glass); }
+
+.qr { display: flex; justify-content: center; margin-bottom: 12px; }
+.qr img { width: 220px; height: 220px; border: 1px solid var(--divider); border-radius: 8px; }
+#qr-status { font-size: 13px; color: var(--text-soft); margin-bottom: 16px; }
+
+/* ---------- 初始化向导 / 设置面板 ---------- */
+.init-wizard, .settings-modal { width: min(580px, calc(100vw - 32px)); max-height: calc(100vh - 40px); overflow-y: auto; }
+.wizard-step { margin: 8px 0 4px; }
+/* 向导标题与设置面板卡片标题同层级：主色竖条 + 统一字号 */
+/* 向导头部 / 底栏分区见文件末尾「弹框视觉一致性统一」块 */
+.wizard-step h4 {
+  margin: 4px 0 8px; padding-left: 10px; position: relative;
+  font-size: 14px; font-weight: 600; color: var(--text);
+}
+.wizard-step h4::before {
+  content: ""; position: absolute; left: 0; top: 2px; bottom: 2px;
+  width: 3px; border-radius: 2px; background: var(--primary);
+}
+.init-wizard .modal-hint { margin-bottom: 12px; }
+/* 单选 / 复选控件全局统一：尺寸、主题色、基线对齐（设置面板与导入弹窗有更具体的规则覆盖） */
+input[type="radio"], input[type="checkbox"] {
+  width: 16px; height: 16px; margin: 0; flex: none;
+  accent-color: var(--primary); cursor: pointer; vertical-align: middle;
+}
+.scheme-options { display: flex; flex-direction: column; gap: 8px; margin: 6px 0; }
+.scheme-options label {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--divider); border-radius: 8px;
+  background: var(--surface-2); font-size: 13px; color: var(--text); cursor: pointer;
+  transition: border-color .15s, background-color .15s, box-shadow .15s;
+}
+.scheme-options label:hover { border-color: color-mix(in srgb, var(--primary) 50%, var(--divider)); }
+.scheme-options label:has(input:checked),
+.scheme-options label.is-checked {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 8%, var(--surface));
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+.copy-opt {
+  display: inline-flex; align-items: center; gap: 8px;
+  margin: 10px 0; font-size: 13px; color: var(--text-soft); cursor: pointer;
+}
+.settings-section { padding: 16px 0; border-top: 1px solid var(--divider); }
+.settings-section:first-of-type { border-top: none; padding-top: 4px; }
+.settings-section h4 { margin: 0 0 10px; font-size: 14px; color: var(--text-soft); font-weight: 600; letter-spacing: .3px; }
+.settings-value { font-size: 13px; word-break: break-all; margin-bottom: 8px; color: var(--text); }
+/* ---------- 「关于」分区 ---------- */
+.about-list { margin: 0; display: flex; flex-direction: column; }
+.about-row { display: flex; align-items: baseline; gap: 12px; padding: 6px 0; font-size: 13px; }
+.about-row dt { flex: none; width: 92px; color: var(--text-soft); }
+.about-row dd { margin: 0; flex: 1 1 auto; min-width: 0; color: var(--text); word-break: break-word; }
+.about-row dd a { color: var(--primary); text-decoration: none; }
+.about-row dd a:hover { text-decoration: underline; }
+#about-desc { margin: 10px 0 0; }
+/* 配置冲突提示：醒目但不刺眼（复用 warn 配色变量）。 */
+.config-conflict {
+  margin: 10px 0 0; padding: 9px 11px; border-radius: 8px; font-size: 13px;
+  color: var(--warn-text); background: var(--warn-bg);
+}
+.config-conflict code { font-family: Consolas, monospace; }
+.ncm-status { font-size: 13px; color: var(--text-soft); margin-bottom: 8px; }
+.modal-hint.warn { color: var(--warn-text); background: var(--warn-bg); padding: 9px 11px; border-radius: 8px; }
+
+/* ---------- 下载管理面板 ---------- */
+.downloads-modal { width: min(660px, calc(100vw - 32px)); text-align: left; }
+.dl-controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 14px; }
+.dl-list-wrap { max-height: 50vh; overflow-y: auto; border: 1px solid var(--divider); border-radius: 10px; }
+.dl-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.dl-table th, .dl-table td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--divider); vertical-align: top; }
+.dl-table th { position: sticky; top: 0; background: var(--th-bg); color: var(--text-soft); font-weight: 600; backdrop-filter: blur(6px); }
+.dl-table small { color: var(--text-soft); }
+.dl-table .dl-path { word-break: break-all; color: var(--text-soft); font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; }
+.dl-empty { text-align: center; color: var(--text-soft); padding: 18px; }
+.dl-row-btn { margin-left: 4px; padding: 3px 9px; font-size: 12px; border: 1px solid var(--divider); border-radius: 6px; background: var(--surface); color: var(--primary); cursor: pointer; }
+.dl-row-btn:hover { background: var(--surface-2); }
+.dl-err { color: #e53935; cursor: help; }
+
+/* ---------- 散落 .ncm 列表 ---------- */
+.ncm-list-wrap { max-height: 46vh; overflow-y: auto; border: 1px solid var(--divider); border-radius: 10px; }
+.ncm-list-count { padding: 9px 12px; font-size: 13px; color: var(--text-soft); background: var(--th-bg); border-bottom: 1px solid var(--divider); position: sticky; top: 0; backdrop-filter: blur(6px); }
+.ncm-list { list-style: none; margin: 0; padding: 0; }
+.ncm-list li {
+  display: grid; grid-template-columns: 28px 1fr; grid-template-rows: auto auto;
+  gap: 0 10px; padding: 9px 12px; border-bottom: 1px solid color-mix(in srgb, var(--divider) 60%, transparent);
+}
+.ncm-list li:last-child { border-bottom: none; }
+.ncm-list li:hover { background: color-mix(in srgb, var(--primary) 9%, transparent); }
+.ncm-list .ncm-idx { grid-row: 1 / span 2; align-self: center; text-align: center; color: var(--text-soft); font-size: 13px; }
+.ncm-list .ncm-name { font-size: 14px; font-weight: 500; word-break: break-all; }
+.ncm-list .ncm-path { grid-column: 2; font-size: 12px; color: var(--text-soft); word-break: break-all; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+
+/* ---------- 歌曲列表显示项配置 ---------- */
+.col-config-list { list-style: none; margin: 0 0 12px; padding: 0; border: 1px solid var(--divider); border-radius: 10px; overflow: hidden; }
+.col-config-list li { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid color-mix(in srgb, var(--divider) 60%, transparent); }
+.col-config-list li:last-child { border-bottom: none; }
+.col-config-list .col-label { flex: 1; font-size: 14px; }
+.col-config-list .col-vis { width: 16px; height: 16px; accent-color: var(--primary); }
+.col-config-list .col-move { width: 30px; height: 28px; padding: 0; font-size: 14px; line-height: 1; }
+.col-config-list .col-move:disabled { opacity: .3; cursor: not-allowed; }
+
+/* 设置 → 播放：自动播放列表上限 n */
+.playback-count-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 14px; }
+.playback-count-row label { color: var(--text-soft); }
+.playback-count-input {
+  width: 92px; height: 34px; padding: 0 10px; font-size: 14px;
+  border: 1px solid var(--divider); border-radius: 8px;
+  background: var(--surface); color: var(--text);
+}
+.playback-count-input:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
+
+/* ---------- 布局风格选择 ---------- */
+/* 每个页面一行：页面名 + 「横向 / 纵向」分段控件。 */
+.layout-style-list { display: flex; flex-direction: column; gap: 10px; }
+.layout-style-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 12px; border: 1px solid var(--divider); border-radius: 10px;
+  background: var(--surface-2);
+}
+.layout-style-label { font-size: 14px; }
+.layout-style-row .seg { flex: none; }
+.layout-style-row .seg-btn { padding: 6px 16px; }
+
+/* ---------- 列宽比例显示 ---------- */
+.col-width-list { list-style: none; margin: 0 0 12px; padding: 0; border: 1px solid var(--divider); border-radius: 10px; overflow: hidden; }
+.col-width-list li {
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--divider) 60%, transparent);
+}
+.col-width-list li:last-child { border-bottom: none; }
+.col-width-list .col-label { flex: none; width: 72px; font-size: 14px; }
+.col-width-list .col-bar { flex: 1; height: 6px; border-radius: 999px; background: var(--chip-bg); overflow: hidden; }
+.col-width-list .col-bar i { display: block; height: 100%; background: var(--primary); border-radius: 999px; }
+.col-width-list .col-pct { flex: none; width: 52px; text-align: right; font-size: 13px; color: var(--text-soft); font-variant-numeric: tabular-nums; }
+
+/* ============================================================
+   外观设置（主题 / 换肤）UI
+   ============================================================ */
+.appearance-block { margin-bottom: 18px; }
+.ap-label { font-size: 13px; color: var(--text-soft); margin-bottom: 8px; }
+/* 主题模式说明（跟随系统时显示「系统当前：深色/浅色」） */
+.ap-subhint { margin-top: 8px; font-size: 12px; color: var(--text-soft); opacity: .85; }
+
+/* 分段控件：主题模式 */
+.seg { display: inline-flex; background: var(--chip-bg); border-radius: 10px; padding: 4px; gap: 4px; }
+.seg-btn {
+  border: none; background: transparent; color: var(--text-soft); cursor: pointer;
+  padding: 7px 18px; border-radius: 7px; font-size: 13px; transition: all .18s;
+}
+.seg-btn:hover { color: var(--text); }
+.seg-btn.active { background: var(--primary); color: var(--on-primary); font-weight: 600; box-shadow: 0 2px 6px color-mix(in srgb, var(--primary) 40%, transparent); }
+/* #33：布局皮肤 / 列表密度复用同一分段控件；文案较长时允许换行，不溢出设置面板。 */
+.appearance-block .seg { max-width: 100%; flex-wrap: wrap; }
+
+/* FR-29：主题色色板 / 自定义取色器（.accent-row / .swatch / .custom-color）已整体删除，勿复活。
+   歌词不透明度与皮肤模糊两个数值滑块共用这一行布局。 */
+.ap-range-row { display: flex; align-items: center; gap: 12px; }
+.ap-range-row input[type="range"] {
+  flex: 1 1 auto; min-width: 120px; max-width: 320px;
+  accent-color: var(--primary); cursor: pointer;
+}
+.ap-range-value {
+  flex: none; width: 52px; text-align: right; font-size: 13px;
+  color: var(--text); font-variant-numeric: tabular-nums;
+}
+
+/* 皮肤缩略图 */
+.skins { display: flex; flex-wrap: wrap; gap: 10px; }
+.skin-thumb {
+  width: 56px; height: 40px; border-radius: 9px; border: 2px solid transparent; cursor: pointer;
+  box-shadow: var(--shadow-sm); transition: transform .12s, border-color .12s; position: relative; overflow: hidden;
+}
+.skin-thumb:hover { transform: translateY(-2px); }
+.skin-thumb.none { background: var(--surface-2); color: var(--text-soft); display: flex; align-items: center; justify-content: center; font-size: 13px; border: 1px dashed var(--divider); }
+.skin-thumb.active { border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 35%, transparent); }
+.skin-actions { display: flex; gap: 8px; margin-top: 12px; }
+.skin-current { margin-top: 10px; font-size: 12px; color: var(--text-soft); }
+
+/* ============================================================
+   换肤：底层模糊背景 + 玻璃拟态（body.skin-active）
+   FR-29：背景图不再直接铺在 body 上，改由独立 ::before 承载并先模糊/缩放，
+   避免图片细节透过上层玻璃面板干扰文字；模糊半径由 --skin-blur（设置页可调）控制。
+   body 自身背景必须设为 transparent，否则负 z-index 的 ::before 会被 body 背景盖住。
+   ============================================================ */
+body.skin-active { --surface: var(--surface-glass); background: transparent; }
+body.skin-active::before {
+  content: ""; position: fixed; inset: -32px; z-index: -2; pointer-events: none;
+  background-image: var(--skin-image);
+  background-size: cover; background-position: center; background-repeat: no-repeat;
+  /* inset 负值 + 轻微放大，抵消 blur 在视口边缘露出的半透明白边 */
+  filter: blur(var(--skin-blur, 18px)) saturate(115%);
+  transform: scale(1.06);
+}
+/* 皮肤激活时的可读性蒙版（随主题深浅自适应）。
+   暗色规则必须写在亮色之后：两条选择器特异性相同，后写者生效（旧版写反，暗色蒙版其实没生效）。 */
+body.skin-active::after {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background: var(--skin-scrim, rgba(255, 255, 255, 0.22));
+}
+body.skin-active::after { --skin-scrim: rgba(255, 255, 255, 0.22); }
+[data-theme="dark"] body.skin-active::after { --skin-scrim: rgba(10, 14, 26, 0.42); }
+
+/* 主面板毛玻璃 */
+body.skin-active .topbar,
+body.skin-active .toolbar,
+body.skin-active .sidebar,
+body.skin-active .detail-pane,
+body.skin-active .player,
+body.skin-active .list-pane,
+body.skin-active .playlists-pane .pl-sidebar,
+body.skin-active .playlists-pane .pl-main,
+body.skin-active .modal,
+body.skin-active .modal .settings-section,
+body.skin-active .track-table th,
+body.skin-active .dl-table th,
+body.skin-active .ncm-list-count {
+  backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+}
+body.skin-active .track-table th,
+body.skin-active .dl-table th,
+body.skin-active .ncm-list-count { background: var(--surface-glass); }
+body.skin-active .list-pane,
+body.skin-active .detail-pane,
+body.skin-active .sidebar,
+body.skin-active .player,
+body.skin-active .toolbar { border-color: rgba(255, 255, 255, 0.25); }
+[data-theme="dark"] body.skin-active .list-pane,
+[data-theme="dark"] body.skin-active .detail-pane,
+[data-theme="dark"] body.skin-active .sidebar,
+[data-theme="dark"] body.skin-active .player,
+[data-theme="dark"] body.skin-active .toolbar { border-color: rgba(255, 255, 255, 0.12); }
+
+/* ============================================================
+   设置面板：左侧标签导航 + 右侧分栏内容
+   仅作用于 #settings-modal，所有控件 ID 与功能保持不变。
+   ============================================================ */
+#settings-modal .settings-modal {
+  width: min(860px, calc(100vw - 32px));
+  max-height: min(86vh, 780px);
+  padding: 0; overflow: hidden;
+  display: flex; flex-direction: column;
+  text-align: left;
+}
+#settings-modal .settings-head {
+  flex: none; display: flex; align-items: center; gap: 16px;
+  padding: 18px 24px; border-bottom: 1px solid var(--divider);
+  background: var(--surface-2);
+}
+#settings-modal .settings-head-text { flex: 1; min-width: 0; }
+#settings-modal .settings-head h3 { margin: 0; font-size: 18px; font-weight: 600; line-height: 1.3; }
+#settings-modal .settings-head p { margin: 3px 0 0; font-size: 12px; color: var(--text-soft); }
+#settings-modal .settings-head .md-btn { height: 34px; padding: 0 16px; font-size: 13px; }
+
+#settings-modal .settings-layout { display: flex; flex: 1; min-height: 0; }
+#settings-modal .settings-nav {
+  flex: none; width: 208px; padding: 14px 10px;
+  border-right: 1px solid var(--divider); background: var(--surface-2);
+  display: flex; flex-direction: column; gap: 4px; overflow-y: auto;
+}
+#settings-modal .settings-tab {
+  position: relative; display: flex; align-items: center; gap: 11px;
+  width: 100%; padding: 10px 12px; border: none; border-radius: 10px;
+  background: transparent; color: var(--text-soft); cursor: pointer;
+  text-align: left; transition: background .15s, color .15s, box-shadow .15s;
+}
+#settings-modal .settings-tab svg { flex: none; width: 19px; height: 19px; opacity: .85; }
+#settings-modal .settings-tab span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+#settings-modal .settings-tab strong { font-size: 13px; font-weight: 600; color: inherit; }
+#settings-modal .settings-tab small { font-size: 11px; color: var(--text-soft); opacity: .85; white-space: nowrap; }
+#settings-modal .settings-tab:hover { background: var(--chip-bg); color: var(--text); }
+#settings-modal .settings-tab.active {
+  background: color-mix(in srgb, var(--primary) 12%, var(--surface));
+  color: var(--primary);
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+#settings-modal .settings-tab.active small { color: var(--primary); opacity: .8; }
+#settings-modal .settings-tab.active svg { opacity: 1; }
+
+#settings-modal .settings-content {
+  flex: 1; min-width: 0; overflow-y: auto; padding: 20px 24px 26px;
+}
+#settings-modal .settings-pane { display: none; }
+#settings-modal .settings-pane.active { display: block; }
+#settings-modal .settings-pane-head { margin: 0 0 16px; }
+#settings-modal .settings-pane-head h4 { margin: 0; font-size: 17px; font-weight: 600; color: var(--text); }
+#settings-modal .settings-pane-head p { margin: 4px 0 0; font-size: 12px; color: var(--text-soft); }
+
+/* 卡片化分区：统一间距、标题层级与卡片外观 */
+#settings-modal .settings-section,
+#settings-modal .settings-section:first-of-type {
+  padding: 16px 18px; margin: 0 0 14px; border-top: none;
+  border: 1px solid var(--divider); border-radius: 12px;
+  background: var(--surface); box-shadow: var(--shadow-sm);
+}
+#settings-modal .settings-section:last-child { margin-bottom: 0; }
+#settings-modal .settings-section h4 {
+  margin: 0 0 12px; padding-left: 10px; position: relative;
+  font-size: 14px; font-weight: 600; color: var(--text); letter-spacing: .2px;
+}
+#settings-modal .settings-section h4::before {
+  content: ""; position: absolute; left: 0; top: 2px; bottom: 2px;
+  width: 3px; border-radius: 2px; background: var(--primary);
+}
+#settings-modal .modal-hint {
+  margin: 0 0 12px; font-size: 12px; color: var(--text-soft); line-height: 1.65;
+}
+#settings-modal .modal-hint.warn { margin: 12px 0 0; }
+#settings-modal .settings-value {
+  margin: 0 0 10px; padding: 9px 11px; border-radius: 8px;
+  border: 1px solid var(--divider); background: var(--surface-2);
+  font-size: 12px; color: var(--text-soft); word-break: break-all;
+}
+/* 控件统一：按钮成行、输入框高度/圆角一致、单选卡片化 */
+#settings-modal .settings-section > .md-btn { margin: 10px 8px 0 0; }
+#settings-modal .directory-picker { gap: 8px; margin-bottom: 4px; }
+#settings-modal .directory-picker input { height: 38px; font-size: 13px; }
+#settings-modal .directory-picker .md-btn { height: 38px; font-size: 13px; }
+#settings-modal .copy-opt {
+  display: flex; align-items: center; gap: 8px; margin: 12px 0 0;
+  font-size: 13px; color: var(--text-soft); cursor: pointer;
+}
+#settings-modal .copy-opt input { accent-color: var(--primary); width: 15px; height: 15px; }
+#settings-modal .scheme-options { gap: 8px; margin: 0; }
+#settings-modal .scheme-options label {
+  display: flex; align-items: center; gap: 9px; padding: 9px 11px;
+  border: 1px solid var(--divider); border-radius: 9px;
+  background: var(--surface-2); font-size: 13px; cursor: pointer;
+  transition: border-color .15s, background-color .15s;
+}
+#settings-modal .scheme-options label:hover { border-color: color-mix(in srgb, var(--primary) 50%, var(--divider)); }
+#settings-modal .scheme-options label:has(input:checked),
+#settings-modal .scheme-options label.is-checked {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 8%, var(--surface));
+  box-shadow: inset 0 0 0 1px var(--primary); color: var(--text);
+}
+#settings-modal .scheme-options input[type="radio"] { flex: none; width: 15px; height: 15px; margin: 0; accent-color: var(--primary); }
+#settings-modal .about-row { border-bottom: 1px solid var(--divider); }
+#settings-modal .about-row:last-child { border-bottom: none; }
+#settings-modal .about-row dt { width: 132px; }
+#settings-modal .config-conflict { margin-top: 12px; }
+/* 换肤玻璃态下保证卡片可读 */
+body.skin-active #settings-modal .settings-section { background: var(--surface-glass); }
+body.skin-active #settings-modal .settings-nav,
+body.skin-active #settings-modal .settings-head { background: color-mix(in srgb, var(--surface-glass) 92%, var(--primary) 8%); }
+
+/* ============================================================
+   弹框 / 浮层视觉一致性统一（2026-11-05）
+   重点：「发现散落的 .ncm 文件」改为头部 + 可滚动内容区 + 固定底栏，
+   保证任意窗口尺寸下按钮始终完整位于弹框边界内。
+   ============================================================ */
+
+/* ---------- 重点：发现散落的 .ncm 文件 ---------- */
+#ncm-organize-modal .ncm-organize-modal {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 40px);
+  padding: 0; overflow: hidden; text-align: left;
+  display: flex; flex-direction: column;
+}
+#ncm-organize-modal .ncm-head {
+  flex: none; display: flex; align-items: center; gap: 12px;
+  padding: 18px 22px 16px; border-bottom: 1px solid var(--divider);
+  background: var(--surface-2);
+}
+#ncm-organize-modal .ncm-head-icon {
+  flex: none; width: 38px; height: 38px; border-radius: 11px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 13%, transparent);
+}
+#ncm-organize-modal .ncm-head-icon svg { width: 21px; height: 21px; }
+#ncm-organize-modal .ncm-head-text { flex: 1; min-width: 0; }
+#ncm-organize-modal .ncm-head h3 { margin: 0; font-size: 17px; font-weight: 600; line-height: 1.35; }
+/* 内容区独立滚动：头部与动作栏始终可见，列表再长也不把按钮顶出边界 */
+#ncm-organize-modal .ncm-body {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  padding: 18px 22px 20px;
+}
+#ncm-organize-modal .ncm-hint { margin: 0 0 14px; line-height: 1.7; }
+#ncm-organize-modal .ncm-list-wrap { max-height: none; }
+#ncm-organize-modal .ncm-list li { padding: 10px 12px; }
+#ncm-organize-modal .modal-actions.ncm-actions {
+  flex: none; margin: 0; padding: 14px 22px;
+  border-top: 1px solid var(--divider); background: var(--surface-2);
+  justify-content: flex-end; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+/* 长按钮允许换行并自动撑高，避免文字被固定 38px 高度裁切 */
+#ncm-organize-modal .ncm-actions .md-btn {
+  height: auto; min-height: 38px; padding: 8px 18px;
+  font-size: 13px; line-height: 1.4; white-space: normal;
+  max-width: 100%; text-align: center;
+}
+body.skin-active #ncm-organize-modal .ncm-head,
+body.skin-active #ncm-organize-modal .ncm-actions {
+  background: color-mix(in srgb, var(--surface-glass) 92%, var(--primary) 8%);
+}
+/* 统计条是 sticky 表头：保留 blur 保证滚动时文字不透底，但降低不透明度，
+   避免亮色皮肤下呈现一条突兀的纯白纸片 */
+body.skin-active #ncm-organize-modal .ncm-list-count {
+  background: color-mix(in srgb, var(--surface-glass) 72%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+/* ---------- 其余弹框：标题层级、表格窄窗、状态卡片 ---------- */
+.library-dir-modal > h3,
+.downloads-modal > h3 { padding-bottom: 12px; border-bottom: 1px solid var(--divider); }
+.library-dir-modal .directory-picker { margin-bottom: 4px; }
+/* 下载表格窄窗横向滚动，而不是挤压列或撑破弹框 */
+.downloads-modal .dl-list-wrap { overflow-x: auto; }
+.downloads-modal .dl-table { min-width: 460px; }
+body.skin-active .init-wizard .scheme-options label { background: var(--surface-glass); }
+/* 向导内的控件标签原本复用 .modal-hint，层级偏弱，这里提升为正式字段标签 */
+.init-wizard label.modal-hint {
+  display: block; margin: 10px 0 6px;
+  font-size: 13px; font-weight: 600; color: var(--text-soft);
+}
+/* 状态提示：非空时呈轻卡片，与上方说明文字分层；空状态不占位 */
+.init-wizard .ncm-status:not(:empty) {
+  padding: 8px 11px; margin: 0 0 10px; border-radius: 8px;
+  background: var(--surface-2); border: 1px solid var(--divider);
+}
+
+/* 初始化向导：与 ncm / import 弹框同一套「头部 + 可滚动内容 + 固定底栏」结构，
+   保证任意窗口尺寸下「上一步 / 下一步 / 完成」始终完整可见。 */
+.init-wizard { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.init-wizard > h3 { flex: none; margin: 0; padding: 20px 24px 4px; }
+.init-wizard > .modal-hint {
+  flex: none; margin: 0; padding: 0 24px 16px;
+  border-bottom: 1px solid var(--divider);
+}
+.init-wizard .wizard-body {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 24px 20px;
+}
+.init-wizard .modal-actions {
+  flex: none; margin: 0; padding: 14px 24px; gap: 10px;
+  border-top: 1px solid var(--divider); background: var(--surface-2);
+  border-radius: 0 0 16px 16px;
+}
+body.skin-active .init-wizard .modal-actions {
+  background: color-mix(in srgb, var(--surface-glass) 92%, var(--primary) 8%);
+}
+
+/* ---------- 浮层：限制高度并允许 flex 子项收缩，避免小窗口遮挡 ---------- */
+.progress-panel { max-height: calc(100vh - 36px); }
+.progress-panel .pp-log { min-height: 0; flex: 0 1 auto; }
+.lyrics-drawer .lyrics-body { min-height: 0; }
+
+/* ---------- 小窗口适配（GUI 最小 900×600；此处覆盖更窄 / 更矮场景） ---------- */
+@media (max-width: 780px) {
+  #settings-modal .settings-layout { flex-direction: column; }
+  #settings-modal .settings-nav {
+    width: 100%; flex: none; flex-direction: row; overflow-x: auto; overflow-y: hidden;
+    border-right: none; border-bottom: 1px solid var(--divider); padding: 8px;
+  }
+  #settings-modal .settings-tab { width: auto; flex: none; }
+  #settings-modal .settings-tab small { display: none; }
+  #settings-modal .settings-tab.active { box-shadow: inset 0 -3px 0 var(--primary); }
+}
+@media (max-height: 620px) {
+  .downloads-modal .dl-list-wrap { max-height: 34vh; }
+  .progress-panel .pp-log { max-height: 100px; }
+}
+
+/* ============================================================
+   可访问性增强（UI Brief：键盘焦点描边 / 尊重 reduce-motion）
+   ============================================================ */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ============================================================
+   FR-22 重复文件角标 + 批量对比决策窗
+   ============================================================ */
+.dup-badge-btn { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.dup-badge-btn[hidden] { display: none; }
+.dup-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px;
+  background: var(--primary); color: #fff; font-size: 12px; font-weight: 700;
+  line-height: 1;
+}
+.dup-modal {
+  width: min(900px, calc(100vw - 32px)); padding: 0; text-align: left;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.dup-head { padding: 22px 24px 10px; border-bottom: 1px solid var(--divider); }
+.dup-head h3 { margin: 0 0 6px; }
+.dup-head .modal-hint { margin: 0; }
+.dup-body { padding: 16px 24px; overflow-y: auto; flex: 1; min-height: 120px; }
+.dup-count { font-size: 13px; font-weight: 600; color: var(--text-soft); margin-bottom: 4px; }
+.dup-path { font-size: 11px; color: var(--text-soft); opacity: .8; word-break: break-all; margin-bottom: 14px; }
+.dup-groups { display: flex; flex-direction: column; gap: 16px; }
+.dup-group {
+  border: 1px solid var(--divider); border-radius: 12px; padding: 14px;
+  background: var(--surface-2);
+}
+.dup-group-title { font-size: 15px; font-weight: 700; margin: 0 0 4px; word-break: break-all; }
+.dup-group-meta { font-size: 12px; color: var(--text-soft); margin-bottom: 10px; }
+.dup-last { font-size: 12px; color: var(--primary); margin-bottom: 10px; }
+.dup-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+.dup-option {
+  border: 1px solid var(--divider); border-radius: 10px; padding: 10px 12px;
+  background: var(--surface); cursor: pointer; min-width: 0;
+}
+.dup-option.is-selected { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 20%, transparent); }
+.dup-option-top { display: flex; align-items: flex-start; gap: 8px; }
+.dup-option-top input { margin-top: 3px; flex: none; }
+.dup-option-name { font-size: 13px; font-weight: 600; word-break: break-all; flex: 1; min-width: 0; }
+.dup-option-attrs {
+  margin: 8px 0 0 22px; font-size: 11px; line-height: 1.7; color: var(--text-soft);
+  display: grid; grid-template-columns: auto 1fr; gap: 0 8px;
+}
+.dup-option-attrs b { font-weight: 600; color: var(--text); }
+.dup-preview-btn { margin: 10px 0 0 22px; }
+.dup-empty { font-size: 13px; color: var(--text-soft); padding: 24px 0; text-align: center; }
+.dup-actions { margin: 0; padding: 14px 24px; border-top: 1px solid var(--divider); }
+@media (max-height: 620px) {
+  .dup-body { max-height: 52vh; }
+}
+
+/* ============================================================
+   FR-24：一级 / 二级菜单宽度可调 + 收缩、底部音量条
+   ============================================================ */
+:root { --sidebar-w: 144px; --group-w: 230px; --pane-rail-w: 12px; }
+.pane-resizer { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 3; }
+.pane-resizer:hover { background: color-mix(in srgb, var(--primary) 35%, transparent); }
+body.pane-resizing { cursor: col-resize; user-select: none; }
+/* FR-25 第五轮（2026-11-08 用户拍板）：收缩钮改回贯穿全高的细长边界条（collapse rail）——
+   每栏唯一，贴在该栏与相邻栏之间的 12px 间隙上，从栏顶贯穿到栏底，箭头垂直居中。
+   仍是各栏内 position:absolute（不复活 v0.7.1 的 .edge-handle flex 直接子项，故不占布局宽度），
+   相对所属栏定位 → 折叠、窗口缩放都不漂移，收起态窄条里也常驻可点。
+   纵向布局时详情区是水平条，该钮随之转为横贯全宽的水平细条（箭头 ⌃/⌄）。
+   宽度统一由 --pane-rail-w 控制（默认 12px；改成 28px 即为加粗版，一处即可切换）。 */
+.pane-handle {
+  position: absolute; z-index: 5;
+  top: 0; bottom: 0; width: var(--pane-rail-w); height: auto; min-width: 0; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--divider); border-radius: 6px;
+  background: var(--surface); color: var(--text-soft);
+  font-size: 12px; line-height: 1; cursor: pointer; box-shadow: var(--shadow-sm);
+}
+.pane-handle:hover { color: var(--primary); border-color: var(--primary); background: var(--chip-bg); }
+.pane-handle:active { color: var(--on-primary); background: var(--primary); border-color: var(--primary); }
+.pane-handle:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+/* 鼠标悬浮提示：data-tip 由 updatePaneHandleArrows() 按当前展开/收起态动态写入，
+   用伪元素即时显示（不用延迟很长的原生 title），aria-label 同步供读屏。 */
+.pane-handle::after {
+  content: attr(data-tip); position: absolute; z-index: 30; pointer-events: none;
+  left: calc(100% + 8px); top: 50%; transform: translateY(-50%);
+  padding: 6px 10px; border-radius: 6px;
+  background: var(--surface); border: 1px solid var(--divider); box-shadow: var(--shadow-sm);
+  color: var(--text); font-size: 12px; line-height: 1.4; white-space: nowrap;
+  opacity: 0; visibility: hidden; transition: opacity .12s ease;
+}
+.pane-handle:hover::after,
+.pane-handle:focus-visible::after { opacity: 1; visibility: visible; }
+/* 纵向布局的水平细条：气泡改到细条下方，避免盖住歌曲详情内容。 */
+body.detail-inline .detail-handle::after {
+  left: 50%; top: calc(100% + 8px); transform: translateX(-50%);
+}
+.pane-mini-icon { display: none; font-size: 20px; text-align: center; color: var(--primary); padding: 10px 0; }
+/* 收起态：栏体整体隐藏（宽 / 内边距 / 边框 / 背景全部归零），只留栏间间隙里那条
+   贯穿全高细条作为唯一展开入口 —— 把宽度全部让给歌曲列表（FR-25 第五轮·第二轮反馈）。 */
+body.sidebar-collapsed .sidebar {
+  width: 0; min-width: 0; padding: 0; border: 1px solid transparent; box-shadow: none; background: transparent;
+}
+body.sidebar-collapsed .sidebar .tab-btn,
+body.sidebar-collapsed .sidebar .pane-resizer,
+body.sidebar-collapsed .sidebar .pane-mini-icon { display: none; }
+body.group-collapsed .pl-sidebar {
+  width: 0; min-width: 0; min-height: 0; padding: 0; border: 1px solid transparent; box-shadow: none; background: transparent;
+}
+body.group-collapsed .pl-sidebar .pl-sidebar-head,
+body.group-collapsed .pl-sidebar .pl-list,
+body.group-collapsed .pl-sidebar .pane-resizer,
+body.group-collapsed .pl-sidebar .pane-mini-icon { display: none; }
+
+/* ============================================================
+   FR-25 第五轮：歌曲信息栏收缩（右侧独立栏 + 纵向内联条，含专辑封面）
+   收起后该栏留 48px 窄条，唯一展开入口是贯穿全高的细条（不再嵌在内容里）。
+   ============================================================ */
+.detail-pane-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 12px; font-size: 13px; font-weight: 600; color: var(--text-soft);
+}
+.detail-pane > .pane-mini-icon { display: none; }
+/* 贯穿全高细条：相对所属栏（position:relative）绝对定位，外移一个 --pane-rail-w
+   正好落在该栏与相邻栏的 12px 间隙上，不占布局宽度、不压列表文字与计数徽标。
+   一级栏/二级栏贴右间隙、详情栏贴左间隙；折叠前后横向偏移恒定。 */
+#handle-sidebar,
+.pane-handle.group-handle { right: calc(-1 * var(--pane-rail-w)); }
+.detail-handle { left: calc(-1 * var(--pane-rail-w)); }
+/* 纵向布局：详情按钮被移到当前页内联水平条，转为横贯全宽的水平细条贴在条下缘，
+   正好夹在「歌曲详情」与「歌曲列表」之间（不是压在详情上面），箭头 ⌃/⌄ 居中。
+   absolute 不参与流、不加额外 padding → 表头不被往下挤（FR-25 第五轮·表头真机反馈）。 */
+body.detail-inline .detail-handle {
+  left: 0; right: 0; bottom: 0; top: auto;
+  width: auto; height: var(--pane-rail-w);
+}
+/* 收起态：详情栏整体隐藏，只留左间隙里的贯穿全高细条。
+   .detail-scroll 仍是独立滚动容器，栏本体 overflow:visible 让栏外细条可见。 */
+body.detail-collapsed .detail-pane {
+  width: 0; min-width: 0; min-height: 0; padding: 0; border: 1px solid transparent; box-shadow: none; background: transparent;
+}
+body.detail-collapsed .detail-pane .detail-pane-head,
+body.detail-collapsed .detail-pane .cover,
+body.detail-collapsed .detail-pane .detail-fields,
+body.detail-collapsed .detail-pane .detail-scroll,
+body.detail-collapsed .detail-pane .pane-mini-icon { display: none; }
+/* 纵向布局的内联详情条同样收起：压成 12px 高，只留底部横贯全宽的水平细条。 */
+body.detail-collapsed .inline-detail {
+  height: var(--pane-rail-w); min-height: 0; padding: 0; border: 0; background: transparent;
+}
+body.detail-collapsed .inline-detail > *:not(.pane-handle) { display: none; }
+body.detail-collapsed .inline-detail::before { display: none; }
+/* 表头右键定位到「歌曲列表显示项」时的短暂高亮。 */
+#settings-modal .settings-section.focus-flash { animation: settings-focus-flash 1.8s ease-out; }
+@keyframes settings-focus-flash {
+  0%   { border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 30%, transparent); }
+  100% { border-color: var(--divider); box-shadow: var(--shadow-sm); }
+}
+/* 音量条：滑块与静音键均为 flex:none，#seek 保住 min-width:60px 不被挤破 */
+.volume-mute-btn { width: 32px; height: 32px; padding: 0; font-size: 14px; flex: none; }
+#volume { width: 92px; flex: none; accent-color: var(--primary); height: 6px; cursor: pointer; }
+/* #35：断点值必须比默认 176px 更窄，否则窄屏反而比默认态更宽（倒挂）。 */
+@media (max-width: 1000px) {
+  .player-info { width: 140px; }
+  .controls { gap: 6px; }
+  #volume { width: 64px; }
+}
+@media (max-height: 620px) {
+  .player { height: 64px; }
+  #volume { width: 64px; }
+}
+
+/* ============================================================
+   FR-30：联网设置页 / 更新提示条 / 红点
+   提示条为文档流内的一条（非浮层、非模态），不阻断任何既有操作。
+   ============================================================ */
+.update-bar {
+  display: flex; align-items: center; gap: 10px; flex: none;
+  padding: 7px 20px; font-size: 13px; color: var(--text);
+  background: var(--primary-soft); border-bottom: 1px solid var(--divider);
+}
+.update-bar[hidden] { display: none; }
+.update-bar-mark {
+  flex: none; width: 20px; height: 20px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--primary); color: var(--on-primary); font-size: 13px; font-weight: 700;
+}
+.update-bar-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.update-bar a.md-btn { text-decoration: none; flex: none; }
+
+/* 红点：设置按钮「点一次即持久已读」，关于 tab「有更新就常驻」。 */
+#btn-settings.has-dot { position: relative; }
+.update-dot {
+  position: absolute; top: 4px; right: 4px; width: 8px; height: 8px;
+  border-radius: 50%; background: #ef4444; box-shadow: 0 0 0 2px var(--surface);
+  pointer-events: none;
+}
+#settings-modal .settings-tab > .update-dot { top: 9px; right: 9px; }
+.update-dot[hidden] { display: none; }
+
+/* 联网页：开关行 / 下拉行 / 状态区 / TODO 灰显占位。 */
+.net-toggle-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 0;
+  font-size: 13px; color: var(--text); cursor: pointer;
+}
+.net-toggle-row input { cursor: pointer; }
+.net-toggle-row input:disabled { cursor: not-allowed; }
+.net-field-row { display: flex; align-items: center; gap: 12px; padding: 7px 0; font-size: 13px; }
+.net-field-row label { flex: none; width: 92px; color: var(--text-soft); }
+.net-field-row select {
+  flex: 0 1 260px; min-width: 0; height: 30px; padding: 0 8px;
+  border: 1px solid var(--divider-strong); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text); font-size: 13px; cursor: pointer;
+}
+.net-field-row select:disabled { cursor: not-allowed; }
+#set-network-subitems.is-disabled { opacity: .5; }
+#set-network-subitems.is-disabled .net-toggle-row,
+#set-network-subitems.is-disabled .net-field-row { pointer-events: none; }
+.net-toggle-row.net-todo { color: var(--text-muted); cursor: not-allowed; opacity: .85; }
+.net-check-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+.net-check-hint { font-size: 12px; color: var(--text-soft); line-height: 1.5; }
+/* 皮肤激活时提示条仍要保证文字可读（玻璃拟态下补一层实底）。 */
+body.skin-active .update-bar { background: color-mix(in srgb, var(--primary-soft) 88%, var(--surface)); }
+

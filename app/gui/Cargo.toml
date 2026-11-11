@@ -1,0 +1,15 @@
+[package]
+name = "mt-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mt-core = { path = "../core" }
+tauri = { version = "2" }
+# WebView2 运行时预检：复用 Tauri 已链接的 webview2-com-sys 官方检测函数（零新增体积）。
+webview2-com-sys = "=0.39.1"
+windows-core = "=0.62.2"
+
+[build-dependencies]
+tauri-build = { version = "2" }

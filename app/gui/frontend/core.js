@@ -3531,7 +3531,12 @@ function openSettings() {
   renderAbout();
   renderConfigStatus();
   $('set-auto-count').value = String(state.autoPlaylistCount);
-  $('set-auto-count-hint').textContent = '当前：' + state.autoPlaylistCount + ' 首';
+  $('set-auto-count-hint').textContent = (typeof window.KQK.t === 'function')
+    ? window.KQK.t('settings.playback.auto_count', {
+        count: state.autoPlaylistCount,
+        _fallback: '当前：' + state.autoPlaylistCount + ' 首'
+      })
+    : ('当前：' + state.autoPlaylistCount + ' 首');
 }
 
 // ---------- FR-25：歌曲列表表头右键 → 设置 → 列表 → 歌曲列表显示项 ----------
@@ -5200,6 +5205,9 @@ function startUpdateCheckOnce() {
 // 不再在脚本加载时自动执行；改由薄壳 app.js 在 DOM 就绪后触发，使 core 逻辑与 skin 装配解耦。
 window.KQK = window.KQK || {};
 window.KQK.boot = function boot() {
+  // 多语言骨架：DOM 就绪后一次性应用带 data-i18n 的静态节点。
+  // 防御式调用：旧 dist/frontend 缺少 lang/ 脚本时优雅降级为中文原文，不阻断启动。
+  if (typeof window.KQK.applyI18n === 'function') window.KQK.applyI18n();
   initAppearanceEvents();
   setupMediaSession();
   applyAppearance();

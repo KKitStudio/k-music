@@ -574,20 +574,20 @@
       </div>
 
         <div class="settings-section" id="ap-tray-section">
-          <h4>窗口与托盘</h4>
+          <h4 data-i18n="settings.tray.title">窗口与托盘</h4>
           <div class="appearance-block">
             <label class="switch-row">
-              <span>关闭时最小化到托盘</span>
+              <span data-i18n="settings.tray.close">关闭时最小化到托盘</span>
               <input type="checkbox" id="ap-close-to-tray" />
             </label>
-            <div class="ap-subhint">关闭主窗口（× / Alt+F4 / 任务栏右键关闭）时最小化到托盘而非退出。</div>
+            <div class="ap-subhint" data-i18n="settings.tray.close_hint">关闭主窗口（× / Alt+F4 / 任务栏右键关闭）时最小化到托盘而非退出。</div>
           </div>
           <div class="appearance-block">
             <label class="switch-row">
-              <span>最小化时隐藏到托盘</span>
+              <span data-i18n="settings.tray.minimize">最小化时隐藏到托盘</span>
               <input type="checkbox" id="ap-minimize-to-tray" />
             </label>
-            <div class="ap-subhint">最小化主窗口时隐藏到托盘（任务栏按钮消失），仅托盘可唤回。</div>
+            <div class="ap-subhint" data-i18n="settings.tray.minimize_hint">最小化主窗口时隐藏到托盘（任务栏按钮消失），仅托盘可唤回。</div>
           </div>
           <div class="ap-tray-hint" id="ap-tray-hint"></div>
         </div>
@@ -987,6 +987,9 @@
     <div class="ctx-menu-items" id="ctx-menu-items"></div>
   </div>
 
+  <!-- 多语言骨架：字典 + t() 同步加载，必须早于 core.js（否则 boot 内 applyI18n 无运行时） -->
+  <script src="lang/zh-CN.js"></script>
+  <script src="lang/i18n.js"></script>
   <script src="core.js"></script>
   <script src="app.js"></script>
 </body>

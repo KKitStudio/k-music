@@ -1,1 +1,1 @@
-{}
+{"update-download":{"identifier":"update-download","description":"允许更新检测页/关于页用系统默认浏览器打开下载链接与项目主页（外链修复 A 方案）","local":true,"windows":["main"],"permissions":["shell:allow-open"]}}

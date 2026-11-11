@@ -2287,7 +2287,7 @@ dependencies = [
 
 [[package]]
 name = "mt-cli"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "anyhow",
  "mt-core",
@@ -2295,7 +2295,7 @@ dependencies = [
 
 [[package]]
 name = "mt-core"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -2312,7 +2312,7 @@ dependencies = [
 
 [[package]]
 name = "mt-gui"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "mt-core",
  "tauri",

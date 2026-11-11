@@ -1631,7 +1631,13 @@ body.detail-collapsed .inline-detail::before { display: none; }
   background: var(--primary); color: var(--on-primary); font-size: 13px; font-weight: 700;
 }
 .update-bar-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.update-bar a.md-btn { text-decoration: none; flex: none; }
+/* v0.11.2：提示条「前往下载」是 <a>，在 flex 容器里被块化后只给 height 不会让文字垂直居中，
+   与「稍后」<button>（UA 默认内容居中）差约 5–6px；复用关于页 .about-update-download 的写法，
+   只作用于提示条内的 <a>，不动 .md-btn 基础规则（避免影响所有按钮）。 */
+.update-bar a.md-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  text-decoration: none; flex: none;
+}
 
 /* 红点：设置按钮「点一次即持久已读」，关于 tab「有更新就常驻」。 */
 #btn-settings.has-dot { position: relative; }

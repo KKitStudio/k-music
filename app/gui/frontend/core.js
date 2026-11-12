@@ -4101,6 +4101,7 @@ function clampSkinBlur(v) {
 }
 
 // #37：主题色预设（8 色）。名字只描述颜色，不与布局「经典 / 现代」混淆。
+// 品牌蓝改为更亮品牌蓝 #4F7CFF（v0.11.4 起，浅色/深色都醒目），与出厂深海背景皮肤自动强调色一致。
 const ACCENT_PRESETS = [
   { name: '品牌蓝', hex: '#4F7CFF' },
   { name: '青绿', hex: '#00897b' },
@@ -4118,7 +4119,7 @@ const SKIN_PRESETS = [
   { id: 'sakura', name: '樱粉', gradient: 'linear-gradient(135deg,#ffecd2,#fcb69f)', accent: '#fb8c00' },
   { id: 'mint', name: '薄荷', gradient: 'linear-gradient(135deg,#a1ffce,#faffd1)', accent: '#00897b' },
   { id: 'purple', name: '紫霞', gradient: 'linear-gradient(135deg,#667eea,#764ba2)', accent: '#7e57c2' },
-  { id: 'ocean', name: '深海', gradient: 'linear-gradient(135deg,#2193b0,#6dd5ed)', accent: '#0288d1' },
+  { id: 'ocean', name: '深海', gradient: 'linear-gradient(135deg,#2193b0,#6dd5ed)', accent: '#4F7CFF' },
 ];
 
 // 顶栏主题切换图标（SVG，避免依赖图片资源）。
@@ -4137,10 +4138,11 @@ function resolveTheme(mode) {
 }
 
 function defaultAppearance() {
-  // 默认跟随系统：未保存过偏好时不做任何显式主题假设；accent 为空表示用皮肤自带默认色。
+  // 默认浅色主题（v0.11.4 起，用户要求首屏浅色）；accent 取更亮品牌蓝 #4F7CFF（浅色/深色都醒目），
+  // 与出厂深海背景皮肤自动强调色一致，未设背景皮肤时作为回退强调色。
   return {
-    theme: 'system',
-    accent: null,
+    theme: 'light',
+    accent: '#4F7CFF',
     lyricsOpacity: LYRICS_OPACITY_DEFAULT,
     skinBlur: SKIN_BLUR_DEFAULT,
     skin: { enabled: false, type: null, src: null, gradient: null, name: null, accent: null },
@@ -4521,7 +4523,7 @@ function renderAppearanceUI() {
 // ---------- 布局切换（classic / modern）----------
 // 共享 core.js 引擎，仅换 CSS：boot 时已按 layout_skin 预设 <link> 与 html.skin-modern 类，
 // 这里提供运行时切换 + 持久化。皮肤是「整体配色 / 视觉」层，与底层背景皮肤（skin_type）正交。
-let layoutSkin = 'classic';
+let layoutSkin = 'modern';
 // #30：modern 会强制专辑进入封面墙；切回 classic 必须还原用户先前的视图，
 // 否则 classic 的专辑页会残留 grid（破坏 classic 1:1）。
 let albumViewBeforeModern = 'list';

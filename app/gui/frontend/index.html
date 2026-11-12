@@ -19,7 +19,7 @@
     try { local = JSON.parse(localStorage.getItem('kqk_appearance') || 'null'); } catch (e) {}
     // saved=false 表示旧配置尚未迁移：此时沿用本地旧偏好，避免首屏与迁移结果不一致。
     var src = (boot && boot.saved) ? boot : (local || {});
-    var theme = ['light', 'system', 'dark'].indexOf(src.theme) >= 0 ? src.theme : 'system';
+    var theme = ['light', 'system', 'dark'].indexOf(src.theme) >= 0 ? src.theme : 'light';
     var dark = theme === 'dark' || (theme === 'system' &&
       typeof window.matchMedia === 'function' &&
       window.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -521,8 +521,8 @@
           <div class="ap-label" id="ap-layout-label">布局</div>
           <!-- 与上方「主题模式」同款分段控件，不再用下拉。 -->
           <div class="seg" id="ap-layout-skin" role="group" aria-label="布局">
-            <button class="seg-btn active" type="button" data-skin="classic" aria-pressed="true">经典（默认）</button>
-            <button class="seg-btn" type="button" data-skin="modern" aria-pressed="false">现代</button>
+            <button class="seg-btn" type="button" data-skin="classic" aria-pressed="false">经典</button>
+            <button class="seg-btn active" type="button" data-skin="modern" aria-pressed="true">现代（默认）</button>
           </div>
           <div class="ap-subhint">切换整体界面风格（配色 / 视觉），实时生效并自动保存，下次启动沿用。</div>
         </div>

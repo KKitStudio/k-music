@@ -254,9 +254,9 @@ fn default_lyrics_opacity() -> u32 { LYRICS_OPACITY_DEFAULT }
 fn default_skin_blur() -> u32 { SKIN_BLUR_DEFAULT }
 fn default_update_source() -> String { UPDATE_SOURCE_DEFAULT.to_string() }
 fn default_update_interval() -> String { UPDATE_INTERVAL_DEFAULT.to_string() }
-/// 布局皮肤（界面整体风格）：classic(经典) / modern(现代)。默认 classic。
+/// 布局皮肤（界面整体风格）：classic(经典) / modern(现代)。默认 modern（v0.6 起，配合图标蓝强调色 + 深海背景皮肤）。
 /// 与 `skin_type`/`skin_preset`（底层背景皮肤）正交：前者换「布局风格」，后者换「背景图」。
-fn default_layout_skin() -> String { "classic".to_string() }
+fn default_layout_skin() -> String { "modern".to_string() }
 /// 列表密度：comfortable(舒适) / compact(紧凑)。默认 comfortable。
 fn default_list_density() -> String { "comfortable".to_string() }
 
@@ -450,24 +450,26 @@ pub struct UiConfig {
     // 仍由前端 localStorage 兜底；配置文件只存能复现「主题方案」的轻量字段。
     // 一律用 String（空串 = 未设置），避免 Option::None 在 TOML 序列化时被跳过，
     // 导致「清除皮肤 / 恢复默认」时旧值无法被就地覆盖。
-    /// 主题模式：light(浅色) / system(跟随系统) / dark(暗色)。默认 system。
+    /// 主题模式：light(浅色) / system(跟随系统) / dark(暗色)。默认 light（v0.11.4 起，用户要求首屏浅色）。
     #[serde(default = "default_theme")]
     pub theme: String,
     /// 手动主题色（#RRGGBB，空串表示用各布局皮肤的出厂默认色）。
     /// #37 起恢复消费：前端写 `--primary` / `--primary-dark`，并同步原生标题栏颜色。
-    #[serde(default)]
+    /// 默认 #4F7CFF（更亮品牌蓝，浅色/深色都醒目），作为清除背景皮肤后的回退强调色。
+    #[serde(default = "default_accent")]
     pub accent: String,
-    /// 皮肤类型：""(无皮肤) / preset(预设渐变) / custom(自定义图片)。
-    #[serde(default)]
+    /// 皮肤类型：""(无皮肤) / preset(预设渐变) / custom(自定义图片)。默认 preset（深海蓝背景）。
+    #[serde(default = "default_skin_type")]
     pub skin_type: String,
-    /// 预设皮肤 id（仅 skin_type=preset 有效，如 aurora / sakura / mint / purple / ocean）。
-    #[serde(default)]
+    /// 预设皮肤 id（仅 skin_type=preset 有效，如 aurora / sakura / mint / purple / ocean）。默认 ocean。
+    #[serde(default = "default_skin_preset")]
     pub skin_preset: String,
     /// 皮肤背景自动提取的强调色（#RRGGBB）。#37 起恢复消费：选图片时 64×64 canvas 取色，
     /// 落盘后首屏脚本可提前预设，重启无需重新解码图片；无皮肤时应为空串。
-    #[serde(default)]
+    /// 默认 #4F7CFF（更亮品牌蓝，与出厂强调色一致，深海背景的自动强调色）。
+    #[serde(default = "default_skin_accent")]
     pub skin_accent: String,
-    /// 布局皮肤（界面整体风格）：classic(经典) / modern(现代)。默认 classic。
+    /// 布局皮肤（界面整体风格）：classic(经典) / modern(现代)。默认 modern（v0.6 起）。
     /// 与 `skin_type`/`skin_preset`（底层背景皮肤）正交：前者换「布局风格」，后者换「背景图」。
     #[serde(default = "default_layout_skin")]
     pub layout_skin: String,
@@ -478,7 +480,9 @@ pub struct UiConfig {
     /// 是否曾由前端显式保存过外观方案。
     /// 用于区分「旧版本从未写入外观（此时应把 localStorage 里的老偏好迁移进配置）」与
     /// 「用户显式把主题设成默认值」——两者在字段值上完全一样，必须靠这个标志判别。
-    #[serde(default)]
+    /// v0.6 起默认 true：出厂即携带 modern + 深海蓝背景 + 图标蓝强调色这一完整外观方案，
+    /// 首跑须走 `if (cfg.saved)` 分支保留该默认，而非被 `!saved` 迁移分支清空皮肤。
+    #[serde(default = "default_appearance_saved")]
     pub appearance_saved: bool,
     /// 自动（无名）播放列表最多列入的歌曲数 n（默认 20 / 上限 200 / 下限 1）。
     /// **只约束队列生成器**：不读不改任何列表的 DB 内容、UI 行数、导出内容；
@@ -560,13 +564,13 @@ impl Default for UiConfig {
             width_imported_at: default_width_imported_at(),
             width_created_at: default_width_created_at(),
             theme: default_theme(),
-            accent: String::new(),
-            skin_type: String::new(),
-            skin_preset: String::new(),
-            skin_accent: String::new(),
+            accent: default_accent(),
+            skin_type: default_skin_type(),
+            skin_preset: default_skin_preset(),
+            skin_accent: default_skin_accent(),
             layout_skin: default_layout_skin(),
             list_density: default_list_density(),
-            appearance_saved: false,
+            appearance_saved: default_appearance_saved(),
             auto_playlist_count: default_auto_playlist_count(),
             sidebar_width: default_sidebar_width(),
             group_width: default_group_width(),
@@ -737,7 +741,7 @@ impl UiConfig {
                 }
             }
         }
-        // 外观偏好：非法主题回退 system；颜色必须是 #RGB / #RRGGBB；
+        // 外观偏好：非法主题回退 light（default_theme）；颜色必须是 #RGB / #RRGGBB；
         // 皮肤类型只认 ""/preset/custom，且非预设皮肤不留 preset id、无皮肤不留派生色。
         if !THEME_MODES.contains(&self.theme.as_str()) {
             self.theme = default_theme();
@@ -757,7 +761,7 @@ impl UiConfig {
         if self.skin_type.is_empty() {
             self.skin_accent.clear();
         }
-        // 布局皮肤：只认 classic / modern，其余回退默认 classic。
+        // 布局皮肤：只认 classic / modern，其余回退默认 modern。
         if !matches!(self.layout_skin.as_str(), "classic" | "modern") {
             self.layout_skin = default_layout_skin();
         }
@@ -797,7 +801,28 @@ impl UiConfig {
 pub const THEME_MODES: [&str; 3] = ["light", "system", "dark"];
 
 fn default_theme() -> String {
-    "system".to_string()
+    "light".to_string()
+}
+/// 手动主题色出厂默认：更亮品牌蓝 #4F7CFF（浅色/深色都醒目，替代 0.11.3 的深海军蓝）。
+/// 作为清除背景皮肤后的回退强调色（空串会退回到各布局皮肤 CSS 出厂色，故此处显式给出）。
+fn default_accent() -> String {
+    "#4F7CFF".to_string()
+}
+/// 背景皮肤类型出厂默认：preset（深海蓝渐变背景）。
+fn default_skin_type() -> String {
+    "preset".to_string()
+}
+/// 背景皮肤预设 id 出厂默认：ocean（深海蓝）。
+fn default_skin_preset() -> String {
+    "ocean".to_string()
+}
+/// 背景皮肤自动强调色出厂默认：更亮品牌蓝 #4F7CFF（与出厂强调色一致）。
+fn default_skin_accent() -> String {
+    "#4F7CFF".to_string()
+}
+/// 出厂即携带完整外观方案（modern + 深海蓝 + 图标蓝），首跑须保留默认而非清空。
+fn default_appearance_saved() -> bool {
+    true
 }
 
 /// 是否为 #RGB / #RRGGBB 形式的颜色（配置文件里手写的颜色必须过这道校验）。

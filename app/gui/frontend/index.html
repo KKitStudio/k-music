@@ -96,6 +96,26 @@
     <button id="btn-switch-library" class="icon-btn" type="button" title="切换曲库" aria-label="切换曲库">
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 6h-7.59l3.29-3.29L16 2l-6 6 6 6 1.7-1.71L13.41 10H21V6zM3 18h7.59l-3.29 3.29L8 22l6-6-6-6-1.7 1.71L10.59 14H3v4z"/></svg>
     </button>
+    <!-- 曲库维护操作组：来源管理（纯图标 + 悬浮提示，未决状态为无数字小圆点）与重新扫描，紧邻切换曲库 -->
+    <div class="lib-extra-actions">
+      <button id="btn-sources" class="md-btn icon-btn lib-btn" type="button" title="曲库来源管理" aria-label="曲库来源管理">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 9 4.5-9 4.5-9-4.5 9-4.5Z"/><path d="m3 12 9 4.5 9-4.5"/><path d="m3 16.5 9 4.5 9-4.5"/></svg>
+        <i id="sources-badge" class="src-dot" hidden></i>
+      </button>
+      <button id="btn-rescan" class="md-btn icon-btn lib-btn" type="button" title="重新扫描曲库" aria-label="重新扫描曲库">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
+      </button>
+    </div>
+    <!-- v0.12.3：搜索 / 计数 / 刷新上移到顶栏「重新扫描」图标右侧，原 .toolbar 整行隐藏。
+         放大镜图标由 CSS 伪元素绘制（pointer-events:none，点击穿透到 input 不影响聚焦）。
+         #search 只有一个 DOM 节点：classic 是顶栏 flex 项，modern 由 CSS fixed 落到 rail 中段。 -->
+    <div class="topbar-search" id="topbar-search">
+      <input id="search" type="search" placeholder="搜索曲名 / 艺人 / 专辑" aria-label="搜索曲名 / 艺人 / 专辑" />
+    </div>
+    <div class="topbar-extras" id="topbar-extras">
+      <span id="track-count" class="track-count">共 0 首</span>
+      <button id="btn-refresh" class="md-btn">刷新</button>
+    </div>
     <div class="status" id="status">加载中…</div>
     <div class="actions">
       <button id="btn-theme" class="md-btn icon-btn" type="button" title="切换明暗主题" aria-label="切换主题"></button>
@@ -111,19 +131,9 @@
     <button id="win-close" class="win-btn win-close" type="button" aria-label="关闭" title="关闭">×</button>
   </div>
 
-  <section class="toolbar">
-    <input id="search" type="search" placeholder="搜索曲名 / 艺人 / 专辑" />
-    <button id="btn-scan" class="md-btn">扫描曲库</button>
-    <!-- FR-22 W15：未决重复组数角标。boot scan 只静默登记，启动不弹窗；点角标或点「扫描曲库」才打开对比窗。 -->
-    <button id="btn-duplicates" class="md-btn dup-badge-btn" type="button" hidden
-            title="查看待处理的重复文件（只统计当前曲库）">
-      待处理重复 <span id="dup-badge" class="dup-badge">0</span>
-    </button>
-    <button id="btn-import" class="md-btn">导入</button>
-    <button id="btn-import-netease" class="md-btn">从本地网易云曲库更新</button>
-    <span id="track-count" class="track-count">共 0 首</span>
-    <button id="btn-refresh" class="md-btn">刷新</button>
-  </section>
+  <!-- v0.12.3：搜索 / 计数 / 刷新已上移到 .topbar（重新扫描图标右侧），本行整行隐藏。
+       DOM 保留：initStageTitle() / switchTab() 仍写 data-title，窗口拖拽委托仍认 .toolbar。 -->
+  <section class="toolbar"></section>
 
   <div id="hint" class="hint-bar"></div>
 
@@ -393,15 +403,17 @@
     </div>
   </div>
 
-  <!-- 初始化向导（首次启动 / 曲库被移除时） -->
+  <!-- 初始化向导（首次启动 / 曲库被移除时）
+       NCM 工具是条件步骤：仅当所选来源/曲库被判为网易云曲库、或探测到 .ncm 文件时才进入
+       （由 renderWizStep 动态编排步骤，故步骤标题不再写死编号）。 -->
   <div class="modal-mask" id="init-wizard" hidden>
     <div class="modal init-wizard">
       <h3>欢迎使用 K music — 初始化曲库</h3>
-      <p class="modal-hint">首次使用需指定曲库目录，并选择文件组织方式与 NCM 工具。</p>
+      <p class="modal-hint">首次使用需指定曲库目录并选择文件组织方式；如有本地歌曲来源或 .ncm 文件，可继续按提示设置。</p>
 
       <div class="wizard-body">
       <div class="wizard-step" data-step="1">
-        <h4>第 1 步：指定曲库目录</h4>
+        <h4>指定曲库目录</h4>
         <p class="modal-hint">音乐文件与曲库数据（.mt）都将存放在此目录下。</p>
         <div class="directory-picker">
           <input id="wiz-library-input" type="text" autocomplete="off" placeholder="选择或输入曲库根目录" />
@@ -414,7 +426,7 @@
       </div>
 
       <div class="wizard-step" data-step="2" hidden>
-        <h4>第 2 步：选择曲库文件结构方案</h4>
+        <h4>选择曲库文件结构方案</h4>
         <p class="modal-hint">决定音乐文件在曲库中的组织方式（之后可在设置中切换并重排）。</p>
         <div class="scheme-options">
           <label><input type="radio" name="wiz-scheme" value="artist_album" checked /> 艺人 / 专辑 / 曲目（推荐）</label>
@@ -424,9 +436,21 @@
         </div>
       </div>
 
+      <!-- 通用来源目录（可选）：不再是专门「导入网易云曲库」的界面，选完由后端自动检测类型 -->
       <div class="wizard-step" data-step="3" hidden>
-        <h4>第 3 步：NCM 解密工具（可选）</h4>
-        <p class="modal-hint">若你有 .ncm 格式音乐，可在此指定 ncmdump.exe；没有可稍后在设置里配置。</p>
+        <h4>来源目录（可选）</h4>
+        <p class="modal-hint">可指定一个本地歌曲目录作为更新源；选定后自动检测它是否为网易云曲库、是否含 .ncm 文件。没有可跳过。</p>
+        <div class="directory-picker">
+          <input id="wiz-netease-input" type="text" autocomplete="off" placeholder="来源目录（可选）" />
+          <button id="wiz-netease-browse" class="md-btn" type="button">浏览…</button>
+        </div>
+        <div id="wiz-netease-status" class="ncm-status"></div>
+      </div>
+
+      <!-- 条件步骤：仅当探测命中网易云曲库或 .ncm 文件时才出现 -->
+      <div class="wizard-step" data-step="4" hidden id="wiz-ncm-step">
+        <h4>NCM 解密工具（可选）</h4>
+        <p class="modal-hint">检测到网易云曲库或 .ncm 文件，可在此指定 ncmdump.exe；没有可跳过，之后也能在「来源管理」里补配。</p>
         <p class="modal-hint">请注意，转换加密音乐文件的行为本身可能涉及版权问题。请确保你转换的音乐是已购买或拥有合法使用权限的，仅供自己方便使用，不要用于传播。</p>
         <div id="wiz-ncm-status" class="ncm-status">未指定 NCM 工具</div>
         <div class="directory-picker">
@@ -434,17 +458,6 @@
           <button id="wiz-ncm-pick" class="md-btn" type="button">选择文件…</button>
         </div>
         <label class="copy-opt"><input type="checkbox" id="wiz-ncm-copy" checked /> 复制到本曲库 .mt/tools</label>
-      </div>
-
-      <div class="wizard-step" data-step="4" hidden>
-        <h4>第 4 步：本地网易云音乐曲库目录（可选）</h4>
-        <p class="modal-hint">若你已在网易云 App 内维护了一份本地曲库，可在此指定其目录；
-          之后点「从本地网易云曲库更新」即可把新歌增量合并进来（只加不删，绝不删除原曲库文件）。没有可跳过。</p>
-        <div class="directory-picker">
-          <input id="wiz-netease-input" type="text" autocomplete="off" placeholder="本地网易云音乐曲库目录（可选）" />
-          <button id="wiz-netease-browse" class="md-btn" type="button">浏览…</button>
-        </div>
-        <div id="wiz-netease-status" class="ncm-status"></div>
       </div>
       </div><!-- /wizard-body -->
 
@@ -628,6 +641,15 @@
           <div class="settings-pane" data-pane="import">
             <div class="settings-pane-head"><h4>导入</h4><p>解密工具与本地网易云曲库增量合并</p></div>
 
+      <!-- 来源相关配置统一由「来源管理」维护，设置里只留一个跳转入口，避免两处写同一份配置。
+           旧控件以 hidden 容器保留：core.js 的既有事件绑定 / 回填与 demo 断言继续有效，但用户不可见、不可写。 -->
+      <div class="settings-section sources-jump">
+        <h4 data-i18n="sources.title">曲库来源管理</h4>
+        <p class="modal-hint">更新源目录、导入方式（复制 / 移动）、NCM 工具与 .ncm 积压都在这里统一配置。</p>
+        <button id="set-open-sources" class="md-btn primary" type="button" data-i18n="sources.open">打开来源管理</button>
+      </div>
+
+      <div hidden class="legacy-source-config">
       <div class="settings-section">
         <h4>NCM 解密工具</h4>
         <p class="modal-hint">请注意，转换加密音乐文件的行为本身可能涉及版权问题。请确保你转换的音乐是已购买或拥有合法使用权限的，仅供自己方便使用，不要用于传播。</p>
@@ -648,9 +670,11 @@
           <input id="set-netease-input" type="text" autocomplete="off" placeholder="本地网易云音乐曲库目录（可选）" />
           <button id="set-netease-browse" class="md-btn" type="button">浏览…</button>
         </div>
+        <span id="set-netease-status" class="modal-hint"></span>
         <button id="set-netease-apply" class="md-btn primary" type="button">保存目录</button>
         <button id="set-netease-update" class="md-btn primary" type="button">从本地网易云曲库更新</button>
       </div>
+      </div><!-- /legacy-source-config -->
 
       <div class="settings-section">
         <h4>同步 / 导入历史</h4>
@@ -894,6 +918,115 @@
         <button id="dup-apply" class="md-btn primary" type="button">应用所选</button>
       </div>
       <audio id="dup-preview-audio" preload="none"></audio>
+    </div>
+  </div>
+
+  <!-- 曲库来源管理：独立弹窗，复用设置面板「左侧列表 + 右侧信息与设置」骨架与样式类 -->
+  <div class="modal-mask" id="sources-modal" hidden>
+    <div class="modal settings-modal sources-modal">
+      <div class="settings-head">
+        <div class="settings-head-text">
+          <h3 data-i18n="sources.title">曲库来源管理</h3>
+          <p data-i18n="sources.subtitle">管理歌曲从哪些本地目录进入曲库</p>
+        </div>
+        <button id="sources-close" class="md-btn primary" type="button">关闭</button>
+      </div>
+
+      <div class="settings-layout">
+        <nav class="settings-nav" aria-label="曲库来源列表">
+          <div id="sources-list" class="sources-list"></div>
+          <div class="sources-fixed-group">
+            <button class="settings-tab sources-fixed" type="button" data-pane="manual">
+              <span><strong>手动导入文件夹</strong><small>一次性复制 / 移动</small></span>
+            </button>
+            <button class="settings-tab sources-fixed" type="button" data-pane="duplicates">
+              <span><strong data-i18n="sources.duplicates">待处理重复</strong><small id="sources-dup-sub">逐组对比与决策</small></span>
+              <i id="sources-nav-badge" class="dup-badge" hidden>0</i>
+            </button>
+            <button class="settings-tab sources-fixed" type="button" data-pane="ncm">
+              <span><strong data-i18n="sources.ncm">NCM 工具</strong><small>解密工具与积压转换</small></span>
+            </button>
+          </div>
+          <button id="sources-add" class="md-btn primary sources-add" type="button" data-i18n="sources.add">＋ 新增来源</button>
+        </nav>
+
+        <div class="settings-content">
+          <!-- 来源详情 / 新增来源（同一表单，由 state.sourcesCurrentId 区分） -->
+          <div class="settings-pane active" data-pane="source">
+            <div class="settings-pane-head">
+              <h4 id="src-detail-title">来源详情</h4>
+              <p id="src-detail-sub">选择左侧来源查看与编辑；更新源目录后可自动检测类型。</p>
+            </div>
+            <div id="src-empty" class="sources-empty">还没有来源。点左下「新增来源」添加一个本地歌曲目录。</div>
+            <div id="src-form" hidden>
+              <div class="settings-section">
+                <h4>基本信息</h4>
+                <label class="src-label" for="src-name">名称</label>
+                <div class="directory-picker"><input id="src-name" type="text" autocomplete="off" placeholder="来源名称" /></div>
+                <label class="src-label" for="src-path">来源目录</label>
+                <div class="directory-picker">
+                  <input id="src-path" type="text" autocomplete="off" placeholder="选择或输入目录" />
+                  <button id="src-browse" class="md-btn" type="button">浏览…</button>
+                </div>
+                <div id="src-probe" class="ncm-status"></div>
+              </div>
+              <div class="settings-section">
+                <h4>来源类型</h4>
+                <label class="copy-opt"><input type="checkbox" id="src-netease" /> 这是网易云曲库（自动检测得出，可手动更正）</label>
+                <p class="modal-hint">网易云曲库沿用「只加不删、不联网不登录」逻辑，并强制使用复制方式。</p>
+              </div>
+              <div class="settings-section">
+                <h4>导入方式</h4>
+                <div class="scheme-options imp-options" id="src-mode-options">
+                  <label class="imp-option">
+                    <input type="radio" name="src-mode" value="copy" checked />
+                    <span class="imp-option-body"><span class="imp-option-title">复制<span class="imp-badge">推荐</span></span><span class="imp-option-desc">保留源文件，把副本加入曲库</span></span>
+                  </label>
+                  <label class="imp-option">
+                    <input type="radio" name="src-mode" value="move" />
+                    <span class="imp-option-body"><span class="imp-option-title">移动</span><span class="imp-option-desc">源文件移入曲库，原位置不再保留</span></span>
+                  </label>
+                </div>
+                <label class="copy-opt"><input type="checkbox" id="src-enabled" checked /> 启用此来源</label>
+              </div>
+              <div class="modal-actions src-actions">
+                <button id="src-save" class="md-btn primary" type="button">保存设置</button>
+                <button id="src-import" class="md-btn primary" type="button">立即更新</button>
+                <button id="src-delete" class="md-btn" type="button">删除来源</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 待处理重复：内嵌一份同构 DOM，与 #duplicates-modal 共用渲染 / 决策逻辑 -->
+          <div class="settings-pane" data-pane="duplicates">
+            <div class="settings-pane-head"><h4>待处理重复</h4><p>逐组选择要保留的版本；「稍后处理」不改动任何文件。</p></div>
+            <div class="settings-section">
+              <div class="dup-count" id="src-dup-count"></div>
+              <div class="dup-path" id="src-dup-path"></div>
+              <div id="src-dup-groups" class="dup-groups"></div>
+              <div class="modal-actions dup-actions">
+                <button id="src-dup-later" class="md-btn" type="button">稍后处理</button>
+                <button id="src-dup-apply" class="md-btn primary" type="button">应用所选</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- NCM 工具：不再有独立引导界面，向导跳过后在这里补配 -->
+          <div class="settings-pane" data-pane="ncm">
+            <div class="settings-pane-head"><h4>NCM 解密工具</h4><p>请确保转换的是已购买或拥有合法使用权限的音乐，仅供自己方便使用，不要传播。</p></div>
+            <div class="settings-section">
+              <div id="src-ncm-status" class="settings-value"></div>
+              <div class="directory-picker">
+                <input id="src-ncm-input" type="text" autocomplete="off" placeholder="ncmdump.exe 路径（可选）" />
+                <button id="src-ncm-pick" class="md-btn" type="button">选择文件…</button>
+              </div>
+              <label class="copy-opt"><input type="checkbox" id="src-ncm-copy" checked /> 复制到本曲库 .mt/tools</label>
+              <button id="src-ncm-apply" class="md-btn primary" type="button">应用 NCM 工具</button>
+              <button id="src-ncm-organize" class="md-btn" type="button">转换积压 .ncm</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 

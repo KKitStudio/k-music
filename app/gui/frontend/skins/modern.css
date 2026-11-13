@@ -54,6 +54,11 @@ html.skin-modern {
   --radius-lg: 18px;
   --rail-w: 236px;
   --rail-head-h: 152px;
+  /* v0.12.2：曲库卡片右侧三枚维护图标的尺寸 / 间距 / 定位基准。
+     无头 Edge 实测 brand 高 59px + padding-top 16 + gap 6 => 卡片 top=81px、高 46px。
+     窄屏 @media 在文件后半段覆盖尺寸值，故基础值必须定义在 media 之前。 */
+  --rail-hbtn: 28px; --rail-hgap: 4px; --rail-hinset: 22px;
+  --rail-hpad: 104px; --rail-htop: 81px; --rail-hh: 46px;
   --stage-head-h: 62px;
   --player-h: 80px;
 }
@@ -136,8 +141,13 @@ html.skin-modern .library-name::before {
   font-size: 9.5px; font-weight: 400; letter-spacing: .14em; text-transform: uppercase;
   color: var(--rail-muted);
 }
+/* v0.12.2：切换曲库与「来源管理 / 重新扫描」两枚图标同排收进曲库卡片右侧。
+   位置由 --rail-h* 变量统一计算（定义见本文件 v0.12.2 段），窄屏断点只改变量。 */
 html.skin-modern #btn-switch-library {
-  position: absolute; right: 18px; top: 78px;
+  position: absolute;
+  right: calc(var(--rail-hinset) + var(--rail-hbtn) + var(--rail-hbtn) + var(--rail-hgap) + var(--rail-hgap));
+  top: calc(var(--rail-htop) + (var(--rail-hh) - var(--rail-hbtn)) / 2);
+  width: var(--rail-hbtn); height: var(--rail-hbtn);
   color: var(--rail-muted); opacity: .9;
 }
 html.skin-modern #btn-switch-library:hover { background: var(--rail-hover); opacity: 1; }
@@ -159,13 +169,10 @@ html.skin-modern .status::before {
 html.skin-modern .actions {
   position: fixed; left: 12px; bottom: 12px;
   width: calc(var(--rail-w) - 24px); z-index: 31;
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
   padding-top: 10px; border-top: 1px solid var(--rail-line);
 }
-html.skin-modern .actions::before {
-  content: "K music"; font-size: 10px; letter-spacing: .06em;
-  color: var(--rail-muted); opacity: .55;
-}
+/* v0.12.3：左下「K music」与顶部 brand 重复，已移除（不再声明 ::before）。 */
 html.skin-modern .actions .md-btn {
   background: transparent; color: var(--rail-muted); border-color: transparent;
   font-size: 11.5px;
@@ -176,8 +183,9 @@ html.skin-modern .actions .md-btn:hover { background: var(--rail-hover); color: 
 html.skin-modern .sidebar {
   position: fixed; left: 0; top: var(--rail-head-h); bottom: 0;
   width: var(--rail-w); height: auto; z-index: 30;
-  /* 底部留给曲库状态块 + 版本/设置块，避免 Tab 与它们重叠。 */
-  padding: 6px 12px 136px; gap: 2px;
+  /* 顶部 50px 让位给 fixed 的 .topbar-search（v0.12.3）；
+     底部留给曲库状态块 + 版本/设置块，避免 Tab 与它们重叠。 */
+  padding: 50px 12px 136px; gap: 2px;
   background: var(--rail); color: var(--rail-text);
   border: none; border-right: 1px solid var(--rail-line);
   border-radius: 0; box-shadow: none;
@@ -198,39 +206,43 @@ html.skin-modern .tab-btn.active {
   border-radius: 8px;
 }
 
-/* ---------- stage 顶栏：动态页标题（switchTab 写 data-title）+ 搜索/操作 ---------- */
+/* ---------- v0.12.3：stage 顶栏整行隐藏，页名由 rail 高亮 Tab 承担 ---------- */
+/* 保留 DOM 与 flex-wrap:nowrap 声明（demo 断言读取计算值），只是不再渲染；
+   data-title 仍由 switchTab() 写入，classic 皮肤本就不显示该伪元素。 */
 html.skin-modern .toolbar {
-  position: relative; flex: none;
-  /* #32：右侧让出自绘窗口按钮；禁止换行（计数/刷新已移入筛选条）。 */
+  display: none; position: relative; flex: none;
   height: var(--stage-head-h); padding: 0 132px 0 24px; gap: 10px;
   flex-wrap: nowrap; overflow: hidden;
   background: var(--bg); border-bottom: 1px solid var(--divider);
-  /* #36：classic 基础规则带 0 1px 2px 阴影，与上面的 border-bottom 叠成双线；
-     现代顶栏只保留一条干净分隔线。 */
   box-shadow: none;
 }
-html.skin-modern .toolbar::before {
-  /* #36：与搜索框/按钮一样垂直居中（原先 flex-start + margin-top:9px 把标题顶到上沿）。 */
-  content: attr(data-title); flex: none; align-self: center;
-  margin: 0 8px 0 0; line-height: 1.2;
-  font-family: var(--serif); font-size: 19px; font-weight: 600; letter-spacing: .01em;
-  color: var(--text); white-space: nowrap;
-}
-/* #36：空提示条不再常驻 26px 淡黄带 + 底边框；有提示内容时保持原样。
-   setHint('') 只写空 textContent，:empty 恰好覆盖该状态。 */
+html.skin-modern .toolbar::before { content: none; }
+/* #36：空提示条不占位；有提示内容时原样显示（classic 基础规则亦已覆盖）。 */
 html.skin-modern #hint.hint-bar:empty { display: none; }
-html.skin-modern .toolbar input[type="search"] {
-  height: 34px; border-radius: 9px; background: var(--surface);
-  border: 1px solid var(--divider); margin-left: auto;
+
+/* ---------- v0.12.3：搜索框落 rail 中段（曲库卡片下方、Tab 列表上方） ---------- */
+/* 与 classic 共用同一个 #search DOM 节点：这里用 fixed 脱离 topbar 的 flex 流，
+   所以 --rail-head-h 与 v0.12.2 校准的三枚维护图标定位完全不受影响。 */
+html.skin-modern .topbar-search {
+  position: fixed; left: 12px; top: calc(var(--rail-head-h) + 8px);
+  width: calc(var(--rail-w) - 24px); height: 34px; z-index: 31; flex: none;
 }
-/* #36：输入框外侧不再出现第二条线。必须带 #search（ID），否则 classic.css 的
-   `.toolbar #search` 特异性更高会盖掉这些声明。焦点仍有边框/底色反馈。 */
-html.skin-modern .toolbar #search { box-shadow: none; }
-html.skin-modern .toolbar #search:focus {
-  box-shadow: none; outline: none;
-  border-color: var(--primary); background: var(--surface);
+html.skin-modern .topbar-search::before { background: var(--rail-muted); }
+html.skin-modern .topbar-search #search {
+  height: 34px; border-radius: 9px; font-size: 12.5px;
+  background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--rail-line);
 }
-html.skin-modern .toolbar .md-btn { height: 34px; border-radius: 9px; }
+html.skin-modern .topbar-search #search::placeholder { color: var(--rail-muted); }
+/* v0.12.4：与 classic 一致，聚焦只改边框 / 底色，位置与尺寸一字不动。 */
+html.skin-modern .topbar-search #search:focus {
+  outline: none;
+  border-color: var(--primary);
+  background: var(--surface);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent);
+}
+/* 计数 / 刷新由 syncToolbarExtras() 搬到列表筛选条，顶栏容器空置不占 gap。 */
+html.skin-modern .topbar-extras { display: none; }
 
 /* ---------- stage 内容：卡片化 ---------- */
 html.skin-modern .layout { padding: 16px 20px; gap: 16px; }
@@ -293,20 +305,40 @@ html.skin-modern #al-back { margin-right: 10px; }
 
 /* ---------- 窄屏收窄 rail，保证表格可用宽度 ---------- */
 @media (max-width: 1100px) {
-  html.skin-modern { --rail-w: 196px; }
-  html.skin-modern .toolbar::before { font-size: 17px; }
+  html.skin-modern {
+    --rail-w: 196px;
+    --rail-hbtn: 26px; --rail-hgap: 3px; --rail-hinset: 20px; --rail-hpad: 96px;
+  }
 }
 @media (max-width: 860px) {
-  html.skin-modern { --rail-w: 168px; --rail-head-h: 140px; }
+  html.skin-modern {
+    --rail-w: 168px; --rail-head-h: 140px;
+    --rail-hbtn: 24px; --rail-hgap: 2px; --rail-hinset: 16px; --rail-hpad: 82px;
+  }
   html.skin-modern .layout { padding: 10px 12px; gap: 10px; }
+  html.skin-modern .lib-extra-actions .lib-btn svg { width: 15px; height: 15px; }
 }
 
-/* ---------- #32：自绘窗口控制条 / 列表条计数 ---------- */
+/* ---------- v0.12.3：自绘窗口控制条移到 rail 顶部右侧 ---------- */
+/* .win-controls 是 body 的直接子元素（不在 .topbar 内），故用 fixed 相对视口定位：
+   rail 左边界恒为 0，left = rail-w - 82 使三键右端留 12px。classic 保持右上角 1:1。 */
 html.skin-modern .win-controls {
-  height: var(--stage-head-h); padding: 0 16px; color: var(--text-soft);
+  position: fixed; left: calc(var(--rail-w) - 82px); right: auto; top: 14px;
+  height: 24px; padding: 0; gap: 2px; z-index: 34;
+  color: var(--rail-text);
 }
-html.skin-modern .win-btn:hover { background: var(--chip-bg); color: var(--text); }
+html.skin-modern .win-btn {
+  width: 22px; height: 22px; font-size: 12px; border-radius: 6px;
+  color: var(--rail-muted); opacity: 1;
+}
+html.skin-modern .win-btn:hover { background: var(--rail-hover); color: var(--rail-text); }
 html.skin-modern .win-btn.win-close:hover { background: var(--danger, #d33a3a); color: #fff; }
+/* 必须写在基础规则之后，否则同特异性声明会被后面的覆盖（CSS 级联顺序）。
+   真机硬下限 1280（CSS 视口约 1250）不命中；这里只守护 demo 的 1080/900 尺寸。 */
+@media (max-width: 1100px) {
+  html.skin-modern .win-controls { left: calc(var(--rail-w) - 60px); }
+  html.skin-modern .win-btn { width: 18px; height: 18px; font-size: 10px; }
+}
 /* 原型：「共 N 首」在列表筛选条右端，小字弱化；刷新按钮紧随其后。 */
 html.skin-modern #track-filter-bar .track-count {
   margin-left: auto; background: transparent; padding: 0 4px;
@@ -366,3 +398,34 @@ html.skin-modern body.skin-active .toolbar { border-color: var(--divider); }
    不动 state / 持久化），切回经典时原样恢复，避免出现 0 宽且无展开入口。 */
 html.skin-modern .pane-handle,
 html.skin-modern .pane-resizer { display: none; }
+
+/* ------------------------------------------------------------
+   v0.12.2 曲库来源管理图标化：两枚维护图标收进「当前曲库」卡片右侧，
+   与 #btn-switch-library 同排，不再单独占一行（原 top:112px 与卡片底边重叠）。
+   topbar 是 fixed 且作为 absolute 子元素的包含块：brand 实测 59px + padding-top 16
+   + gap 6 => 卡片 top=81px、高 46px，图标在卡片内垂直居中，落在 152px（窄屏 140px）内。
+   DOM 层级保持不变：#library-name 由 updateLibraryName() 用 textContent 整体写入且
+   自身绑定切换曲库，把按钮移成其子节点会被清空并让点图标误触发切换。
+   所有规则带 html.skin-modern 前缀，不触碰 body::before 皮肤底层。
+   ------------------------------------------------------------ */
+/* min-height 让空曲库名时卡片仍保持 44px，图标始终落在卡片内（border-box 全局生效）。 */
+html.skin-modern .library-name {
+  padding-right: var(--rail-hpad); min-width: 0; min-height: var(--rail-hh);
+}
+html.skin-modern .lib-extra-actions {
+  position: absolute; left: auto; right: var(--rail-hinset);
+  top: var(--rail-htop); height: var(--rail-hh);
+  display: flex; align-items: center; gap: var(--rail-hgap); z-index: 33;
+}
+html.skin-modern .lib-btn {
+  width: var(--rail-hbtn); height: var(--rail-hbtn);
+  padding: 0; flex: none; justify-content: center; position: relative;
+  background: transparent; color: var(--rail-muted); border-color: transparent;
+}
+html.skin-modern .lib-btn:hover {
+  background: var(--rail-hover); color: var(--rail-text); opacity: 1; filter: none;
+}
+html.skin-modern .lib-btn svg { width: 17px; height: 17px; display: block; }
+html.skin-modern .sources-modal { border-radius: var(--radius); }
+html.skin-modern #sources-modal .settings-head,
+html.skin-modern #sources-modal .settings-nav { background: var(--surface-2); }

@@ -140,27 +140,53 @@ body, .topbar, .toolbar, .sidebar, .detail-pane, .player, .modal,
 #btn-switch-library svg { width: 18px; height: 18px; display: block; }
 .actions { display: flex; gap: 8px; margin-left: auto; flex: none; }
 
-/* ---------- 工具栏 ---------- */
+/* ---------- v0.12.3：搜索 / 计数 / 刷新上移顶栏，原工具栏整行隐藏 ---------- */
+/* 保留 DOM：switchTab()/initStageTitle() 仍写 data-title，窗口拖拽委托仍认 .toolbar。
+   flex-wrap:wrap 保留：modern.css 在其后声明 nowrap，demo 断言读取该计算值。 */
 .toolbar {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; align-content: flex-start;
+  display: none; align-items: center; gap: 10px; flex-wrap: wrap; align-content: flex-start;
   padding: 12px 20px; background: var(--surface);
   border-bottom: 1px solid var(--divider);
   box-shadow: var(--shadow-sm);
 }
-.toolbar #search {
-  flex: 1; max-width: 380px; height: 38px; padding: 0 16px;
-  border: 1px solid var(--divider); border-radius: 8px; font-size: 14px;
-  background: var(--surface-2); color: var(--text);
+/* 顶栏搜索框：蓝底反色、固定宽度。不再用 flex:1 / max-width:380px ——
+   那是 v0.12.1 删掉四个按钮后搜索栏位置与尺寸失常的根因。
+   放大镜为容器伪元素，pointer-events:none 让点击穿透到 input，不阻断聚焦。 */
+.topbar-search { position: relative; flex: 0 1 200px; min-width: 140px; height: 32px; }
+.topbar-search::before {
+  content: ""; position: absolute; left: 9px; top: 50%; transform: translateY(-50%);
+  width: 15px; height: 15px; pointer-events: none;
+  background: rgba(255, 255, 255, .85);
+  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'><circle cx='11' cy='11' r='7'/><path d='m20 20-3.5-3.5'/></svg>") center / contain no-repeat;
+          mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'><circle cx='11' cy='11' r='7'/><path d='m20 20-3.5-3.5'/></svg>") center / contain no-repeat;
+}
+.topbar-search #search {
+  display: block; width: 100%; height: 32px; box-sizing: border-box;
+  padding: 0 10px 0 32px; font-family: inherit; font-size: 12.5px;
+  border: 1px solid rgba(255, 255, 255, .38); border-radius: 8px;
+  background: rgba(255, 255, 255, .14); color: #fff;
   transition: border-color .2s, box-shadow .2s, background-color .2s;
 }
-.toolbar #search:focus {
-  outline: none; border-color: var(--primary); background: var(--surface);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent);
+.topbar-search #search::placeholder { color: rgba(255, 255, 255, .78); }
+/* v0.12.4：用户反馈「点击后搜索框挪到界面中间顶部」，故取消聚焦浮层。
+   只给边框 / 底色 / 轻微光晕反馈，绝不改 position / left / top / width / height；
+   放大镜图标常态与聚焦都显示。placeholder 保持原文，窄框截断可接受。 */
+.topbar-search #search:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, .88);
+  background: rgba(255, 255, 255, .24);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, .16);
 }
-.toolbar .track-count {
-  font-size: 13px; color: var(--text-soft); white-space: nowrap;
-  background: var(--chip-bg); border-radius: 999px; padding: 5px 14px; align-self: center;
+.topbar-extras { display: flex; align-items: center; gap: 8px; flex: none; }
+.topbar-extras .track-count {
+  font-size: 12px; color: #fff; white-space: nowrap; opacity: .92;
+  background: rgba(255, 255, 255, .16); border-radius: 999px; padding: 4px 10px;
 }
+.topbar-extras #btn-refresh {
+  height: 28px; padding: 0 10px; font-size: 12.5px;
+  background: rgba(255, 255, 255, .18); color: #fff;
+}
+.topbar-extras #btn-refresh:hover { background: rgba(255, 255, 255, .30); filter: none; }
 
 /* ---------- 按钮（Material 风，增强） ---------- */
 .md-btn {
@@ -191,6 +217,9 @@ body, .topbar, .toolbar, .sidebar, .detail-pane, .player, .modal,
   color: var(--hint-text); background: var(--hint-bg);
   border-bottom: 1px solid var(--divider);
 }
+/* v0.12.3：工具栏隐藏后，空提示条不再常驻 26px 淡黄带，内容区真正变大；
+   有提示内容时行为不变（setHint('') 只写空 textContent，:empty 恰好覆盖）。 */
+#hint.hint-bar:empty { display: none; }
 
 /* ---------- 导入进度面板（右下角浮层） ---------- */
 .progress-panel {
@@ -1676,4 +1705,95 @@ body.detail-collapsed .inline-detail::before { display: none; }
 .settings-section[hidden], .update-note[hidden], .about-update-download[hidden] { display: none; }
 /* 皮肤激活时提示条仍要保证文字可读（玻璃拟态下补一层实底）。 */
 body.skin-active .update-bar { background: color-mix(in srgb, var(--primary-soft) 88%, var(--surface)); }
+
+/* ============================================================
+   v0.12.0 曲库来源管理 —— 顶栏操作组 + 独立弹窗
+   v0.12.2：入口统一为纯图标 + 悬浮提示，未决状态改无数字小圆点。
+   只调整本段，既有 classic 基础规则一字未改。
+   ============================================================ */
+.lib-extra-actions { display: flex; align-items: center; gap: 4px; }
+/* 与「切换曲库」同款：28px 透明方形、白色线稿，hover 才出底色。 */
+.lib-extra-actions .lib-btn {
+  width: 28px; height: 28px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  position: relative; border: none; border-radius: 8px;
+  background: transparent; color: #fff; opacity: .85;
+}
+.lib-extra-actions .lib-btn:hover {
+  background: rgba(255, 255, 255, .16); opacity: 1; filter: none; box-shadow: none;
+}
+.lib-extra-actions .lib-btn svg { width: 18px; height: 18px; display: block; }
+/* 未决重复只显示小圆点，不再渲染数字；hidden 由下方 ID 规则隐藏。 */
+.src-dot {
+  position: absolute; top: 1px; right: 1px;
+  display: block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--primary); box-shadow: 0 0 0 2px var(--on-primary, #fff);
+  pointer-events: none;
+}
+#sources-badge[hidden], #sources-nav-badge[hidden] { display: none; }
+.legacy-source-config[hidden] { display: none !important; }
+
+/* 弹窗与设置面板同构：现有 .settings-* 规则以 #settings-modal 限定，故显式对齐一份。 */
+#sources-modal .settings-modal {
+  width: min(880px, calc(100vw - 32px)); max-height: min(86vh, 780px);
+  padding: 0; overflow: hidden; display: flex; flex-direction: column; text-align: left;
+}
+#sources-modal .settings-head {
+  flex: none; display: flex; align-items: center; gap: 16px;
+  padding: 18px 24px; border-bottom: 1px solid var(--divider); background: var(--surface-2);
+}
+#sources-modal .settings-head-text { flex: 1; min-width: 0; }
+#sources-modal .settings-head h3 { margin: 0; font-size: 18px; font-weight: 600; line-height: 1.3; }
+#sources-modal .settings-head p { margin: 3px 0 0; font-size: 12px; color: var(--text-soft); }
+#sources-modal .settings-head .md-btn { height: 34px; padding: 0 16px; font-size: 13px; }
+#sources-modal .settings-layout { display: flex; flex: 1; min-height: 0; }
+#sources-modal .settings-nav {
+  flex: none; width: 216px; padding: 14px 10px; border-right: 1px solid var(--divider);
+  background: var(--surface-2); display: flex; flex-direction: column; gap: 4px; overflow-y: auto;
+}
+#sources-modal .sources-list { display: flex; flex-direction: column; gap: 4px; }
+#sources-modal .sources-fixed-group {
+  display: flex; flex-direction: column; gap: 4px;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--divider);
+}
+#sources-modal .settings-tab {
+  position: relative; display: flex; align-items: center; gap: 11px; width: 100%;
+  padding: 10px 12px; border: none; border-radius: 10px; background: transparent;
+  color: var(--text-soft); cursor: pointer; text-align: left;
+  transition: background .15s, color .15s, box-shadow .15s;
+}
+#sources-modal .settings-tab span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+#sources-modal .settings-tab strong { font-size: 13px; font-weight: 600; color: inherit; }
+#sources-modal .settings-tab small {
+  font-size: 11px; color: var(--text-soft); opacity: .85;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#sources-modal .settings-tab:hover { background: var(--chip-bg); color: var(--text); }
+#sources-modal .settings-tab.active {
+  background: color-mix(in srgb, var(--primary) 12%, var(--surface));
+  color: var(--primary); box-shadow: inset 3px 0 0 var(--primary);
+}
+#sources-modal .settings-tab.is-off { opacity: .55; }
+#sources-modal .settings-tab .dup-badge { margin-left: auto; }
+#sources-modal .sources-add { margin-top: auto; flex: none; }
+#sources-modal .settings-content { flex: 1; min-width: 0; overflow-y: auto; padding: 20px 24px 26px; }
+#sources-modal .settings-pane { display: none; }
+#sources-modal .settings-pane.active { display: block; }
+#sources-modal .settings-pane-head { margin: 0 0 16px; }
+#sources-modal .settings-pane-head h4 { margin: 0; font-size: 17px; font-weight: 600; color: var(--text); }
+#sources-modal .settings-pane-head p { margin: 4px 0 0; font-size: 12px; color: var(--text-soft); }
+#sources-modal .settings-section {
+  padding: 16px 18px; margin: 0 0 14px; border: 1px solid var(--divider);
+  border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow-sm);
+}
+#sources-modal .settings-section h4 { margin: 0 0 12px; font-size: 14px; font-weight: 600; color: var(--text); }
+#sources-modal .src-label { display: block; margin: 10px 0 6px; font-size: 12px; color: var(--text-soft); }
+#sources-modal #src-probe { margin-top: 10px; font-size: 12px; line-height: 1.5; }
+#sources-modal .src-actions { justify-content: flex-start; flex-wrap: wrap; }
+#sources-modal .sources-empty {
+  padding: 36px 20px; border: 1px dashed var(--divider); border-radius: var(--radius);
+  text-align: center; color: var(--text-soft); font-size: 13px; background: var(--surface-2);
+}
+#sources-modal #src-dup-groups { max-height: 40vh; overflow-y: auto; }
+#sources-modal .settings-value { margin-bottom: 10px; }
 

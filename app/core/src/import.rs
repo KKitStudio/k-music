@@ -16,6 +16,7 @@ use crate::Result;
 use crate::is_playable_audio;
 use anyhow::anyhow;
 use rusqlite::Connection;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,6 +158,111 @@ pub fn import_netease_library_with_progress(
         anyhow::bail!("未设置有效的「本地网易云音乐曲库目录」，请先在设置或初始化向导中指定");
     }
     import_folder_with_progress(cfg, conn, dir, ImportMode::Copy, Origin::NeteaseSync, tracker)
+}
+
+/// 探测遍历上限：只读、有短路，避免超大目录拖慢 UI。
+const PROBE_MAX_ENTRIES: usize = 2000;
+const PROBE_MAX_DEPTH: usize = 3;
+
+/// 来源目录的只读探测结果（自动判定网易云曲库 + 条件显示 NCM 引导）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SourceProbe {
+    /// 是否像网易云官方 APP 维护的本地曲库。
+    pub is_netease: bool,
+    /// 目录（含有限深度子目录）里是否存在 `.ncm` 文件。
+    pub ncm_found: bool,
+    /// 建议的来源名称（默认取目录名）。
+    pub suggested_name: String,
+}
+
+/// 探测时跳过的目录：不把曲库自身的数据目录当成来源特征。
+fn probe_skip_dir(name: &str) -> bool {
+    matches!(name, ".mt" | "trash" | "pendingncm" | "download" | "tools")
+        || name.starts_with('.')
+}
+
+/// 只读探测来源目录（启发式，不联网、不写盘、不解析音频）。
+///
+/// 判定依据：目录名 / 一级子目录名含 `cloudmusic`、`netease`、`网易云`、
+/// `vipsongsdownload` 等网易云特征；同时记录是否出现 `.ncm` 文件。
+/// 遍历有上限（约 2000 条目、3 层），命中网易云特征即短路返回。
+pub fn probe_source(dir: &Path) -> SourceProbe {
+    let mut probe = SourceProbe {
+        suggested_name: dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("新来源")
+            .to_string(),
+        ..Default::default()
+    };
+    if !dir.is_dir() {
+        return probe;
+    }
+    let folder = probe.suggested_name.to_lowercase();
+    if folder.contains("cloudmusic") || folder.contains("netease") || folder.contains("网易云") {
+        probe.is_netease = true;
+        return probe;
+    }
+
+    let mut queue: std::collections::VecDeque<(PathBuf, usize)> = std::collections::VecDeque::new();
+    queue.push_back((dir.to_path_buf(), 0));
+    let mut visited = 0usize;
+    while let Some((cur, depth)) = queue.pop_front() {
+        let Ok(rd) = std::fs::read_dir(&cur) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            visited += 1;
+            if visited >= PROBE_MAX_ENTRIES {
+                return probe;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            let lower = name.to_lowercase();
+            if lower.ends_with(".ncm") {
+                probe.ncm_found = true;
+            }
+            if depth == 0
+                && (lower.contains("cloudmusic")
+                    || lower.contains("netease")
+                    || lower.contains("网易云")
+                    || lower.contains("vipsongsdownload"))
+            {
+                probe.is_netease = true;
+                return probe;
+            }
+            let p = entry.path();
+            if p.is_dir() && depth < PROBE_MAX_DEPTH && !probe_skip_dir(&lower) {
+                queue.push_back((p, depth + 1));
+            }
+        }
+    }
+    probe
+}
+
+/// 按来源执行导入：网易云来源沿用原逻辑（只加不删、强制复制、`Origin::NeteaseSync`），
+/// 普通来源按用户所选 `Copy` / `Move`（`Origin::Manual`）。
+pub fn import_source_with_progress(
+    cfg: &Config,
+    conn: &Connection,
+    source_dir: &Path,
+    is_netease: bool,
+    mode: ImportMode,
+    tracker: &ProgressTracker,
+) -> Result<ImportResult> {
+    if !source_dir.is_dir() {
+        anyhow::bail!("来源目录不存在或不可访问：{}", source_dir.display());
+    }
+    if is_netease {
+        return import_folder_with_progress(
+            cfg,
+            conn,
+            source_dir,
+            ImportMode::Copy,
+            Origin::NeteaseSync,
+            tracker,
+        );
+    }
+    import_folder_with_progress(cfg, conn, source_dir, mode, Origin::Manual, tracker)
 }
 
 /// 处理 pendingNcm 积压：把此前因「无工具」暂存的 .ncm 逐个按下载逻辑转换入库。

@@ -1137,7 +1137,7 @@ function windowControl(action) {
   document.addEventListener('mousedown', (e) => {
     if (e.button !== 0 || e.detail > 1) return;
     if (!e.target.closest('.topbar, .toolbar')) return;
-    if (e.target.closest('button, input, select, textarea, a, label, [contenteditable], .win-controls, #library-name')) return;
+    if (e.target.closest('button, input, select, textarea, a, label, [contenteditable], .win-controls, #library-name, .topbar-search, .topbar-extras')) return;
     windowControl('drag');
   });
 })();
@@ -2441,14 +2441,14 @@ $('queue-list').addEventListener('click', (e) => {
 // FR-29：主界面顶部「下一首播放」按钮已移除；enqueueNext() 仍由右键菜单与队列面板调用，
 // FR-21「同步写 queue/originalQueue + savePlaystate()」不变式不动。
 
-// ---------- 工具栏 ----------
-$('btn-scan').addEventListener('click', async () => {
+// ---------- 顶栏「重新扫描曲库」（原工具栏「扫描曲库」迁移，逻辑不变） ----------
+$('btn-rescan').addEventListener('click', async () => {
   setHint('扫描中…');
   const { data } = await api('/api/scan', { method: 'POST' });
   setHint(data && data.ok ? `扫描完成：新增 ${data.inserted}，更新 ${data.updated}，移除 ${data.removed}${data.held ? `，重复挂起 ${data.held}` : ''}` : '扫描失败');
   // 手动扫描是新决策点：即使之前忽略过，发现散落 .ncm 仍再次询问。
   maybeShowNcmOrganize((data && data.ncm_found) || [], true);
-  // FR-22 P1①：手动「扫描曲库」才打开批量对比窗；boot scan 只静默登记角标。
+  // FR-22 P1①：手动「重新扫描曲库」才打开批量对比窗；boot scan 只静默登记角标。
   if (data && data.ok && (data.pending_duplicates || 0) > 0) {
     updateDupBadge(data.pending_duplicates);
     await openDuplicatesDialog();
@@ -2470,11 +2470,27 @@ const DUP_ORIGIN_LABELS = {
 function updateDupBadge(n) {
   const count = Number(n) || 0;
   state.pendingDuplicates = count;
-  const btn = $('btn-duplicates');
-  if (!btn) return;
-  $('dup-badge').textContent = String(count);
-  btn.hidden = count === 0;
-  btn.title = count ? `查看 ${count} 组待处理重复文件（只统计当前曲库）` : '暂无待处理重复文件';
+  // v0.12.2：顶栏入口改纯图标，未决状态只显示无数字小圆点；组数仍写在悬浮提示里，
+  // 来源管理弹窗左侧沿用数字胶囊，数量信息不丢失。
+  const dot = $('sources-badge');
+  if (dot) dot.hidden = count === 0;
+  const nav = $('sources-nav-badge');
+  if (nav) {
+    nav.textContent = String(count);
+    nav.hidden = count === 0;
+  }
+  const btn = $('btn-sources');
+  if (btn) {
+    const label = (window.KQK && typeof window.KQK.t === 'function')
+      ? window.KQK.t('sources.btn', { _fallback: '来源管理' })
+      : '来源管理';
+    btn.setAttribute('aria-label', label);
+    btn.title = count
+      ? `${count} 组待处理重复文件，点开「${label}」处理`
+      : `${label}（暂无待处理重复文件）`;
+  }
+  const sub = $('sources-dup-sub');
+  if (sub) sub.textContent = count ? `${count} 组未决` : '逐组对比与决策';
 }
 
 /** 轻量刷新：只读 /api/status 的角标字段，不重置外观 / 列表 / 选中态。
@@ -2513,8 +2529,8 @@ function dupOptionHtml(g, choice, name, meta, previewUrl, checked) {
   `</label>`;
 }
 
-function renderDuplicateGroups(list) {
-  const box = $('dup-groups');
+/** 渲染重复对比组。v0.12.0 起支持传入容器，来源管理右侧与原对比弹窗共用同一份渲染。 */
+function renderDuplicateGroups(list, box = $('dup-groups')) {
   box.innerHTML = '';
   if (!list.length) {
     box.innerHTML = '<div class="dup-empty">没有待处理的重复组</div>';
@@ -2608,12 +2624,16 @@ function closeDuplicatesDialog() {
   $('duplicates-modal').hidden = true;
 }
 
-async function submitDuplicateDecisions() {
-  const inputs = Array.from(document.querySelectorAll('#dup-groups input[type="radio"]:checked'));
+/** 提交重复决策。prefix='dup' 为原对比弹窗，'src-dup' 为来源管理内嵌页，共用同一决策后端。 */
+async function submitDuplicateDecisions(prefix = 'dup') {
+  const inSources = prefix === 'src-dup';
+  const groupsId = inSources ? 'src-dup-groups' : 'dup-groups';
+  const applyId = inSources ? 'src-dup-apply' : 'dup-apply';
+  const inputs = Array.from(document.querySelectorAll(`#${groupsId} input[type="radio"]:checked`));
   const decisions = inputs.map((el) => ({ group_id: el.dataset.groupId, choice: el.value }))
     .filter((d) => d.group_id && d.choice);
   if (!decisions.length) { setHint('请先为每组选择要保留的版本'); return; }
-  const btn = $('dup-apply');
+  const btn = $(applyId);
   btn.disabled = true;
   stopDuplicatePreview();
   const { data } = await api('/api/duplicates/decide', {
@@ -2631,8 +2651,12 @@ async function submitDuplicateDecisions() {
   else setHint(`已处理 ${data.applied} 组重复文件`);
   updateDupBadge(data.pending_duplicates);
   if ((Number(data.pending_duplicates) || 0) > 0) {
-    // 仍有未决组（决策失败 / 别的批次）：保留窗口并重新拉取。
-    await openDuplicatesDialog();
+    // 仍有未决组（决策失败 / 别的批次）：保留当前界面并重新拉取。
+    if (inSources) await loadSourcesDuplicates();
+    else await openDuplicatesDialog();
+  } else if (inSources) {
+    renderDuplicateGroups([], $(groupsId));
+    $(inSources ? 'src-dup-count' : 'dup-count').textContent = '暂无待处理的重复组';
   } else {
     closeDuplicatesDialog();
   }
@@ -2640,32 +2664,50 @@ async function submitDuplicateDecisions() {
   loadTracks($('search').value);
 }
 
-$('btn-duplicates').addEventListener('click', () => openDuplicatesDialog());
+// v0.12.0：原工具栏「待处理重复」按钮移除，入口统一到顶栏「来源管理」；
+// 有未决组时打开弹窗并直接定位到左侧「待处理重复」项。
+$('btn-sources').addEventListener('click', () => openSourcesModal(
+  (state.pendingDuplicates || 0) > 0 ? 'duplicates' : 'source'
+));
 $('dup-later').addEventListener('click', () => {
   // W4：稍后处理不提交决策，挂起文件保持留在 .mt/pending-duplicates/。
   closeDuplicatesDialog();
   setHint(state.pendingDuplicates
-    ? `已保留 ${state.pendingDuplicates} 组待处理重复文件，可随时点顶栏角标继续` : '已关闭对比窗口');
+    ? `已保留 ${state.pendingDuplicates} 组待处理重复文件，可随时点顶栏「来源管理」继续` : '已关闭对比窗口');
 });
-$('dup-apply').addEventListener('click', () => submitDuplicateDecisions());
-$('dup-groups').addEventListener('change', (e) => {
-  const input = e.target;
-  if (!input.matches || !input.matches('input[type="radio"]')) return;
-  const wrap = input.closest('.dup-options');
-  if (!wrap) return;
-  wrap.querySelectorAll('.dup-option').forEach((el) =>
-    el.classList.toggle('is-selected', el.contains(input)));
-});
-$('dup-groups').addEventListener('click', (e) => {
-  const btn = e.target.closest && e.target.closest('[data-preview-url]');
-  if (btn) { e.preventDefault(); previewDuplicate(btn.dataset.previewUrl, btn); }
-});
+$('dup-apply').addEventListener('click', () => submitDuplicateDecisions('dup'));
+$('src-dup-later').addEventListener('click', () => closeSourcesModal());
+$('src-dup-apply').addEventListener('click', () => submitDuplicateDecisions('src-dup'));
+
+/** change / click 事件委托：两个重复容器共用（选中态高亮 + 试听）。 */
+function bindDuplicateGroups(box) {
+  if (!box) return;
+  box.addEventListener('change', (e) => {
+    const input = e.target;
+    if (!input.matches || !input.matches('input[type="radio"]')) return;
+    const wrap = input.closest('.dup-options');
+    if (!wrap) return;
+    wrap.querySelectorAll('.dup-option').forEach((el) =>
+      el.classList.toggle('is-selected', el.contains(input)));
+  });
+  box.addEventListener('click', (e) => {
+    const btn = e.target.closest && e.target.closest('[data-preview-url]');
+    if (btn) { e.preventDefault(); previewDuplicate(btn.dataset.previewUrl, btn); }
+  });
+}
+bindDuplicateGroups($('dup-groups'));
+bindDuplicateGroups($('src-dup-groups'));
 $('dup-preview-audio').addEventListener('ended', () => {
   if (dupPreviewBtn) dupPreviewBtn.textContent = '▶ 试听';
   dupPreviewBtn = null;
 });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !$('duplicates-modal').hidden) closeDuplicatesDialog();
+  if (e.key !== 'Escape') return;
+  if (!$('duplicates-modal').hidden) { closeDuplicatesDialog(); return; }
+  if (!$('init-wizard').hidden) return;              // 向导不可 Esc 关闭
+  if (!$('sources-modal').hidden) { closeSourcesModal(); return; }
+  if (!$('import-modal').hidden) { $('import-modal').hidden = true; return; }
+  if (!$('settings-modal').hidden) $('settings-modal').hidden = true;
 });
 $('set-dup-clear-history').addEventListener('click', async () => {
   const yes = await showDialog({
@@ -3755,11 +3797,17 @@ async function saveLibraryDirectory() {
   await refreshStatus();
 }
 
-$('btn-import').addEventListener('click', () => {
+// v0.12.0：工具栏「导入」「从本地网易云曲库更新」按钮已移除。
+// 手动导入由来源管理左侧「手动导入文件夹」项触发；网易云更新由来源的「立即更新」触发。
+// runImportNetease() 保留供设置里隐藏的旧控件调用（旧端点行为不变）。
+function openImportModal() {
   $('import-input').value = '';
   $('import-modal').hidden = false;
+}
+$('set-open-sources').addEventListener('click', () => {
+  $('settings-modal').hidden = true;
+  openSourcesModal('source');
 });
-$('btn-import-netease').addEventListener('click', runImportNetease);
 
 // 从本地网易云曲库目录增量合并（本地操作，不联网/不登录，单方向只加不删）。
 // 未设置「本地网易云音乐曲库目录」时：先弹出目录选择框，指定成功后立即执行更新。
@@ -3841,6 +3889,341 @@ $('import-run').addEventListener('click', async () => {
   await refreshDuplicateBadge();
   if (data && data.ok && data.held) await openDuplicatesDialog();
   loadTracks($('search').value);
+});
+
+// ==========================================================================
+// v0.12.0 曲库来源管理（歌曲更新源）
+// 独立弹窗：左侧来源列表 + 右侧信息与设置；事实源 = app 级 [[sources]]（/api/sources）。
+// 「是否网易云曲库」由只读探测自动得出，允许手动覆盖；命中后沿用只加不删逻辑并强制复制。
+// 旧端点 /api/import-netease、/api/netease/library-dir、/api/import 与 CLI 全部保留不变。
+// ==========================================================================
+state.sources = [];
+state.sourcesCurrentId = '';
+state.sourcesPane = 'source';
+state.sourcesAdding = false;
+state.sourcesProbe = null;
+const SOURCES_FIXED_PANES = ['manual', 'duplicates', 'ncm'];
+
+async function openSourcesModal(pane = 'source') {
+  $('sources-modal').hidden = false;
+  await loadSources();
+  activateSourcesPane(pane);
+}
+
+function closeSourcesModal() {
+  stopDuplicatePreview();
+  $('sources-modal').hidden = true;
+}
+
+/** 拉取来源列表，顺带刷新角标与 NCM 工具状态（一次请求，无新增轮询）。 */
+async function loadSources() {
+  const { data } = await api('/api/sources');
+  if (!data || !data.ok) {
+    setHint((data && data.error) || '读取曲库来源失败');
+    return;
+  }
+  state.sources = data.sources || [];
+  if (typeof data.pending_duplicates === 'number') updateDupBadge(data.pending_duplicates);
+  if (typeof data.ncm_ready === 'boolean') state.ncm_ready = data.ncm_ready;
+  renderSourcesList();
+  renderSourceForm();
+  renderSourcesNcm();
+}
+
+/** 统一维护左侧选中态（来源项 / 新增态 / 固定项）。 */
+function syncSourcesActive() {
+  document.querySelectorAll('#sources-modal .settings-tab').forEach((t) => {
+    let on;
+    if (t.dataset.new === '1') {
+      on = state.sourcesPane === 'source' && state.sourcesAdding;
+    } else if (t.dataset.sourceId) {
+      on = state.sourcesPane === 'source' && !state.sourcesAdding
+        && t.dataset.sourceId === state.sourcesCurrentId;
+    } else {
+      on = t.dataset.pane === state.sourcesPane;
+    }
+    t.classList.toggle('active', on);
+  });
+}
+
+function activateSourcesPane(pane) {
+  const target = SOURCES_FIXED_PANES.includes(pane) ? pane : 'source';
+  state.sourcesPane = target;
+  document.querySelectorAll('#sources-modal .settings-pane').forEach((p) => {
+    p.classList.toggle('active', p.dataset.pane === target);
+  });
+  syncSourcesActive();
+  const content = document.querySelector('#sources-modal .settings-content');
+  if (content) content.scrollTop = 0;
+  if (target === 'duplicates') loadSourcesDuplicates();
+  if (target === 'ncm') renderSourcesNcm();
+}
+
+/** 左侧列表：来源项（停用灰显）+ 新增态占位。固定项在 HTML 里已声明。 */
+function renderSourcesList() {
+  const box = $('sources-list');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!state.sources.length && !state.sourcesAdding) {
+    const empty = document.createElement('div');
+    empty.className = 'sources-empty';
+    empty.style.padding = '12px';
+    empty.textContent = '暂无来源';
+    box.appendChild(empty);
+  }
+  state.sources.forEach((s) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'settings-tab' + (s.enabled ? '' : ' is-off');
+    btn.dataset.pane = 'source';
+    btn.dataset.sourceId = s.id;
+    btn.innerHTML = `<span><strong>${esc(s.name || s.path || '未命名来源')}</strong>` +
+      `<small>${esc(s.path || '未设置目录')}${s.is_netease ? ' · 网易云' : ''}</small></span>`;
+    btn.addEventListener('click', () => {
+      state.sourcesAdding = false;
+      state.sourcesCurrentId = s.id;
+      state.sourcesProbe = null;
+      renderSourcesList();
+      renderSourceForm();
+      activateSourcesPane('source');
+    });
+    box.appendChild(btn);
+  });
+  if (state.sourcesAdding) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'settings-tab';
+    btn.dataset.new = '1';
+    btn.innerHTML = '<span><strong>＋ 新来源</strong><small>选择一个本地目录</small></span>';
+    box.appendChild(btn);
+  }
+  syncSourcesActive();
+}
+
+function renderSourcesNcm() {
+  const el = $('src-ncm-status');
+  if (!el) return;
+  el.textContent = state.ncm_ready
+    ? ('已启用：' + (state.ncm_tool || ''))
+    : '未配置（无 NCM 工具时，.ncm 文件会进入 download/pendingNcm 暂存）';
+  if ($('src-ncm-input') && !$('src-ncm-input').value) $('src-ncm-input').value = state.ncm_tool || '';
+}
+
+/** 右侧表单：编辑态 / 新增态 / 空态。 */
+function renderSourceForm() {
+  const s = state.sources.find((x) => x.id === state.sourcesCurrentId);
+  const adding = state.sourcesAdding || !s;
+  const show = !!s || state.sourcesAdding;
+  $('src-form').hidden = !show;
+  $('src-empty').hidden = show;
+  if (!show) {
+    $('src-detail-title').textContent = '来源详情';
+    $('src-detail-sub').textContent = '选择左侧来源查看与编辑；新增来源请点左下按钮。';
+    return;
+  }
+  $('src-detail-title').textContent = adding ? '新增来源' : (s.name || '来源详情');
+  $('src-detail-sub').textContent = adding
+    ? '选择一个本地歌曲目录，系统会自动检测它是否是网易云曲库。'
+    : '可修改名称、目录、导入方式，或立即按此来源更新曲库。';
+  $('src-name').value = adding ? '' : (s.name || '');
+  $('src-path').value = adding ? '' : (s.path || '');
+  $('src-netease').checked = adding ? false : !!s.is_netease;
+  $('src-enabled').checked = adding ? true : !!s.enabled;
+  const mode = adding ? 'copy' : (s.mode || 'copy');
+  document.querySelectorAll('input[name="src-mode"]').forEach((r) => { r.checked = r.value === mode; });
+  $('src-delete').hidden = adding;
+  $('src-import').hidden = adding;
+  $('src-save').textContent = adding ? '添加来源' : '保存设置';
+  $('src-probe').textContent = adding ? '选择目录后自动检测来源类型' : '';
+  syncSourceModeUI();
+}
+
+/** 复制 / 移动卡片状态：网易云来源强制复制并禁用「移动」。 */
+function syncSourceModeUI() {
+  const forced = $('src-netease').checked;
+  document.querySelectorAll('input[name="src-mode"]').forEach((r) => {
+    r.disabled = forced && r.value === 'move';
+    if (r.disabled) r.checked = false;
+  });
+  if (forced) {
+    const copy = document.querySelector('input[name="src-mode"][value="copy"]');
+    if (copy) copy.checked = true;
+  }
+  syncSourceOptionState();
+}
+function syncSourceOptionState() {
+  document.querySelectorAll('#src-mode-options .imp-option').forEach((label) => {
+    const input = label.querySelector('input[type="radio"]');
+    if (input) label.classList.toggle('is-checked', input.checked);
+  });
+}
+
+/** 只读探测：选目录 / 手填路径后自动得出「是否网易云曲库 / 是否有 .ncm」。 */
+async function probeSourceDir(path, quiet) {
+  if (!path) return null;
+  const { data } = await api('/api/sources/probe', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+  if (!data || !data.ok) {
+    if (!quiet) setHint((data && data.error) || '检测来源目录失败');
+    state.sourcesProbe = null;
+    return null;
+  }
+  state.sourcesProbe = Object.assign({ path }, data);
+  const bits = [];
+  if (!data.exists) bits.push('目录当前不可访问');
+  else bits.push(data.is_netease
+    ? '检测为网易云曲库：只加不删，强制复制' : '普通本地目录：可选复制或移动');
+  if (data.ncm_found) bits.push('发现 .ncm 文件，可在「NCM 工具」页配置解密工具');
+  $('src-probe').textContent = bits.join('；');
+  return state.sourcesProbe;
+}
+
+async function pickSourceDir() {
+  const { data } = await api('/api/pick-folder', { method: 'POST' });
+  if (data && data.ok && !data.canceled && data.path) {
+    $('src-path').value = data.path;
+    const probe = await probeSourceDir(data.path);
+    if (probe) {
+      if (!$('src-name').value.trim()) $('src-name').value = probe.suggested_name || '';
+      if (state.sourcesAdding) $('src-netease').checked = !!probe.is_netease;
+    }
+    syncSourceModeUI();
+  } else if (!data || !data.ok) {
+    setHint((data && data.error) || '打开文件夹选择失败');
+  }
+}
+
+async function saveSource() {
+  const path = $('src-path').value.trim();
+  if (!path) { setHint('请先选择或输入来源目录'); return; }
+  const probe = await probeSourceDir(path);
+  if (!probe || !probe.exists) { setHint('来源目录不存在或不可访问'); return; }
+  const adding = state.sourcesAdding || !state.sourcesCurrentId;
+  if (adding && probe) { $('src-netease').checked = !!probe.is_netease; syncSourceModeUI(); }
+  const modeInput = document.querySelector('input[name="src-mode"]:checked');
+  const payload = {
+    name: $('src-name').value.trim() || probe.suggested_name || '新来源',
+    path,
+    is_netease: $('src-netease').checked,
+    mode: $('src-netease').checked ? 'copy' : (modeInput ? modeInput.value : 'copy'),
+    enabled: $('src-enabled').checked,
+  };
+  const { data } = await api(
+    adding ? '/api/sources' : `/api/sources/${encodeURIComponent(state.sourcesCurrentId)}`,
+    {
+      method: adding ? 'POST' : 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+  if (!data || !data.ok) { setHint((data && data.error) || '保存来源失败'); return; }
+  state.sources = data.sources || state.sources;
+  state.sourcesAdding = false;
+  state.sourcesCurrentId = (data.source && data.source.id) || state.sourcesCurrentId;
+  setHint(adding ? '来源已添加' : '来源设置已保存');
+  renderSourcesList();
+  renderSourceForm();
+  activateSourcesPane('source');
+}
+
+async function deleteSource() {
+  const s = state.sources.find((x) => x.id === state.sourcesCurrentId);
+  if (!s) return;
+  const yes = await showDialog({
+    title: '删除来源',
+    text: `确定删除「${s.name || s.path}」吗？只移除这条来源记录，不会删除曲库或源目录里的任何文件。`,
+    okText: '删除',
+  });
+  if (!yes) return;
+  const { data } = await api(`/api/sources/${encodeURIComponent(s.id)}`, { method: 'DELETE' });
+  if (!data || !data.ok) { setHint((data && data.error) || '删除来源失败'); return; }
+  state.sources = data.sources || [];
+  state.sourcesCurrentId = '';
+  state.sourcesAdding = false;
+  state.sourcesProbe = null;
+  setHint('来源已删除');
+  renderSourcesList();
+  renderSourceForm();
+  activateSourcesPane('source');
+}
+
+/** 按来源导入：网易云来源在后端强制复制（只加不删），普通来源按所选方式。 */
+async function importSource() {
+  const s = state.sources.find((x) => x.id === state.sourcesCurrentId);
+  if (!s) return;
+  if (!s.enabled) { setHint('该来源已停用，请先启用并保存'); return; }
+  showProgressPanel(`来源 · ${s.name || s.path}`);
+  startProgressPolling();
+  const { data } = await api(`/api/sources/${encodeURIComponent(s.id)}/import`, { method: 'POST' });
+  stopProgressPolling();
+  if (!data || !data.ok) { setHint((data && data.error) || '来源更新失败'); return; }
+  setHint(`来源更新完成：入库 ${data.imported}，跳过 ${data.skipped}` +
+    `${data.pending ? `，待转换 ${data.pending}` : ''}${data.held ? `，重复挂起 ${data.held}` : ''}，失败 ${data.failed}`);
+  await refreshDuplicateBadge();
+  if (data.held) activateSourcesPane('duplicates');
+  loadTracks($('search').value);
+}
+
+/** 来源管理内的「待处理重复」页：与原对比弹窗共用渲染 / 决策逻辑。 */
+async function loadSourcesDuplicates() {
+  const { data } = await api('/api/duplicates');
+  if (!data || !data.ok) { setHint((data && data.error) || '读取重复组失败'); return; }
+  const list = data.groups || [];
+  state.duplicateGroups = list;
+  state.duplicatesDir = data.pending_dir || state.duplicatesDir;
+  state.duplicatesLogPath = data.log_path || '';
+  updateDupBadge(data.count == null ? list.length : data.count);
+  $('src-dup-count').textContent = list.length
+    ? `共 ${list.length} 组待处理（全部未决组一次展示）` : '暂无待处理的重复组';
+  $('src-dup-path').textContent = state.duplicatesDir
+    ? `挂起文件：${state.duplicatesDir}（稍后处理不会移动文件）` : '';
+  renderDuplicateGroups(list, $('src-dup-groups'));
+}
+
+$('sources-close').addEventListener('click', closeSourcesModal);
+$('sources-add').addEventListener('click', () => {
+  state.sourcesAdding = true;
+  state.sourcesCurrentId = '';
+  state.sourcesProbe = null;
+  renderSourcesList();
+  renderSourceForm();
+  activateSourcesPane('source');
+  $('src-path').focus();
+});
+document.querySelectorAll('#sources-modal .sources-fixed').forEach((tab) => {
+  tab.addEventListener('click', () => {
+    // 「手动导入文件夹」沿用原通用导入弹窗，零行为改动。
+    if (tab.dataset.pane === 'manual') { openImportModal(); return; }
+    activateSourcesPane(tab.dataset.pane);
+  });
+});
+$('src-browse').addEventListener('click', pickSourceDir);
+$('src-netease').addEventListener('change', syncSourceModeUI);
+document.querySelectorAll('input[name="src-mode"]').forEach((r) =>
+  r.addEventListener('change', syncSourceOptionState));
+$('src-path').addEventListener('blur', async () => {
+  const p = $('src-path').value.trim();
+  if (!p || (state.sourcesProbe && state.sourcesProbe.path === p)) return;
+  const probe = await probeSourceDir(p, true);
+  if (probe && state.sourcesAdding) {
+    $('src-netease').checked = !!probe.is_netease;
+    if (!$('src-name').value.trim()) $('src-name').value = probe.suggested_name || '';
+    syncSourceModeUI();
+  }
+});
+$('src-save').addEventListener('click', saveSource);
+$('src-delete').addEventListener('click', deleteSource);
+$('src-import').addEventListener('click', importSource);
+$('src-ncm-pick').addEventListener('click', () => pickNcmTool('src-ncm-input'));
+$('src-ncm-apply').addEventListener('click', () => applyNcmTool('src-ncm-input', 'src-ncm-copy'));
+$('src-ncm-organize').addEventListener('click', () => {
+  if (!$('src-ncm-input').value.trim()) {
+    setHint('请先指定 NCM 工具文件；应用后会自动回补积压的 .ncm');
+    return;
+  }
+  applyNcmTool('src-ncm-input', 'src-ncm-copy');
 });
 
 // ---------- 下载管理（队列监控 / 控制）----------
@@ -3927,10 +4310,19 @@ $('dl-clear').addEventListener('click', async () => {
 });
 
 // ---------- 初始化向导（首次启动 / 曲库被移除）----------
+// v0.12.0：第 3 步是通用「来源目录（可选）」；第 4 步 NCM 工具改为条件步骤，
+// 仅当所选曲库 / 来源目录被判为网易云曲库、或探测到 .ncm 文件时才出现（wizNeedNcm）。
 let wizStep = 1;
+let wizNeedNcm = false;
+state.wizSourceProbe = null;
+
+function wizMaxStep() { return wizNeedNcm ? 4 : 3; }
+
 function showInitWizard() {
   $('init-wizard').hidden = false;
   wizStep = 1;
+  wizNeedNcm = false;
+  state.wizSourceProbe = null;
   $('wiz-library-input').value = state.library_dir || '';
   // 预填曲库名称：已有则沿用，否则用目录名。
   if (state.library_name) {
@@ -3942,18 +4334,54 @@ function showInitWizard() {
     $('wiz-name-input').value = '';
   }
   $('wiz-ncm-input').value = '';
+  $('wiz-netease-input').value = '';
+  $('wiz-netease-status').textContent = '';
   renderWizStep();
 }
+
 function renderWizStep() {
+  const max = wizMaxStep();
   document.querySelectorAll('.wizard-step').forEach((el) => {
-    el.hidden = (Number(el.dataset.step) !== wizStep);
+    const n = Number(el.dataset.step);
+    el.hidden = (n !== wizStep) || (n === 4 && !wizNeedNcm);
   });
   $('wiz-prev').hidden = (wizStep <= 1);
-  $('wiz-next').hidden = (wizStep >= 4);
-  $('wiz-finish').hidden = (wizStep < 4);
-  // 第 4 步（本地网易云曲库目录）可选，可跳过。
-  $('wiz-skip').hidden = (wizStep !== 4);
+  $('wiz-next').hidden = (wizStep >= max);
+  $('wiz-finish').hidden = (wizStep < max);
+  // 第 3 步（来源目录）与条件第 4 步（NCM 工具）都可选，可直接完成。
+  $('wiz-skip').hidden = (wizStep < 3);
 }
+
+/** 只读探测曲库目录 + 来源目录：任一命中网易云特征或 .ncm 才显示 NCM 引导。
+ *  探测失败静默降级为「未检测到」，不阻塞向导；只在点击 / 离开输入框时触发，不轮询。 */
+async function wizProbeForNcm() {
+  const libraryPath = $('wiz-library-input').value.trim();
+  const sourcePath = $('wiz-netease-input').value.trim();
+  const paths = [libraryPath, sourcePath].filter(Boolean);
+  let hit = false;
+  let sourceProbe = null;
+  for (const p of paths) {
+    const { data } = await api('/api/sources/probe', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: p }),
+    });
+    if (!data || !data.ok) continue;
+    if (p === sourcePath && data.exists) sourceProbe = data;
+    if (data.is_netease || data.ncm_found) hit = true;
+  }
+  if (sourceProbe) state.wizSourceProbe = sourceProbe;
+  wizNeedNcm = hit;
+  if (sourcePath && sourceProbe) {
+    $('wiz-netease-status').textContent = sourceProbe.is_netease
+      ? '检测为网易云曲库：按只加不删逻辑更新，并强制使用复制方式'
+      : (sourceProbe.ncm_found ? '发现 .ncm 文件，下一步可指定解密工具' : '普通本地目录：可选复制或移动');
+  } else if (sourcePath) {
+    $('wiz-netease-status').textContent = '已选择：' + sourcePath;
+  }
+  renderWizStep();
+  return hit;
+}
+
 $('wiz-library-browse').addEventListener('click', async () => {
   const { data } = await api('/api/pick-library-directory', { method: 'POST' });
   if (data && data.ok && !data.canceled && data.path) {
@@ -3969,17 +4397,22 @@ $('wiz-netease-browse').addEventListener('click', async () => {
   const { data } = await api('/api/pick-folder', { method: 'POST' });
   if (data && data.ok && !data.canceled && data.path) {
     $('wiz-netease-input').value = data.path;
-    $('wiz-netease-status').textContent = '已选择：' + data.path;
+    await wizProbeForNcm();
   } else if (!data || !data.ok) {
     setHint((data && data.error) || '打开文件夹选择失败');
   }
 });
-$('wiz-next').addEventListener('click', () => {
+$('wiz-netease-input').addEventListener('blur', async () => {
+  if ($('wiz-netease-input').value.trim()) await wizProbeForNcm();
+});
+$('wiz-next').addEventListener('click', async () => {
   if (wizStep === 1 && !$('wiz-library-input').value.trim()) {
     setHint('请先指定曲库目录');
     return;
   }
-  if (wizStep < 4) { wizStep++; renderWizStep(); }
+  // 进入「来源目录」步骤前，先探测曲库目录本身是否含 .ncm / 是网易云曲库。
+  if (wizStep === 2) await wizProbeForNcm();
+  if (wizStep < wizMaxStep()) { wizStep++; renderWizStep(); }
 });
 $('wiz-prev').addEventListener('click', () => { if (wizStep > 1) { wizStep--; renderWizStep(); } });
 $('wiz-skip').addEventListener('click', finishInit);
@@ -3999,17 +4432,29 @@ async function finishInit() {
   if (!r.data || !r.data.ok) { setHint((r.data && r.data.error) || '初始化失败'); return; }
   state.library_dir = r.data.library_dir;
   state.library_name = r.data.library_name || library_name;
-  // 可选：指定 NCM 工具
+  // 条件步骤：仅当 NCM 引导确实出现过、且用户填了工具路径才应用。
   const ncmPath = $('wiz-ncm-input').value.trim();
-  if (ncmPath) await applyNcmTool('wiz-ncm-input', 'wiz-ncm-copy');
-  // 可选：本地网易云曲库目录（第 4 步，可跳过）
-  const neteasePath = $('wiz-netease-input').value.trim();
-  if (neteasePath) {
-    const ne = await api('/api/netease/library-dir', {
+  if (wizNeedNcm && ncmPath) await applyNcmTool('wiz-ncm-input', 'wiz-ncm-copy');
+  // 来源目录：统一走 /api/sources（后端自动检测网易云 + 强制复制），不再有独立的网易云导入界面。
+  const sourcePath = $('wiz-netease-input').value.trim();
+  if (sourcePath) {
+    const created = await api('/api/sources', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: neteasePath }),
+      body: JSON.stringify({ path: sourcePath, mode: 'copy', enabled: true }),
     });
-    if (ne.data && ne.data.ok) state.netease_library_dir = ne.data.library_dir || neteasePath;
+    if (created.data && created.data.ok) {
+      // 兼容旧端点 / CLI：网易云来源同时回填旧单值 [netease].library_dir（失败不阻塞初始化）。
+      const isNetease = created.data.source && created.data.source.is_netease;
+      if (isNetease) {
+        const ne = await api('/api/netease/library-dir', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: sourcePath }),
+        });
+        if (ne.data && ne.data.ok) state.netease_library_dir = ne.data.library_dir || sourcePath;
+      }
+    } else {
+      setHint((created.data && created.data.error) || '来源目录写入失败，可稍后在「来源管理」里添加');
+    }
   }
   $('init-wizard').hidden = true;
   setHint('曲库已初始化，正在扫描…');
@@ -4528,14 +4973,14 @@ let layoutSkin = 'modern';
 // 否则 classic 的专辑页会残留 grid（破坏 classic 1:1）。
 let albumViewBeforeModern = 'list';
 // #32：modern 按重设计稿把「共 N 首 / 刷新」放在列表筛选条右侧；
-// classic 必须挂回 .toolbar，保证经典皮肤 1:1 不变。
+// v0.12.3：classic 改挂顶栏的 #topbar-extras（原 .toolbar 整行已隐藏）。
 function syncToolbarExtras(skin) {
   const count = $('track-count');
   const refresh = $('btn-refresh');
   const bar = $('track-filter-bar');
-  const toolbar = document.querySelector('.toolbar');
-  if (!count || !refresh || !bar || !toolbar) return;
-  const target = skin === 'modern' ? bar : toolbar;
+  const extras = $('topbar-extras');
+  if (!count || !refresh || !bar || !extras) return;
+  const target = skin === 'modern' ? bar : extras;
   [count, refresh].forEach((el) => { if (el.parentNode !== target) target.appendChild(el); });
 }
 

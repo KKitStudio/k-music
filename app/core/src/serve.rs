@@ -15,7 +15,7 @@ use tower_http::services::fs::ServeDir;
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, header, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::Router;
 use rusqlite::Connection;
 use serde::Deserialize;
@@ -402,6 +402,11 @@ fn build_router(
         .route("/api/import-netease", post(import_netease_handler))
         .route("/api/import-progress", get(import_progress_handler))
         .route("/api/netease/library-dir", post(netease_library_dir_handler))
+        // 曲库来源管理（app 级 [[sources]]）：静态段 /probe 先于动态段 /:id 注册。
+        .route("/api/sources", get(sources_get_handler).post(sources_create_handler))
+        .route("/api/sources/probe", post(sources_probe_handler))
+        .route("/api/sources/:id", put(sources_update_handler).delete(sources_delete_handler))
+        .route("/api/sources/:id/import", post(sources_import_handler))
         .route("/api/playlists", get(playlists_handler).post(playlist_create_handler))
         .route("/api/playlists/:id", delete(playlist_delete_handler))
         .route("/api/playlists/:id/rename", post(playlist_rename_handler))
@@ -2141,6 +2146,301 @@ async fn import_netease_handler(State(st): State<AppState>) -> Response {
 /// 查询当前导入进度（前端轮询）。
 async fn import_progress_handler(State(st): State<AppState>) -> Response {
     axum::Json(st.import_progress.snapshot()).into_response()
+}
+
+// ============================================================
+// 曲库来源管理（app 级 [[sources]]，就地写入，旧字段 / 旧端点全部保留）
+// ============================================================
+
+/// 单条来源的 JSON 形态（前端列表 / 详情共用）。
+fn source_json(s: &config::SourceEntry) -> serde_json::Value {
+    serde_json::json!({
+        "id": s.id,
+        "name": s.name,
+        "path": s.path,
+        "is_netease": s.is_netease,
+        "mode": s.mode,
+        "enabled": s.enabled
+    })
+}
+
+/// 生成稳定且不与现有来源冲突的 id（时间戳 + 后缀兜底）。
+fn new_source_id(existing: &[config::SourceEntry]) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let base = format!("src-{nanos:x}");
+    if !existing.iter().any(|s| s.id == base) {
+        return base;
+    }
+    let mut n = 1usize;
+    loop {
+        let candidate = format!("{base}-{n}");
+        if !existing.iter().any(|s| s.id == candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// 规范化一份来源数组（与落盘内容严格一致，避免内存 / 磁盘漂移）。
+fn normalized_sources(sources: &[config::SourceEntry]) -> Vec<config::SourceEntry> {
+    let mut v = sources.to_vec();
+    for s in &mut v {
+        config::normalize_source(s);
+    }
+    v
+}
+
+/// 「就地落盘 + 同步内存」公共范式（对齐 `ui_prefs_post_handler`）：
+/// 先写盘，成功后才同步运行期配置；失败不污染内存。**绝不调用 `save_app()`**
+/// （整份重写会抹掉注释 / 未知键 / `[sources_meta]` 迁移标记）。
+fn persist_sources(
+    st: &AppState,
+    sources: &[config::SourceEntry],
+) -> std::result::Result<Vec<config::SourceEntry>, String> {
+    let app_cp = st.app_config_path.lock().unwrap().clone();
+    let normalized = normalized_sources(sources);
+    config::save_sources_in_place(&app_cp, &normalized)
+        .map_err(|e| format!("保存失败：{e}"))?;
+    st.cfg.lock().unwrap().sources = normalized.clone();
+    Ok(normalized)
+}
+
+fn sources_error(msg: String) -> Response {
+    axum::Json(serde_json::json!({ "ok": false, "error": msg })).into_response()
+}
+
+/// `GET /api/sources`：来源列表 + 角标所需的重复组数 / NCM 工具状态。
+async fn sources_get_handler(State(st): State<AppState>) -> Response {
+    let (sources, ncm_ready, pending_duplicates) = {
+        let g = st.cfg.lock().unwrap();
+        (
+            g.sources.clone(),
+            g.ncm.tool_ready(),
+            duplicates::pending_count(&*g),
+        )
+    };
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "sources": sources.iter().map(source_json).collect::<Vec<_>>(),
+        "ncm_ready": ncm_ready,
+        "pending_duplicates": pending_duplicates
+    }))
+    .into_response()
+}
+
+/// `POST /api/sources/probe`：只读探测目录（自动判定网易云曲库 / 是否存在 .ncm）。
+/// 探测失败静默降级为「未检测到」，不阻塞向导。
+async fn sources_probe_handler(axum::Json(body): axum::Json<serde_json::Value>) -> Response {
+    let path = body
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if path.is_empty() {
+        return err_json("来源目录不能为空");
+    }
+    let p = PathBuf::from(&path);
+    let probe = blocking(move || import::probe_source(&p)).await;
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "is_netease": probe.is_netease,
+        "ncm_found": probe.ncm_found,
+        "suggested_name": probe.suggested_name,
+        "exists": Path::new(&path).is_dir()
+    }))
+    .into_response()
+}
+
+/// `POST /api/sources`：新增一条来源（自动检测网易云标记，允许前端显式覆盖）。
+async fn sources_create_handler(
+    State(st): State<AppState>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Response {
+    let path = body
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if path.is_empty() {
+        return err_json("来源目录不能为空");
+    }
+    if !Path::new(&path).is_dir() {
+        return err_json("指定路径不是已存在的目录");
+    }
+    let probe_path = PathBuf::from(&path);
+    let probe = blocking(move || import::probe_source(&probe_path)).await;
+
+    let name = body
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| probe.suggested_name.clone());
+    let is_netease = body
+        .get("is_netease")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(probe.is_netease);
+    let mode = body
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("copy")
+        .to_string();
+    let enabled = body
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    let current = st.cfg.lock().unwrap().sources.clone();
+    let mut entry = config::SourceEntry {
+        id: new_source_id(&current),
+        name,
+        path,
+        is_netease,
+        mode,
+        enabled,
+    };
+    config::normalize_source(&mut entry);
+    let mut next = current;
+    next.push(entry.clone());
+    match persist_sources(&st, &next) {
+        Ok(list) => axum::Json(serde_json::json!({
+            "ok": true,
+            "source": source_json(&entry),
+            "sources": list.iter().map(source_json).collect::<Vec<_>>(),
+            "ncm_found": probe.ncm_found
+        }))
+        .into_response(),
+        Err(e) => sources_error(e),
+    }
+}
+
+/// `PUT /api/sources/:id`：部分更新一条来源；改了路径且未显式覆盖标记时重新自动检测。
+async fn sources_update_handler(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Response {
+    let current = st.cfg.lock().unwrap().sources.clone();
+    let Some(mut entry) = current.iter().find(|s| s.id == id).cloned() else {
+        return err_json("来源不存在");
+    };
+    let mut path_changed = false;
+    if let Some(p) = body.get("path").and_then(|v| v.as_str()) {
+        let p = p.trim().to_string();
+        if p.is_empty() {
+            return err_json("来源目录不能为空");
+        }
+        if !Path::new(&p).is_dir() {
+            return err_json("指定路径不是已存在的目录");
+        }
+        path_changed = p != entry.path;
+        entry.path = p;
+    }
+    if let Some(n) = body.get("name").and_then(|v| v.as_str()) {
+        entry.name = n.to_string();
+    }
+    if let Some(v) = body.get("is_netease").and_then(|v| v.as_bool()) {
+        entry.is_netease = v; // 用户手动覆盖误判
+    } else if path_changed {
+        let p = PathBuf::from(&entry.path);
+        entry.is_netease = blocking(move || import::probe_source(&p)).await.is_netease;
+    }
+    if let Some(m) = body.get("mode").and_then(|v| v.as_str()) {
+        entry.mode = m.to_string();
+    }
+    if let Some(v) = body.get("enabled").and_then(|v| v.as_bool()) {
+        entry.enabled = v;
+    }
+    config::normalize_source(&mut entry);
+    let next: Vec<config::SourceEntry> = current
+        .iter()
+        .map(|s| if s.id == id { entry.clone() } else { s.clone() })
+        .collect();
+    match persist_sources(&st, &next) {
+        Ok(list) => {
+            let saved = list.iter().find(|s| s.id == id).unwrap_or(&entry);
+            axum::Json(serde_json::json!({
+                "ok": true,
+                "source": source_json(saved),
+                "sources": list.iter().map(source_json).collect::<Vec<_>>()
+            }))
+            .into_response()
+        }
+        Err(e) => sources_error(e),
+    }
+}
+
+/// `DELETE /api/sources/:id`：删除来源（空数组也会留下迁移标记，旧单值不会复活）。
+async fn sources_delete_handler(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let current = st.cfg.lock().unwrap().sources.clone();
+    if !current.iter().any(|s| s.id == id) {
+        return err_json("来源不存在");
+    }
+    let next: Vec<config::SourceEntry> = current.into_iter().filter(|s| s.id != id).collect();
+    match persist_sources(&st, &next) {
+        Ok(list) => axum::Json(serde_json::json!({
+            "ok": true,
+            "sources": list.iter().map(source_json).collect::<Vec<_>>()
+        }))
+        .into_response(),
+        Err(e) => sources_error(e),
+    }
+}
+
+/// `POST /api/sources/:id/import`：按来源导入。
+/// 网易云来源在 `import_source_with_progress` 内强制复制 + `Origin::NeteaseSync`（只加不删）。
+async fn sources_import_handler(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let (cfg, source) = {
+        let g = st.cfg.lock().unwrap();
+        (g.clone(), g.sources.iter().find(|s| s.id == id).cloned())
+    };
+    let Some(s) = source else {
+        return err_json("来源不存在");
+    };
+    if !s.enabled {
+        return err_json("该来源已停用，请先启用");
+    }
+    let mode = if s.mode == "move" && !s.is_netease {
+        ImportMode::Move
+    } else {
+        ImportMode::Copy
+    };
+    let conn = st.conn.clone();
+    let tracker = st.import_progress.clone();
+    tracker.start(&format!("来源 {}", s.name));
+    let t = tracker.clone();
+    let path = PathBuf::from(&s.path);
+    let is_netease = s.is_netease;
+    let res = blocking(move || {
+        let c = conn.lock().unwrap();
+        import::import_source_with_progress(&cfg, &c, &path, is_netease, mode, &t)
+    })
+    .await;
+    tracker.finish();
+    match res {
+        Ok(r) => axum::Json(serde_json::json!({
+            "ok": true,
+            "imported": r.imported,
+            "skipped": r.skipped,
+            "pending": r.pending,
+            "failed": r.failed,
+            "held": r.held
+        }))
+        .into_response(),
+        Err(e) => axum::Json(serde_json::json!({ "ok": false, "error": e.to_string() }))
+            .into_response(),
+    }
 }
 
 async fn import_handler(

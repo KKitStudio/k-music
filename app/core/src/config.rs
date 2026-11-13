@@ -42,6 +42,9 @@ pub struct Config {
     /// 界面偏好（歌曲列表显示列等）。缺失时回退默认，向后兼容旧配置。
     #[serde(default)]
     pub ui: UiConfig,
+    /// 曲库来源（歌曲更新源）数组。app 级；旧配置缺失时回退空数组。
+    #[serde(default)]
+    pub sources: Vec<SourceEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -70,6 +73,54 @@ pub struct NeteaseConfig {
     /// 空 = 未设置；`从本地网易云音乐曲库更新` 按钮会提示先设置。
     #[serde(default)]
     pub library_dir: PathBuf,
+}
+
+/// 曲库来源（歌曲更新源）的一条记录，持久化于 app 级配置的 `[[sources]]` 数组。
+///
+/// `is_netease` 由选定目录后的只读探测自动得出，允许用户在界面上覆盖误判；
+/// 命中网易云曲库时导入强制走 `Copy`（只加不删），`mode` 仅作为该来源的展示回退值。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceEntry {
+    /// 稳定标识（新增时由后端生成，改名 / 改路径不变）。
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    /// 来源目录（字符串存储，便于 API 与 TOML 双向传递）。
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub is_netease: bool,
+    /// `copy` / `move`；网易云来源强制 `copy`。
+    #[serde(default = "default_source_mode")]
+    pub mode: String,
+    #[serde(default = "default_source_enabled")]
+    pub enabled: bool,
+}
+
+fn default_source_mode() -> String {
+    "copy".to_string()
+}
+
+fn default_source_enabled() -> bool {
+    true
+}
+
+/// 旧版单值 `[netease].library_dir` 迁移成来源时使用的固定 id。
+pub const LEGACY_NETEASE_SOURCE_ID: &str = "legacy-netease";
+
+/// 规范化一条来源：限制长度、修掉非法导入方式、网易云来源强制复制。
+/// 前后端写入前统一调用，避免「网易云 + 移动」这种危险组合落盘。
+pub fn normalize_source(s: &mut SourceEntry) {
+    s.id = s.id.trim().to_string();
+    s.name = s.name.trim().chars().take(120).collect();
+    s.path = s.path.trim().to_string();
+    if s.mode != "move" {
+        s.mode = "copy".to_string();
+    }
+    if s.is_netease {
+        s.mode = "copy".to_string();
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1008,6 +1059,9 @@ pub struct AppSettings {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub ui: UiConfig,
+    /// 曲库来源数组（`[[sources]]`）。缺失时回退空数组，兼容旧配置。
+    #[serde(default)]
+    pub sources: Vec<SourceEntry>,
 }
 
 /// **曲库级配置**：存放到 `<曲库>/.mt/config.toml`。
@@ -1111,6 +1165,7 @@ pub fn default_app_settings() -> AppSettings {
             level: "info".into(),
         },
         ui: UiConfig::default(),
+        sources: Vec::new(),
     }
 }
 
@@ -1196,6 +1251,7 @@ impl Config {
             server: app.server.clone(),
             logging: app.logging.clone(),
             ui,
+            sources: app.sources.clone(),
         }
     }
 
@@ -1215,6 +1271,7 @@ impl Config {
                 server: self.server.clone(),
                 logging: self.logging.clone(),
                 ui: self.ui.clone(),
+                sources: self.sources.clone(),
             },
             LibrarySettings {
                 paths: self.paths.clone(),
@@ -1616,6 +1673,110 @@ pub fn save_ui_in_place(path: &Path, ui: &UiConfig) -> Result<()> {
     Ok(())
 }
 
+/// 迁移标记段：区分「从未迁移」与「用户已删空来源」，避免旧单值每次启动复活。
+const SOURCES_META_HEADER: &str = "[sources_meta]";
+
+/// 配置文件里是否已有来源管理写入痕迹（`[[sources]]` 或迁移标记段）。
+fn has_sources_section(text: &str) -> bool {
+    text.lines().any(|l| {
+        let t = l.trim();
+        t == "[[sources]]" || t == SOURCES_META_HEADER
+    })
+}
+
+/// 就地更新 app 配置文件中的来源数组。
+///
+/// 只重写 `[[sources]]` 与 `[sources_meta]` 两段，其余段、注释、未知键与键序原样保留
+/// （与 `upsert_ui_section` 同一策略）；**不使用 `save_app()` 整份重写**。
+/// 来源数组为空时仍写出迁移标记段，保证「用户已删空」这一状态可持久化。
+pub fn upsert_sources_section(text: &str, sources: &[SourceEntry]) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+        if trimmed == "[[sources]]" || trimmed == SOURCES_META_HEADER {
+            // 丢弃旧段内容，但把段内用户手写的注释行留下来。
+            while let Some(next) = lines.peek() {
+                if next.trim_start().starts_with('[') {
+                    break;
+                }
+                let l = lines.next().unwrap();
+                if l.trim_start().starts_with('#') {
+                    out.push(l.to_string());
+                }
+            }
+            continue;
+        }
+        out.push(line.to_string());
+    }
+    // 去掉尾部累积空行，再统一追加一段，避免每次写入都让段落漂移。
+    while out.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+        out.pop();
+    }
+    if !out.is_empty() {
+        out.push(String::new());
+    }
+    out.push("# 曲库来源（由「来源管理」维护；仅本段由程序就地重写）".to_string());
+    out.push(SOURCES_META_HEADER.to_string());
+    out.push("migrated = true".to_string());
+    for s in sources {
+        out.push(String::new());
+        out.push("[[sources]]".to_string());
+        out.push(format!("id = {}", toml::Value::String(s.id.clone())));
+        out.push(format!("name = {}", toml::Value::String(s.name.clone())));
+        out.push(format!("path = {}", toml::Value::String(s.path.clone())));
+        out.push(format!("is_netease = {}", s.is_netease));
+        out.push(format!("mode = {}", toml::Value::String(s.mode.clone())));
+        out.push(format!("enabled = {}", s.enabled));
+    }
+    let mut result = out.join("\n");
+    if !result.ends_with('\n') {
+        result.push('\n');
+    }
+    result
+}
+
+/// 写回来源数组（就地更新 + 盖 `[meta]` 版本信息）。运行期配置的同步由调用方负责。
+pub fn save_sources_in_place(path: &Path, sources: &[SourceEntry]) -> Result<()> {
+    let mut normalized: Vec<SourceEntry> = sources.to_vec();
+    for s in &mut normalized {
+        normalize_source(s);
+    }
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let new_text = inject_meta(&upsert_sources_section(&text, &normalized), &ConfigMeta::current());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, new_text)?;
+    Ok(())
+}
+
+/// 旧版单值 `[netease].library_dir` → 来源数组的一次性兼容迁移（内存 + 就地写盘一次）。
+///
+/// 仅在「来源数组为空、配置文件尚无来源段痕迹、旧单值非空」时执行；旧字段本身保留，
+/// 供旧 `/api/import-netease` 与 `mt-cli import-netease` 继续兜底。写盘一次是为了让
+/// 「用户已删空来源」持久化，避免重启后旧来源复活。
+pub fn migrate_legacy_netease_source(app: &mut AppSettings, path: &Path) {
+    if !app.sources.is_empty() || app.netease.library_dir.as_os_str().is_empty() {
+        return;
+    }
+    let raw = std::fs::read_to_string(path).unwrap_or_default();
+    if has_sources_section(&raw) {
+        return;
+    }
+    app.sources.push(SourceEntry {
+        id: LEGACY_NETEASE_SOURCE_ID.to_string(),
+        name: "本地网易云音乐曲库".to_string(),
+        path: app.netease.library_dir.to_string_lossy().to_string(),
+        is_netease: true,
+        mode: "copy".to_string(),
+        enabled: true,
+    });
+    if let Err(e) = save_sources_in_place(path, &app.sources) {
+        eprintln!("[config] 迁移本地网易云曲库来源失败：{e}");
+    }
+}
+
 /// 冲突时备份原配置文件，返回备份路径（保留用户内容，便于事后追溯）。
 ///
 /// 备份名：`<原文件名>.conflict-<当前版本>.bak`，同版本重复冲突不覆盖上一份。
@@ -1956,6 +2117,10 @@ pub fn load_startup() -> Result<LoadedConfig> {
             }
         }
     }
+    // 来源数组兼容迁移：旧版单值 [netease].library_dir → 一条「网易云曲库」来源。
+    // 放在 app 配置写盘决策之后，确保首次生成 / 冲突重建已完成，就地写盘不会被覆盖。
+    migrate_legacy_netease_source(&mut app, &app_path);
+
     // 迁移 1 补齐的曲库路径：就地写入顶层键，不重写整份文件。
     if app_existed && !had_last {
         if let Some(dir) = app.last_library_dir.clone() {
@@ -2919,6 +3084,105 @@ my_own_key = 42
         assert_eq!(back.layout_for("albums"), LAYOUT_STYLE_VERTICAL);
         let sum: f64 = all_track_column_keys().iter().map(|k| back.width_for(k)).sum();
         assert!((sum - 100.0).abs() < 0.01, "落盘后占比之和应为 100，实为 {sum}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn upsert_sources_section_preserves_comments_and_unknown_keys() {
+        let orig = r#"# 用户自备配置，请勿删除
+last_library_dir = 'D:\music\lib'
+
+[netease]
+library_dir = "D:/CloudMusic"
+
+# 手工加的未知键，必须原样保留
+my_custom = "keep me"
+"#;
+        let sources = vec![SourceEntry {
+            id: "src-1".into(),
+            name: "本地曲库".into(),
+            path: "D:/CloudMusic".into(),
+            is_netease: true,
+            mode: "copy".into(),
+            enabled: true,
+        }];
+        let out = upsert_sources_section(orig, &sources);
+        assert!(out.contains("# 用户自备配置，请勿删除"), "注释应保留");
+        assert!(out.contains("# 手工加的未知键，必须原样保留"), "注释应保留");
+        assert!(out.contains("my_custom = \"keep me\""), "未知键应保留");
+        assert!(out.contains("[[sources]]"), "应写出来源段");
+        assert!(out.contains("is_netease = true"));
+        // [sources_meta] 属未知段，serde 应忽略；结果仍是可解析的合法 TOML。
+        let parsed: AppSettings = toml::from_str(&out).expect("应为合法 TOML");
+        assert_eq!(parsed.sources.len(), 1);
+        assert_eq!(parsed.sources[0].path, "D:/CloudMusic");
+        assert_eq!(parsed.netease.library_dir, PathBuf::from("D:/CloudMusic"));
+    }
+
+    #[test]
+    fn upsert_sources_section_replaces_old_array_and_keeps_empty_state() {
+        let orig = r#"[sources_meta]
+migrated = true
+
+[[sources]]
+id = "old"
+name = "旧来源"
+path = "D:/old"
+is_netease = false
+mode = "move"
+enabled = false
+"#;
+        let out = upsert_sources_section(orig, &[]);
+        assert!(!out.contains("id = \"old\""), "旧来源应被移除");
+        assert_eq!(out.matches("[[sources]]").count(), 0, "空数组不应残留来源段");
+        assert!(out.contains("[sources_meta]"), "空数组也要留下迁移标记");
+        assert!(has_sources_section(&out), "空数组写入后不应再触发旧值迁移");
+        let parsed: AppSettings = toml::from_str(&out).expect("应为合法 TOML");
+        assert!(parsed.sources.is_empty());
+    }
+
+    #[test]
+    fn normalize_source_forces_copy_for_netease() {
+        let mut s = SourceEntry {
+            id: " x ".into(),
+            name: "  N  ".into(),
+            path: " D:/x ".into(),
+            is_netease: true,
+            mode: "move".into(),
+            enabled: true,
+        };
+        normalize_source(&mut s);
+        assert_eq!(s.id, "x");
+        assert_eq!(s.name, "N");
+        assert_eq!(s.path, "D:/x");
+        assert_eq!(s.mode, "copy", "网易云来源必须强制复制");
+    }
+
+    #[test]
+    fn save_sources_in_place_writes_and_reroundtrips() {
+        let dir = std::env::temp_dir().join("kqk_sources_test_save");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("应能建临时目录");
+        let path = dir.join("kqk-app.toml");
+        std::fs::write(&path, "# 保留我\n[netease]\nlibrary_dir = \"D:/CloudMusic\"\n")
+            .expect("应能写初始文件");
+
+        let sources = vec![SourceEntry {
+            id: "src-1".into(),
+            name: "测试来源".into(),
+            path: "D:/CloudMusic".into(),
+            is_netease: true,
+            mode: "move".into(),
+            enabled: false,
+        }];
+        save_sources_in_place(&path, &sources).expect("保存应成功");
+        let text = std::fs::read_to_string(&path).expect("应能读回");
+        assert!(text.contains("# 保留我"), "注释应保留");
+        assert!(text.contains("[meta]"), "应写入 [meta] 段");
+        let back: AppSettings = toml::from_str(&text).expect("落盘文件应能解析");
+        assert_eq!(back.sources.len(), 1);
+        assert_eq!(back.sources[0].mode, "copy", "网易云来源落盘时强制复制");
+        assert!(!back.sources[0].enabled);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

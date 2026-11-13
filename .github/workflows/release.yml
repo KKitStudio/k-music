@@ -53,12 +53,42 @@ jobs:
           Compress-Archive -Path dist\* -DestinationPath $zip -Force
           echo "ARTIFACT=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      # 安装版（setup.exe）：用 NSIS 把 dist/ 打成可安装包（开始菜单/桌面快捷方式 + 卸载程序 + 内置 WebView2 检测）。
+      - name: Install NSIS
+        run: choco install nsis -y
+
+      - name: Build installer (setup.exe)
+        shell: pwsh
+        # 安装包属于尽力而为：即使 NSIS 失败也不阻断 zip 上传与 Release 创建。
+        continue-on-error: true
+        run: |
+          $ver = "${{ github.ref_name }}".TrimStart('v')
+          # choco install 不会把新装目录刷新到后续 step 的 PATH，这里显式定位可执行文件。
+          $candidates = @(
+            "$env:ChocolateyInstall\bin\makensis.exe",
+            "C:\Program Files (x86)\NSIS\makensis.exe",
+            "C:\Program Files\NSIS\makensis.exe"
+          )
+          $makensis = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $makensis) {
+            Write-Host "makensis.exe not found at:"
+            $candidates | ForEach-Object { Write-Host "  $_" }
+            throw "makensis.exe not found after choco install nsis"
+          }
+          Write-Host "Using makensis: $makensis"
+          & $makensis /DPRODUCT_VERSION="$ver" /DDIST_DIR="dist" .github\scripts\installer.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed with exit code $LASTEXITCODE" }
+          $setup = "k-music-setup-$ver-x64.exe"
+          echo "SETUP=$setup" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       # 手动触发时也保留产物，便于验证
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: k-music-dist
-          path: k-music-*.zip
+          path: |
+            k-music-*.zip
+            k-music-*-setup-*.exe
 
       # 仅标签推送时创建 Release；release 说明来自仓库根 release-note.md（内联变更内容，由发布流程生成后打进 public 树）
       - name: Create GitHub Release
@@ -66,7 +96,11 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           name: K music ${{ github.ref_name }}
-          files: k-music-*.zip
+          files: |
+            k-music-*.zip
+            k-music-*-setup-*.exe
+          # setup.exe 可选：安装包构建失败时仍发布 zip，不因缺文件报错。
+          fail_on_unmatched_files: false
           body_path: release-note.md
 
 # 备注（已知风险，首次跑后按需调整）：

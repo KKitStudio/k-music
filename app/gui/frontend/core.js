@@ -5561,13 +5561,34 @@ function saveNetworkPrefs(patch) {
   }).catch(() => {});
 }
 
-// 外链统一走系统默认浏览器（Tauri 不处理 target=_blank）；无插件时回退 window.open。
+// 外链统一走系统默认浏览器（Tauri 不处理 target=_blank）。
+// Tauri v2 注意：窗口经 WebviewUrl::External 加载 http://127.0.0.1:<动态端口>，ACL 判为 Origin::Remote；
+// capability 须用 remote.urls 放行该来源，否则 IPC 被 ACL 拒绝、回退 window.open 被 WebView 吞掉 → 点击无反应。
+// 更正：withGlobalTauri 在 v2 下也会注入插件全局 API（__TAURI__.shell 并非「v1 恒空」）；旧写法与显式 IPC 落到同一条 ACL 检查。
+// 正确路径是 IPC 命令 plugin:shell|open（载荷 { path }），由 lib.rs 已注册的
+// tauri-plugin-shell 与 capabilities/update-download.json 的 shell:allow-open 授权给 main 窗口。
 function openExternal(url) {
+  if (!url) return;
+  const fallback = () => {
+    try { window.open(url, '_blank', 'noopener'); } catch (e) { /* 浏览器禁用弹窗/无 WebView */ }
+  };
+  let invoke = null;
   try {
     const t = window.__TAURI__;
-    if (t && t.shell && typeof t.shell.open === 'function') { t.shell.open(url); return; }
-  } catch (e) { /* 落到下方回退 */ }
-  window.open(url, '_blank', 'noopener');
+    if (t && t.core && typeof t.core.invoke === 'function') invoke = t.core.invoke;
+    else {
+      // 窗口经 WebviewUrl::External 加载本机 axum 页面时，withGlobalTauri 注入的 __TAURI__
+      // 可能不可用；Tauri v2 底层的 __TAURI_INTERNALS__.invoke 始终存在且命令签名一致。
+      const internals = window.__TAURI_INTERNALS__;
+      if (internals && typeof internals.invoke === 'function') invoke = internals.invoke;
+    }
+  } catch (e) { /* 落到浏览器回退 */ }
+  if (!invoke) { fallback(); return; }
+  try {
+    const p = invoke('plugin:shell|open', { path: url });
+    // 命令被拒 / 插件缺失 / capability 未生效时仍留一个出口，不让点击变成「无反应」。
+    if (p && typeof p.catch === 'function') p.catch(fallback);
+  } catch (e) { fallback(); }
 }
 
 function initUpdateEvents() {

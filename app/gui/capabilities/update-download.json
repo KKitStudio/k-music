@@ -1,6 +1,9 @@
 {
   "identifier": "update-download",
-  "description": "允许更新检测页/关于页用系统默认浏览器打开下载链接与项目主页（外链修复 A 方案）",
+  "description": "允许更新检测页/关于页用系统默认浏览器打开下载链接与项目主页（外链修复 A 方案）；窗口经 WebviewUrl::External 加载 http://127.0.0.1:<动态端口>，Tauri ACL 判为 Origin::Remote，须显式放行该来源",
   "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*"]
+  },
   "permissions": ["shell:allow-open"]
 }

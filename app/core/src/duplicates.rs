@@ -75,12 +75,34 @@ impl From<crate::import::ImportMode> for FileMode {
     }
 }
 
-/// 判重三元组（C2）。`key()` 统一小写，大小写差异不产生两个重复组。
+/// 判重三元组（历史 C2：歌手+歌曲+格式）。`key()` 统一小写。
+/// v0.14.0 起判重身份改为 `identity_key()`（歌手+歌曲+时长秒级桶，与曲源/格式无关），
+/// Triple 仅保留供旧决策历史兼容与 UI 展示，不再作为分组/查库键。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Triple {
     pub artist: String,
     pub title: String,
     pub format: String,
+}
+
+/// 时长秒级桶：同一首歌的不同编码容器时长接近，用秒取整作为身份消歧项。
+/// 时长缺失（None）返回 -1，作为独立桶，避免所有无时长歌曲互相撞。
+pub fn duration_bucket(duration_ms: Option<i64>) -> i64 {
+    match duration_ms {
+        Some(ms) if ms >= 0 => ms / 1000,
+        _ => -1,
+    }
+}
+
+/// v0.14.0 统一身份键：lower(artist) + lower(title) + 时长秒级桶。
+/// 与曲源、格式、码率无关，用于全来源（scan/manual/netease-sync/ncm-backfill）共用判重。
+pub fn identity_key(artist: &str, title: &str, duration_ms: Option<i64>) -> String {
+    format!(
+        "{}\u{1f}{}\u{1f}{}",
+        artist.to_lowercase(),
+        title.to_lowercase(),
+        duration_bucket(duration_ms)
+    )
 }
 
 impl Triple {
@@ -98,6 +120,35 @@ impl Triple {
             self.title.to_lowercase(),
             self.format.to_lowercase()
         )
+    }
+}
+
+/// v0.14.0 质量等价判定：同一身份下，格式相同且码率档位接近视为「同一质量版本」→ 自动跳过。
+/// 格式不同（如 mp3 vs flac）或码率档位差超过阈值 → 视为「不同质量版本」→ 挂起让用户选。
+/// 码率未知时退化为「格式相同即等价」（保守：不误判不同版本为等价）。
+pub fn quality_equivalent(
+    cand_format: &str,
+    cand_bitrate: Option<i64>,
+    cand_quality: &str,
+    exist_format: Option<&str>,
+    exist_bitrate: Option<i64>,
+    exist_quality: Option<&str>,
+) -> bool {
+    let ef = match exist_format {
+        Some(f) => f.to_ascii_lowercase(),
+        None => return false,
+    };
+    if ef != cand_format.to_ascii_lowercase() {
+        return false;
+    }
+    match (cand_bitrate, exist_bitrate) {
+        (Some(a), Some(b)) => {
+            // 相对差 ≤12% 视为同档（覆盖编码器标称抖动），否则不同质量版本。
+            let hi = a.max(b).max(1);
+            let lo = a.min(b);
+            (hi - lo) as f64 / hi as f64 <= 0.12
+        }
+        _ => cand_quality == exist_quality.unwrap_or(""),
     }
 }
 
@@ -166,11 +217,26 @@ pub struct Candidate {
     /// NCM 转换产物是临时文件；挂起时必须搬进 pending 目录，否则会被下次 scan 重新入库。
     #[serde(default)]
     pub is_temp: bool,
+    /// 曲源 id（app 级 `[[sources]]` 的稳定 id）。`None` = 未指定来源（扫描 /
+    /// NCM 回填 / 库内文件）。落库写入 `download_records.source_kind`；替换决策
+    /// 时以新文件的归属覆盖旧行，实现「从原曲源列表移到新曲源列表」。
+    /// `serde(default)` 保证旧 `pending-duplicates.json` 反序列化兼容。
+    #[serde(default)]
+    pub source_id: Option<String>,
+    /// v0.14.0：NCM 转换产物的来源信息 `(曲源 id, 原始 .ncm 文件名)`。
+    /// 落库写入 download_records.ncm_origin_id / ncm_original_name，供转换前短路判重。
+    /// 仅 NCM 转换候选携带 Some，其它来源为 None。serde(default) 兼容旧 pending JSON。
+    #[serde(default)]
+    pub ncm_origin: Option<(String, String)>,
 }
 
 impl Candidate {
     pub fn triple(&self) -> Triple {
         Triple::new(&self.artist, &self.name, &self.format)
+    }
+    /// v0.14.0 统一身份键（歌手+歌曲+时长秒级桶），与曲源/格式无关。
+    pub fn identity(&self) -> String {
+        identity_key(&self.artist, &self.name, self.duration_ms)
     }
     /// 挂起时是否需要把文件搬进 `.mt/pending-duplicates/`。
     /// manual 的 Copy / Move 源文件**原位不动**（W1①），只有曲库内文件 / NCM 临时产物才搬。
@@ -485,48 +551,64 @@ pub fn candidate_from_audio(
         mode,
         origin,
         is_temp: false,
+        // 曲源归属由 import.rs 阶段①按入口显式覆盖；扫描 / NCM 回填保持 None。
+        source_id: None,
+        // NCM 来源由 import.rs 转换后在候选上显式覆盖；其它来源保持 None。
+        ncm_origin: None,
     })
 }
 
-/// 按三元组查库内已有记录；`exclude` 用于排除批次自身路径（scan 兜底：否则每个变更文件都跟自己撞）。
+/// v0.14.0：按统一身份（artist + title + 时长秒级桶）查库内已有记录；
+/// `exclude` 用于排除批次自身路径（scan 兜底：否则每个变更文件都跟自己撞）。
+/// 时长用 `(duration_ms/1000)` 精确匹配；NULL 时长用 `duration_ms IS NULL` 归入 -1 桶。
 pub fn existing_for(
     conn: &Connection,
-    triple: &Triple,
+    artist: &str,
+    title: &str,
+    dur_bucket: i64,
     exclude: &[String],
 ) -> Result<Option<Existing>> {
-    let mut stmt = conn.prepare(
+    let dur_sql = if dur_bucket < 0 {
+        "duration_ms IS NULL"
+    } else {
+        "duration_ms/1000 = ?3"
+    };
+    let sql = format!(
         "SELECT local_id, name, artist, format, sample_rate, bit_depth, bitrate, channels,
                 duration_ms, quality_tier, file_size, file_path, file_mtime
          FROM download_records
          WHERE status='downloaded' AND file_path IS NOT NULL
            AND lower(COALESCE(artist,''))=lower(?1)
            AND lower(COALESCE(name,''))=lower(?2)
-           AND lower(COALESCE(format,''))=lower(?3)
-         ORDER BY local_id ASC LIMIT 32",
-    )?;
-    let rows = stmt.query_map(
-        params![triple.artist, triple.title, triple.format],
-        |r| {
-            Ok(Existing {
-                local_id: r.get(0)?,
-                name: r.get(1)?,
-                artist: r.get(2)?,
-                format: r.get(3)?,
-                sample_rate: r.get(4)?,
-                bit_depth: r.get(5)?,
-                bitrate: r.get(6)?,
-                channels: r.get(7)?,
-                duration_ms: r.get(8)?,
-                quality_tier: r.get(9)?,
-                file_size: r.get(10)?,
-                file_path: r.get(11)?,
-                file_mtime: r.get(12)?,
-            })
-        },
-    )?;
+           AND {dur_sql}
+         ORDER BY local_id ASC LIMIT 32"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let map_row = |r: &rusqlite::Row<'_>| -> rusqlite::Result<Existing> {
+        Ok(Existing {
+            local_id: r.get(0)?,
+            name: r.get(1)?,
+            artist: r.get(2)?,
+            format: r.get(3)?,
+            sample_rate: r.get(4)?,
+            bit_depth: r.get(5)?,
+            bitrate: r.get(6)?,
+            channels: r.get(7)?,
+            duration_ms: r.get(8)?,
+            quality_tier: r.get(9)?,
+            file_size: r.get(10)?,
+            file_path: r.get(11)?,
+            file_mtime: r.get(12)?,
+        })
+    };
+    let rows: Vec<Existing> = if dur_bucket < 0 {
+        stmt.query_map(params![artist, title], map_row)?.collect::<rusqlite::Result<Vec<_>>>()?
+    } else {
+        stmt.query_map(params![artist, title, dur_bucket], map_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
     let mut first: Option<Existing> = None;
-    for row in rows {
-        let e = row?;
+    for e in rows {
         // 路径已被排除（批次自身）或落在挂起/回收站目录内 → 不是「库内那份」。
         if exclude.iter().any(|p| p == &e.file_path)
             || e.file_path.contains("pending-duplicates")
@@ -552,27 +634,28 @@ pub enum BucketPlan {
     Import,
 }
 
-/// `existing_size` = Some(库内那份的大小) 表示三元组命中；`target_same_size` = 归位目标已存在且同大小
-/// （兼容旧行为：网易云同步的库内记录可能因重扫后标签漂移而三元组不命中）。
+/// v0.14.0 全来源统一判定树：同一「身份」下按质量决定自动跳过或挂起让用户选。
+/// - `bucket_count >= 2`：同批多个同身份文件 → Hold（不让 readdir 顺序决定，交用户选版本）
+/// - 库内命中 + 质量等价 → Skip（自动跳过，同一首歌从不同曲源导入也走这里）
+/// - 库内命中 + 质量不同 → Hold（列出不同质量版本让用户选留哪个）
+/// - 库内未命中 → Import
+/// `target_same_size` 保留参数但仅作为「无法取元数据时的质量等价兜底」（归位目标已存在且同大小）。
 pub fn plan_bucket(
-    new_count: usize,
-    origin: Origin,
-    existing_size: Option<i64>,
-    candidate_size: i64,
+    bucket_count: usize,
+    has_existing: bool,
+    quality_equiv: bool,
     target_same_size: bool,
 ) -> BucketPlan {
-    if new_count >= 2 {
-        return BucketPlan::Hold; // A 分支：不让 read_dir / 选文件顺序决定谁入库
+    if bucket_count >= 2 {
+        return BucketPlan::Hold;
     }
-    match existing_size {
-        Some(sz) => {
-            if origin.is_periodic() && (sz == candidate_size || target_same_size) {
-                BucketPlan::Skip // B 分支：周期性同步的快速通道
-            } else {
-                BucketPlan::Hold // C 分支 / manual / scan 一律挂起
-            }
-        }
-        None => BucketPlan::Import, // D 分支
+    if !has_existing {
+        return BucketPlan::Import;
+    }
+    if quality_equiv || target_same_size {
+        BucketPlan::Skip
+    } else {
+        BucketPlan::Hold
     }
 }
 
@@ -599,42 +682,92 @@ pub struct BatchOutcome {
 // 阶段②：批次结束统一判定 + 落地
 // ============================================================
 
+/// 批次钩子：让调用方在「每首开始归位 / 每首结果落定」时实时上报进度，
+/// 并在分桶循环之间协作式检查停止请求。
+///
+/// 约束：`finalize_with_hook` 对每个候选索引**恰好**触发一次 `on_begin` +
+/// `on_settled`（含 Hold 桶的多个索引与取消后未处理的剩余索引），否则
+/// `ProgressTracker` 的 `processed` 无法收敛到 `total`。
+pub trait BatchHook {
+    fn on_begin(&self, index: usize, c: &Candidate);
+    fn on_settled(&self, index: usize, c: &Candidate, disposition: &Disposition);
+    fn is_cancelled(&self) -> bool;
+}
+
 /// 把候选按三元组分桶，批次结束统一判定；只在这一步写 DB / 搬文件 / 登记挂起组。
+/// 保留原签名作为薄包装，启动扫描（`library.rs`）与其它调用方零改动。
 pub fn finalize(
     cfg: &Config,
     conn: &Connection,
     candidates: &[Candidate],
+) -> Result<BatchOutcome> {
+    finalize_with_hook(cfg, conn, candidates, None)
+}
+
+/// 带可选钩子的批次实现。`hook=None` 时与原 `finalize` 行为逐字等价。
+///
+/// 停止语义：分桶循环开始前检查取消标志，命中则**跳过剩余桶**，已入库结果不回滚；
+/// 剩余索引在补结算循环里按预填的 `Skipped` 结算，保证进度收敛到总数。
+pub fn finalize_with_hook(
+    cfg: &Config,
+    conn: &Connection,
+    candidates: &[Candidate],
+    hook: Option<&dyn BatchHook>,
 ) -> Result<BatchOutcome> {
     let n = candidates.len();
     let mut out = BatchOutcome {
         dispositions: vec![Disposition::Skipped; n],
         ..Default::default()
     };
+    let mut settled = vec![false; n];
     let mut buckets: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, c) in candidates.iter().enumerate() {
-        buckets.entry(c.triple().key()).or_default().push(i);
+        // v0.14.0：按统一身份（artist+title+时长桶）分桶，跨曲源同歌同身份。
+        buckets.entry(c.identity()).or_default().push(i);
     }
     let mut store = read_store(cfg);
     let mut dirty = false;
 
     for (_key, idxs) in buckets {
+        if hook.is_some_and(|h| h.is_cancelled()) {
+            break;
+        }
         let exclude: Vec<String> = idxs.iter().map(|&i| candidates[i].source.clone()).collect();
         let first = &candidates[idxs[0]];
-        let existing = existing_for(conn, &first.triple(), &exclude)?;
+        let existing = existing_for(
+            conn,
+            &first.artist,
+            &first.name,
+            duration_bucket(first.duration_ms),
+            &exclude,
+        )?;
         let target_same_size = Path::new(&first.target)
             .metadata()
             .map(|m| m.len() as i64 == first.size)
             .unwrap_or(false);
+        // 统一质量判定：身份命中的前提下比较格式 + 码率档。
+        let quality_equiv = existing.as_ref().is_some_and(|e| {
+            quality_equivalent(
+                &first.format,
+                first.bitrate,
+                &first.quality_tier,
+                e.format.as_deref(),
+                e.bitrate,
+                e.quality_tier.as_deref(),
+            )
+        });
         let plan = plan_bucket(
             idxs.len(),
-            first.origin,
-            existing.as_ref().map(|e| e.file_size),
-            first.size,
+            existing.is_some(),
+            quality_equiv,
             target_same_size,
         );
         match plan {
             BucketPlan::Import => {
                 let i = idxs[0];
+                if let Some(h) = hook {
+                    h.on_begin(i, &candidates[i]);
+                }
                 match import_candidate(cfg, conn, &candidates[i]) {
                     Ok(inserted) => {
                         out.dispositions[i] = if inserted {
@@ -652,14 +785,30 @@ pub fn finalize(
                         log_for_candidate(cfg, "failed", &candidates[i], "error", Some(&e.to_string()));
                     }
                 }
+                if let Some(h) = hook {
+                    h.on_settled(i, &candidates[i], &out.dispositions[i]);
+                }
+                settled[i] = true;
             }
             BucketPlan::Skip => {
                 let i = idxs[0];
+                if let Some(h) = hook {
+                    h.on_begin(i, &candidates[i]);
+                }
                 out.skipped += 1;
                 out.dispositions[i] = Disposition::Skipped;
                 log_for_candidate(cfg, "skip", &candidates[i], "ok", Some("同大小，静默跳过"));
+                if let Some(h) = hook {
+                    h.on_settled(i, &candidates[i], &out.dispositions[i]);
+                }
+                settled[i] = true;
             }
             BucketPlan::Hold => {
+                for &i in &idxs {
+                    if let Some(h) = hook {
+                        h.on_begin(i, &candidates[i]);
+                    }
+                }
                 match register_group(cfg, &candidates, &idxs, existing, &mut store) {
                     Ok(_) => {
                         for &i in &idxs {
@@ -677,7 +826,23 @@ pub fn finalize(
                         }
                     }
                 }
+                for &i in &idxs {
+                    if let Some(h) = hook {
+                        h.on_settled(i, &candidates[i], &out.dispositions[i]);
+                    }
+                    settled[i] = true;
+                }
             }
+        }
+    }
+    // 补结算：取消跳过的桶 / 任何未被上面覆盖的索引，按预填的 Skipped 收敛。
+    for i in 0..n {
+        if settled[i] {
+            continue;
+        }
+        if let Some(h) = hook {
+            h.on_begin(i, &candidates[i]);
+            h.on_settled(i, &candidates[i], &out.dispositions[i]);
         }
     }
     if dirty {
@@ -793,7 +958,7 @@ fn import_candidate(_cfg: &Config, conn: &Connection, c: &Candidate) -> Result<b
         }
     }
     let md = std::fs::metadata(&target)?;
-    let inserted = db::upsert_local_record(
+    let inserted = db::upsert_local_record_with_source(
         conn,
         &target.to_string_lossy(),
         &c.name,
@@ -811,6 +976,8 @@ fn import_candidate(_cfg: &Config, conn: &Connection, c: &Candidate) -> Result<b
         file_created_ms(&target),
         c.genre.as_deref(),
         c.year,
+        c.source_id.as_deref(),
+        c.ncm_origin.as_ref().map(|(id, name)| (id.as_str(), name.as_str())),
     )?;
     Ok(inserted)
 }
@@ -953,7 +1120,14 @@ fn apply_one(cfg: &Config, conn: &Connection, group: &DuplicateGroup, choice: &s
         }
     }
     let md = std::fs::metadata(&target)?;
-    db::upsert_local_record(
+    // C3①：复用旧 file_path 走 UPDATE，保留 local_id 与播放列表引用；同时把归属
+    // 改成新文件的曲源，前端重新分组即「从原列表删除、在新列表添加」。
+    // 旧 pending JSON 无来源信息时显式归「未指定来源」（不能传 None，那会保留旧归属）。
+    let source_id = chosen
+        .source_id
+        .as_deref()
+        .unwrap_or(db::UNSPECIFIED_SOURCE);
+    db::upsert_local_record_with_source(
         conn,
         &target.to_string_lossy(),
         &chosen.name,
@@ -971,6 +1145,8 @@ fn apply_one(cfg: &Config, conn: &Connection, group: &DuplicateGroup, choice: &s
         file_created_ms(&target),
         chosen.genre.as_deref(),
         chosen.year,
+        Some(source_id),
+        chosen.ncm_origin.as_ref().map(|(id, name)| (id.as_str(), name.as_str())),
     )?;
     Ok(())
 }
@@ -1041,27 +1217,65 @@ mod tests {
     }
 
     #[test]
-    fn plan_bucket_matches_w3_a_prime_table() {
+    fn plan_bucket_unified_identity_quality_table() {
         use BucketPlan::*;
-        // A：同批 ≥2，任意 origin 一律挂起
-        for o in [Origin::NeteaseSync, Origin::NcmBackfill, Origin::Manual, Origin::Scan] {
-            assert_eq!(plan_bucket(2, o, None, 100, false), Hold);
-            assert_eq!(plan_bucket(3, o, Some(100), 100, false), Hold);
-        }
-        // B：周期性同步 + 1 个新文件 + 库内命中 + 同大小 → 静默跳过
-        assert_eq!(plan_bucket(1, Origin::NeteaseSync, Some(100), 100, false), Skip);
-        assert_eq!(plan_bucket(1, Origin::NcmBackfill, Some(100), 100, false), Skip);
-        // 兼容旧行为：目标文件同大小亦跳过
-        assert_eq!(plan_bucket(1, Origin::NeteaseSync, Some(999), 100, true), Skip);
-        // C：周期性同步但大小不同 → 挂起
-        assert_eq!(plan_bucket(1, Origin::NeteaseSync, Some(999), 100, false), Hold);
-        // manual / scan 命中即挂起，即使同大小
-        assert_eq!(plan_bucket(1, Origin::Manual, Some(100), 100, false), Hold);
-        assert_eq!(plan_bucket(1, Origin::Scan, Some(100), 100, false), Hold);
-        assert_eq!(plan_bucket(1, Origin::Scan, Some(100), 100, true), Hold);
-        // D：无命中 → 正常入库
-        assert_eq!(plan_bucket(1, Origin::Manual, None, 100, false), Import);
-        assert_eq!(plan_bucket(1, Origin::Scan, None, 100, false), Import);
+        // A：同批 ≥2 个同身份文件 → Hold（不区分曲源，不让 readdir 顺序决定版本）
+        assert_eq!(plan_bucket(2, false, false, false), Hold);
+        assert_eq!(plan_bucket(2, true, true, false), Hold);
+        assert_eq!(plan_bucket(3, true, false, true), Hold);
+        // B：库内命中 + 质量等价 → Skip（同一首歌从不同曲源导入自动跳过）
+        assert_eq!(plan_bucket(1, true, true, false), Skip);
+        assert_eq!(plan_bucket(1, true, true, true), Skip);
+        // 元数据不足时：归位目标已存在且同大小 → 兜底 Skip
+        assert_eq!(plan_bucket(1, true, false, true), Skip);
+        // C：库内命中但质量不同 → Hold（列出不同质量版本让用户选留哪个）
+        assert_eq!(plan_bucket(1, true, false, false), Hold);
+        // D：库内未命中 → Import
+        assert_eq!(plan_bucket(1, false, false, false), Import);
+        assert_eq!(plan_bucket(1, false, false, true), Import);
+    }
+
+    #[test]
+    fn identity_key_unifies_sources_and_formats() {
+        // 身份 = lower(artist) + lower(title) + 时长秒桶，与曲源 / 格式 / 码率无关
+        assert_eq!(
+            identity_key("Alan Walker", "Faded", Some(210_400)),
+            identity_key("alan walker", "FADED", Some(210_999)),
+        );
+        // 不同秒桶 → 不同身份
+        assert_ne!(
+            identity_key("Alan Walker", "Faded", Some(210_000)),
+            identity_key("Alan Walker", "Faded", Some(212_000)),
+        );
+        // 时长缺失独立桶 -1，不与 0 秒冲突
+        assert_eq!(identity_key("A", "T", None), identity_key("a", "t", None));
+        assert_ne!(identity_key("A", "T", None), identity_key("A", "T", Some(0)));
+        assert_eq!(duration_bucket(Some(1_999)), 1);
+        assert_eq!(duration_bucket(None), -1);
+    }
+
+    #[test]
+    fn quality_equivalent_distinguishes_format_and_bitrate() {
+        // 同格式 + 码率相对差 ≤12% → 同一质量版本
+        assert!(quality_equivalent(
+            "flac", Some(1000), "lossless",
+            Some("FLAC"), Some(1050), Some("lossless"),
+        ));
+        // 同格式但码率档差明显 → 不同质量版本
+        assert!(!quality_equivalent(
+            "mp3", Some(128), "lossy",
+            Some("mp3"), Some(320), Some("lossy"),
+        ));
+        // 格式不同 → 不同质量版本
+        assert!(!quality_equivalent(
+            "flac", Some(1000), "lossless",
+            Some("mp3"), Some(320), Some("lossy"),
+        ));
+        // 码率未知时以 quality_tier 兜底
+        assert!(quality_equivalent("flac", None, "lossless", Some("flac"), None, Some("lossless")));
+        assert!(!quality_equivalent("flac", None, "lossless", Some("flac"), None, Some("lossy")));
+        // 库内无格式信息 → 不等价（保守，不误自动跳过）
+        assert!(!quality_equivalent("flac", Some(1000), "lossless", None, Some(1000), Some("lossless")));
     }
 
     #[test]
@@ -1163,7 +1377,8 @@ mod tests {
                     size: 100, mtime: 0, sample_rate: None, bit_depth: None, bitrate: None,
                     channels: None, duration_ms: None, quality_tier: "lossless".into(),
                     genre: None, year: None,
-                    mode: FileMode::Copy, origin: Origin::Manual, is_temp: false,
+                    mode: FileMode::Copy, origin: Origin::Manual, is_temp: false, source_id: None,
+                    ncm_origin: None,
                 },
                 Candidate {
                     id: "cand-3".into(), source: "y".into(), source_lrc: None, target: "t".into(),
@@ -1171,7 +1386,8 @@ mod tests {
                     size: 200, mtime: 0, sample_rate: None, bit_depth: None, bitrate: None,
                     channels: None, duration_ms: None, quality_tier: "lossless".into(),
                     genre: None, year: None,
-                    mode: FileMode::Copy, origin: Origin::Manual, is_temp: false,
+                    mode: FileMode::Copy, origin: Origin::Manual, is_temp: false, source_id: None,
+                    ncm_origin: None,
                 },
             ],
             suggested: None,
@@ -1189,6 +1405,137 @@ mod tests {
 
         clear_history(&cfg).unwrap();
         assert!(last_decision(&cfg, "k").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 造一个不落磁盘的候选：Manual + Copy，`stage_on_hold()` 为 false，
+    /// 因此 Hold 桶只登记 pending 组，不会搬文件，适合纯逻辑单测。
+    fn hook_candidate(name: &str, source: &str) -> Candidate {
+        Candidate {
+            id: format!("cand-{source}"),
+            source: source.into(),
+            source_lrc: None,
+            target: format!("/lib/{name}.flac"),
+            name: name.into(),
+            artist: "A".into(),
+            album: None,
+            format: "flac".into(),
+            size: 100,
+            mtime: 0,
+            sample_rate: None,
+            bit_depth: None,
+            bitrate: None,
+            channels: None,
+            duration_ms: None,
+            quality_tier: "lossless".into(),
+            genre: None,
+            year: None,
+            mode: FileMode::Copy,
+            origin: Origin::Manual,
+            is_temp: false,
+            source_id: Some("src-a".into()),
+            ncm_origin: None,
+        }
+    }
+
+    struct RecordingHook {
+        /// 第几次 `is_cancelled()` 起返回 true；`None` = 永不取消。
+        cancel_at: Option<usize>,
+        checks: std::cell::Cell<usize>,
+        begun: std::cell::RefCell<Vec<usize>>,
+        settled: std::cell::RefCell<Vec<usize>>,
+    }
+
+    impl RecordingHook {
+        fn new(cancel_at: Option<usize>) -> Self {
+            RecordingHook {
+                cancel_at,
+                checks: std::cell::Cell::new(0),
+                begun: std::cell::RefCell::new(Vec::new()),
+                settled: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl BatchHook for RecordingHook {
+        fn on_begin(&self, index: usize, _c: &Candidate) {
+            self.begun.borrow_mut().push(index);
+        }
+        fn on_settled(&self, index: usize, _c: &Candidate, _d: &Disposition) {
+            self.settled.borrow_mut().push(index);
+        }
+        fn is_cancelled(&self) -> bool {
+            let n = self.checks.get() + 1;
+            self.checks.set(n);
+            self.cancel_at.is_some_and(|k| n >= k)
+        }
+    }
+
+    #[test]
+    fn finalize_hook_settles_every_index_once_when_cancelled_upfront() {
+        use crate::db;
+        let dir = std::env::temp_dir().join(format!("kqk-hook-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".mt")).unwrap();
+        let cfg = crate::config::build_library_config(&dir, "artist_album", "");
+        let conn = db::open(&cfg).unwrap();
+        let candidates: Vec<Candidate> = (0..5)
+            .map(|i| hook_candidate(&format!("T{i}"), &format!("/src/{i}.flac")))
+            .collect();
+        let hook = RecordingHook::new(Some(1));
+        let out = finalize_with_hook(&cfg, &conn, &candidates, Some(&hook)).unwrap();
+
+        // 分桶循环立即 break，5 个索引全部走补结算：一个不漏、一个不重。
+        let mut settled = hook.settled.borrow().clone();
+        settled.sort_unstable();
+        assert_eq!(settled, vec![0, 1, 2, 3, 4]);
+        let mut begun = hook.begun.borrow().clone();
+        begun.sort_unstable();
+        assert_eq!(begun, vec![0, 1, 2, 3, 4]);
+        assert_eq!(out.dispositions.len(), 5);
+        assert!(out
+            .dispositions
+            .iter()
+            .all(|d| *d == Disposition::Skipped));
+        assert_eq!(out.imported, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn finalize_hook_hold_bucket_settles_all_members_and_cancel_keeps_done() {
+        use crate::db;
+        let dir = std::env::temp_dir().join(format!("kqk-hook-hold-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".mt")).unwrap();
+        let cfg = crate::config::build_library_config(&dir, "artist_album", "");
+        let conn = db::open(&cfg).unwrap();
+        // 两个三元组不同的桶，各 2 个候选 → 都判 Hold；第二次检查时请求停止。
+        let candidates = vec![
+            hook_candidate("T1", "/src/1.flac"),
+            hook_candidate("T1", "/src/2.flac"),
+            hook_candidate("T2", "/src/3.flac"),
+            hook_candidate("T2", "/src/4.flac"),
+        ];
+        let hook = RecordingHook::new(Some(2));
+        let out = finalize_with_hook(&cfg, &conn, &candidates, Some(&hook)).unwrap();
+
+        let mut settled = hook.settled.borrow().clone();
+        settled.sort_unstable();
+        assert_eq!(settled, vec![0, 1, 2, 3], "Hold 桶的每个成员都要结算");
+        // 第一个桶已登记（held=2）不回滚；第二个桶跳过，仍结算为 Skipped。
+        assert_eq!(out.held, 2);
+        assert_eq!(out.dispositions.len(), 4);
+        assert_eq!(
+            out.dispositions.iter().filter(|d| **d == Disposition::Held).count(),
+            2
+        );
+        assert_eq!(
+            out.dispositions
+                .iter()
+                .filter(|d| **d == Disposition::Skipped)
+                .count(),
+            2
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

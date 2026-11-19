@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Monitor, PhysicalPosition, PhysicalSize, Position, Size, WebviewWindow, WindowEvent};
 
-use mt_core::config;
+use mt_core::{config, serve};
 
 pub const STATE_FILE: &str = "kqk-window.state";
 /// #32：与 `WebviewWindowBuilder::min_inner_size(1280, 720)` 保持一致。
@@ -193,6 +193,10 @@ pub fn track(
             guard.1 = true;
         }
         WindowEvent::Resized(s) => {
+            // v0.14.13：双击标题栏 / 贴靠 / 任务栏按钮等外部操作也走此事件。
+            // 必须在下面的「最大化期间跳过几何更新」早退之前同步，供前端
+            // resize 校准图标；自绘按钮的 toggle 也经此事件落到同一权威值。
+            serve::set_window_maximized(event_win.is_maximized().unwrap_or(false));
             if event_win.is_maximized().unwrap_or(false) {
                 return;
             }

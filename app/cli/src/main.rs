@@ -180,6 +180,7 @@ fn cli_progress_tracker(label: &str) -> mt_core::progress::ProgressTracker {
                 EntryStatus::Imported => "已入库",
                 EntryStatus::Skipped => "已跳过",
                 EntryStatus::Pending => "待转换",
+                EntryStatus::Held => "重复挂起",
                 EntryStatus::Failed => "失败",
             };
             let extra = if e.message.is_empty() || e.message == status {

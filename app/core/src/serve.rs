@@ -20,6 +20,7 @@ use axum::Router;
 use rusqlite::Connection;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Clone)]
@@ -58,6 +59,12 @@ struct TracksQuery {
 #[derive(Deserialize)]
 struct NameQuery {
     name: String,
+}
+
+/// `GET /api/sources/tracks?id=...`：按曲源 id 取曲目（缺省 = 未指定来源）。
+#[derive(Deserialize)]
+struct SourceTracksQuery {
+    id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -141,6 +148,15 @@ static WINDOW_CONTROL_SINK: OnceLock<fn(&'static str)> = OnceLock::new();
 
 pub fn set_window_control_sink(f: fn(&'static str)) {
     let _ = WINDOW_CONTROL_SINK.set(f);
+}
+
+/// 主窗口最大化状态的权威副本（GUI 壳在窗口事件 / toggle 后写入）。
+/// 前端点击按钮时即时翻转图标，启动与 resize 时经 /api/status 回读校准；
+/// CLI serve 模式无窗口，恒为 false，前端按字段缺失同样保持默认。
+static WINDOW_MAXIMIZED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_window_maximized(maximized: bool) {
+    WINDOW_MAXIMIZED.store(maximized, Ordering::Relaxed);
 }
 
 /// 托盘状态（前端事件驱动推送，零轮询）。
@@ -395,16 +411,28 @@ fn build_router(
         .route("/api/pick-ncm-tool", post(pick_ncm_tool_handler))
         .route("/api/ncm-tool", post(ncm_tool_handler))
         .route("/api/ncm/organize", post(ncm_organize_handler))
+        // 插件（L1 伪插件：当前仅 NCM 转换器一项）
+        .route("/api/plugins", get(plugins_list_handler))
+        .route("/api/plugins/install", post(plugin_install_handler))
+        .route("/api/plugins/toggle", post(plugin_toggle_handler))
+        .route("/api/plugins/remove", post(plugin_remove_handler))
         .route("/api/reorganize", post(reorganize_handler))
         .route("/api/columns", get(columns_get_handler).post(columns_post_handler))
         .route("/api/ui-prefs", get(ui_prefs_get_handler).post(ui_prefs_post_handler))
         .route("/api/import", post(import_handler))
         .route("/api/import-netease", post(import_netease_handler))
         .route("/api/import-progress", get(import_progress_handler))
+        .route("/api/import-cancel", post(import_cancel_handler))
+        .route("/api/import-pause", post(import_pause_handler))
+        .route("/api/import-resume", post(import_resume_handler))
         .route("/api/netease/library-dir", post(netease_library_dir_handler))
-        // 曲库来源管理（app 级 [[sources]]）：静态段 /probe 先于动态段 /:id 注册。
+        // 曲源管理（app 级 [[sources]]）：全部静态段必须先于动态段 /:id 注册，
+        // 否则 /check /groups /tracks 会被吞成 :id（axum 路由冲突）。
         .route("/api/sources", get(sources_get_handler).post(sources_create_handler))
         .route("/api/sources/probe", post(sources_probe_handler))
+        .route("/api/sources/check", post(sources_check_handler))
+        .route("/api/sources/groups", get(sources_groups_handler))
+        .route("/api/sources/tracks", get(sources_tracks_handler))
         .route("/api/sources/:id", put(sources_update_handler).delete(sources_delete_handler))
         .route("/api/sources/:id/import", post(sources_import_handler))
         .route("/api/playlists", get(playlists_handler).post(playlist_create_handler))
@@ -541,8 +569,9 @@ async fn status_handler(State(st): State<AppState>) -> Response {
     let library_dir = cfg_guard.paths.download_root.to_string_lossy().to_string();
     let file_scheme = cfg_guard.library.file_scheme.clone();
     let library_name = cfg_guard.library.name.clone();
-    // NCM 开关 = tool_ready()（指定了工具即自动转换）。
+    // NCM 开关 = tool_ready()（插件启用且工具文件存在才自动转换）。
     let ncm_ready = cfg_guard.ncm.tool_ready();
+    let ncm_enabled = cfg_guard.ncm.enabled;
     let ncm_tool = cfg_guard.ncm.tool_path.to_string_lossy().to_string();
     let track_columns = cfg_guard.ui.track_columns.clone();
     let track_columns_saved = cfg_guard.ui.track_columns_saved;
@@ -599,12 +628,14 @@ async fn status_handler(State(st): State<AppState>) -> Response {
     axum::Json(
         serde_json::json!({
             "tray_available": TRAY_AVAILABLE_STATUS.get().copied().unwrap_or(false),
+            "maximized": WINDOW_MAXIMIZED.load(Ordering::Relaxed),
             "library_configured": library_configured,
             "library_dir": library_dir,
             "library_name": library_name,
             "netease_library_dir": netease_library_dir,
             "file_scheme": file_scheme,
             "ncm_ready": ncm_ready,
+            "ncm_enabled": ncm_enabled,
             "ncm_tool": ncm_tool,
             "pending_ncm": pending_ncm,
             "loose_ncm": loose_ncm,
@@ -1351,8 +1382,8 @@ struct NcmToolRequest {
     copy_to_library: bool,
 }
 
-/// 指定 NCM 解密工具：copy_to_library=true 时复制到 .mt/tools 并用该路径；否则用原路径。
-/// 路径写入 .mt/config.toml 的 [ncm]（docs/05 §6）。
+/// 兼容端点：指定 NCM 工具路径。copy_to_library=true 时复制到 `<exe目录>/plugin/` 并用该路径；
+/// 否则用原路径。插件化后前端统一走 `/api/plugins/install`，本端点保留供旧客户端/向导过渡。
 async fn ncm_tool_handler(
     State(st): State<AppState>,
     axum::Json(body): axum::Json<NcmToolRequest>,
@@ -1365,23 +1396,13 @@ async fn ncm_tool_handler(
     if !src_p.is_file() {
         return err_json("指定的文件不存在");
     }
-    let cp = st.config_path.lock().unwrap().clone();
-    // .mt/config.toml → parent(.mt) → parent(曲库根)
-    let library_root = cp
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|p| p.to_path_buf());
 
     let final_path = if body.copy_to_library {
-        let lib = match library_root {
-            Some(l) => l,
-            None => return err_json("无法确定曲库目录"),
-        };
-        let tools = lib.join(".mt").join("tools");
-        if let Err(e) = std::fs::create_dir_all(&tools) {
-            return err_json(&format!("创建 tools 目录失败：{e}"));
+        let dir = crate::config::plugin_dir();
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            return err_json(&format!("创建 plugin 目录失败：{e}"));
         }
-        let dst = tools.join(src_p.file_name().unwrap_or_default());
+        let dst = dir.join(src_p.file_name().unwrap_or_default());
         if let Err(e) = std::fs::copy(&src_p, &dst) {
             return err_json(&format!("复制工具失败：{e}"));
         }
@@ -1456,6 +1477,164 @@ async fn pick_ncm_tool_handler(State(st): State<AppState>) -> Response {
     };
     restore_focus_after_dialog();
     resp
+}
+
+/// 插件管理列表（L1 伪插件：当前仅 NCM 转换器一项）。
+/// installed = 工具文件存在于 plugin 目录；enabled = 用户开关；ready = 两者皆真。
+async fn plugins_list_handler(State(st): State<AppState>) -> Response {
+    let cfg = st.cfg.lock().unwrap().clone();
+    let tool = cfg.ncm.tool_path.clone();
+    let installed = tool.is_file();
+    let enabled = cfg.ncm.enabled;
+    let version = {
+        // 从工具文件名提取版本（如 ncmdump-1.5.1.exe → 1.5.1），失败则留空由前端显示「—」。
+        let stem = tool.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let digits: String = stem
+            .chars()
+            .filter(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        let parts: Vec<&str> = digits.split('.').filter(|s| !s.is_empty()).collect();
+        if (2..=4).contains(&parts.len()) { digits } else { String::new() }
+    };
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "plugins": [{
+            "id": "ncm",
+            "name": "NCM 转换器",
+            "description": "将网易云 .ncm 加密文件还原为原始音频（调用外部 ncmdump 工具）",
+            "installed": installed,
+            "enabled": enabled,
+            "ready": installed && enabled,
+            "version": version,
+            "path": tool.to_string_lossy(),
+            "dir": crate::config::plugin_dir().to_string_lossy(),
+        }]
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct PluginToggleRequest {
+    id: String,
+    enabled: bool,
+}
+
+/// 开启 / 关闭插件：只改 enabled，工具文件保留在 plugin 目录，随时可恢复。
+async fn plugin_toggle_handler(
+    State(st): State<AppState>,
+    axum::Json(body): axum::Json<PluginToggleRequest>,
+) -> Response {
+    if body.id != "ncm" {
+        return err_json("未知插件");
+    }
+    let mut cfg = st.cfg.lock().unwrap().clone();
+    cfg.ncm.enabled = body.enabled;
+    let app_cp = st.app_config_path.lock().unwrap().clone();
+    if let Err(e) = cfg.save_app(&app_cp) {
+        return err_json(&format!("保存配置失败：{e}"));
+    }
+    *st.cfg.lock().unwrap() = cfg;
+    axum::Json(serde_json::json!({ "ok": true, "enabled": body.enabled })).into_response()
+}
+
+#[derive(Deserialize)]
+struct PluginRemoveRequest {
+    id: String,
+}
+
+/// 删除插件：物理删除 plugin 目录下的工具文件，并清空 tool_path。
+/// 严格校验目标文件位于 plugin_dir 内，防止路径穿越误删其它文件。
+async fn plugin_remove_handler(
+    State(st): State<AppState>,
+    axum::Json(body): axum::Json<PluginRemoveRequest>,
+) -> Response {
+    if body.id != "ncm" {
+        return err_json("未知插件");
+    }
+    let mut cfg = st.cfg.lock().unwrap().clone();
+    let tool = cfg.ncm.tool_path.clone();
+    let dir = crate::config::plugin_dir();
+    // 校验：路径必须是 plugin_dir 的直接子文件（canonicalize 后仍在 plugin_dir 内）。
+    let in_dir = tool.parent().map(|p| p == dir.as_path()).unwrap_or(false)
+        || tool.canonicalize().ok().and_then(|c| c.parent().map(|p| p == dir.as_path())).unwrap_or(false);
+    if tool.as_os_str().is_empty() || !in_dir {
+        return err_json("插件工具路径不在 plugin 目录内，未执行删除");
+    }
+    if let Err(e) = std::fs::remove_file(&tool) {
+        return err_json(&format!("删除插件文件失败：{e}"));
+    }
+    cfg.ncm.tool_path = PathBuf::new();
+    let app_cp = st.app_config_path.lock().unwrap().clone();
+    if let Err(e) = cfg.save_app(&app_cp) {
+        return err_json(&format!("保存配置失败：{e}"));
+    }
+    *st.cfg.lock().unwrap() = cfg;
+    axum::Json(serde_json::json!({ "ok": true })).into_response()
+}
+
+/// 安装插件（当前仅 NCM）：原生选文件 → 复制到 `<exe目录>/plugin/` → 写配置并启用 → 回补积压 .ncm。
+/// 复制是必然动作，前端无需也不应指定路径。
+async fn plugin_install_handler(State(st): State<AppState>) -> Response {
+    let init_dir = crate::config::app_dir();
+    let picked = blocking(move || {
+        rfd::FileDialog::new()
+            .set_title("选择 NCM 解密工具（ncmdump.exe）")
+            .set_directory(init_dir)
+            .add_filter("可执行文件", &["exe"])
+            .pick_file()
+    })
+    .await;
+    let Some(src) = picked else {
+        restore_focus_after_dialog();
+        return axum::Json(serde_json::json!({ "ok": true, "canceled": true })).into_response();
+    };
+
+    let dir = crate::config::plugin_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        restore_focus_after_dialog();
+        return err_json(&format!("创建 plugin 目录失败：{e}"));
+    }
+    let dst = dir.join(src.file_name().unwrap_or_default());
+    if let Err(e) = std::fs::copy(&src, &dst) {
+        restore_focus_after_dialog();
+        return err_json(&format!("复制工具失败：{e}"));
+    }
+    restore_focus_after_dialog();
+
+    let mut cfg = st.cfg.lock().unwrap().clone();
+    cfg.ncm.tool_path = dst.clone();
+    cfg.ncm.enabled = true;
+    let app_cp = st.app_config_path.lock().unwrap().clone();
+    if let Err(e) = cfg.save_app(&app_cp) {
+        return err_json(&format!("保存配置失败：{e}"));
+    }
+    *st.cfg.lock().unwrap() = cfg.clone();
+
+    // 安装后自动处理 pendingNcm 积压（同 ncm_tool_handler 的既有语义）。
+    let conn = st.conn.clone();
+    let tracker = st.import_progress.clone();
+    tracker.start("NCM 积压转换");
+    let t = tracker.clone();
+    let backlog = blocking(move || {
+        let c = conn.lock().unwrap();
+        import::process_pending_ncm_with_progress(&cfg, &c, &t)
+    })
+    .await;
+    tracker.finish();
+
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "tool_path": dst.to_string_lossy(),
+        "tool_ready": true,
+        "backlog": {
+            "imported": backlog.imported,
+            "skipped": backlog.skipped,
+            "pending": backlog.pending,
+            "failed": backlog.failed,
+            "held": backlog.held
+        }
+    }))
+    .into_response()
 }
 
 #[derive(Deserialize)]
@@ -1543,6 +1722,7 @@ async fn ncm_organize_handler(
         "ok": true,
         "imported": res.imported,
         "skipped": res.skipped,
+        "ncm_skipped": res.ncm_skipped,
         "pending": res.pending,
         "failed": res.failed,
         "held": res.held
@@ -1555,7 +1735,13 @@ struct ReorganizeRequest {
     scheme: String,
 }
 
-/// 切换文件结构方案时全量重组（docs/05 §4c）：按新方案移动文件并更新 DB，失败回滚。
+/// 一次重组移动的记录：(local_id, 音频旧路径, 音频新路径, 歌词旧路径)。
+/// 歌词旧路径记录的是 `find_sidecar` 实际命中的文件（可能大小写不同），
+/// 新路径由音频新路径 `with_extension("lrc")` 推导，不入库（见 lyrics.rs 约定）。
+type ReorgMove = (i64, PathBuf, PathBuf, Option<PathBuf>);
+
+/// 切换文件结构方案时全量重组（docs/05 §4c）：按新方案移动音频 + 同名歌词并更新 DB。
+/// 复用全局 `import_progress`：支持暂停（协作式挂起）/ 停止（整体回滚），失败亦整体回滚。
 async fn reorganize_handler(
     State(st): State<AppState>,
     axum::Json(body): axum::Json<ReorganizeRequest>,
@@ -1564,21 +1750,41 @@ async fn reorganize_handler(
     if !config::LibraryConfig::is_valid_scheme(&scheme) {
         return err_json(&format!("未知文件结构方案：{scheme}"));
     }
+    // 全局一份进度跟踪器：已有导入 / 重组在跑时拒绝，避免两套任务互相取消、进度串台。
+    if st.import_progress.snapshot().running {
+        return err_json("已有导入或重组任务正在进行，请等待完成后再试");
+    }
     let cfg = st.cfg.lock().unwrap().clone();
     let conn = st.conn.clone();
     let cp_arc = st.config_path.clone();
     let scheme_inner = scheme.clone();
+    let tracker = st.import_progress.clone();
+    tracker.start("曲库重组（扫描中）");
+    let t = tracker.clone();
+
     match blocking(move || -> Result<serde_json::Value> {
         let c = conn.lock().unwrap();
         let rows = db::list_tracks(&c, None, None, false)?;
-        // 以新方案计算目标：先切换到新 scheme。
         let mut cfg = cfg;
         cfg.library.file_scheme = scheme_inner;
+        t.set_total(rows.len() as u32);
+        t.set_source("曲库重组（移动中）");
         let mut moved: u32 = 0;
-        let mut mapping: Vec<(i64, PathBuf, PathBuf)> = Vec::new();
-        for t in rows {
-            let old = PathBuf::from(&t.file_path);
+        let mut mapping: Vec<ReorgMove> = Vec::new();
+        let mut pruned: u32 = 0;
+        let root = cfg.paths.download_root.clone();
+        let protected = cfg.paths.download_dir.clone();
+        let mut cancelled = false;
+
+        for item in rows {
+            t.wait_if_paused();
+            if t.is_cancelled() {
+                cancelled = true;
+                break;
+            }
+            let old = PathBuf::from(&item.file_path);
             if !old.exists() {
+                t.advance();
                 continue;
             }
             let ext = old
@@ -1588,53 +1794,153 @@ async fn reorganize_handler(
                 .to_ascii_lowercase();
             let new = library::target_path(
                 &cfg,
-                t.artist.as_deref().unwrap_or(""),
-                t.album.as_deref().unwrap_or(""),
-                &t.name,
+                item.artist.as_deref().unwrap_or(""),
+                item.album.as_deref().unwrap_or(""),
+                &item.name,
                 &ext,
             );
             if new == old {
+                t.advance();
                 continue;
             }
+            t.begin_file(&old.to_string_lossy());
+            t.set_action(crate::progress::ImportAction::Move);
+
+            let old_lrc = crate::lyrics::find_sidecar(&old);
+            let new_lrc = old_lrc.as_ref().map(|_| new.with_extension("lrc"));
             if let Some(parent) = new.parent() {
-                std::fs::create_dir_all(parent)?;
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    rollback_reorg(&c, &mapping);
+                    anyhow::bail!("创建目标目录失败，已回滚：{e}");
+                }
             }
             if let Err(e) = std::fs::rename(&old, &new) {
                 rollback_reorg(&c, &mapping);
                 anyhow::bail!("重组移动失败，已回滚：{e}");
             }
-            if let Err(e) = db::update_file_path(&c, t.local_id, &new.to_string_lossy()) {
+            if let (Some(src_lrc), Some(dst_lrc)) = (&old_lrc, &new_lrc) {
+                if src_lrc != dst_lrc {
+                    let _ = std::fs::remove_file(dst_lrc);
+                    if let Err(e) = std::fs::rename(src_lrc, dst_lrc) {
+                        let _ = std::fs::rename(&new, &old);
+                        rollback_reorg(&c, &mapping);
+                        anyhow::bail!("歌词移动失败，已回滚：{e}");
+                    }
+                }
+            }
+            if let Err(e) = db::update_file_path(&c, item.local_id, &new.to_string_lossy()) {
                 let _ = std::fs::rename(&new, &old);
+                if let (Some(src_lrc), Some(dst_lrc)) = (&old_lrc, &new_lrc) {
+                    if src_lrc != dst_lrc {
+                        let _ = std::fs::rename(dst_lrc, src_lrc);
+                    }
+                }
                 rollback_reorg(&c, &mapping);
                 anyhow::bail!("重组更新数据库失败，已回滚：{e}");
             }
-            mapping.push((t.local_id, old, new));
+            mapping.push((item.local_id, old.clone(), new, old_lrc));
             moved += 1;
+            t.advance();
+            t.end_file(crate::progress::EntryStatus::Imported);
+            // 随时清理：旧目录链一旦空了就逐层删，止于库根 / download/ 保护目录。
+            if let Some(parent) = old.parent() {
+                pruned += prune_empty_dirs_upward(&root, parent, &protected) as u32;
+            }
+        }
+
+        if cancelled {
+            t.set_source("曲库重组（回滚中）");
+            let rolled_back = rollback_reorg(&c, &mapping);
+            drop(c);
+            t.set_source("曲库重组（已停止并回滚）");
+            t.finish();
+            return Ok(serde_json::json!({
+                "ok": true, "cancelled": true, "moved": 0, "rolled_back": rolled_back
+            }));
+        }
+
+        t.set_source("曲库重组（清理空目录）");
+        // 完成时兜底：最后再扫一遍旧目录链，清掉重组过程中才变空的目录。
+        for (_, old, _, _) in &mapping {
+            if let Some(parent) = old.parent() {
+                pruned += prune_empty_dirs_upward(&root, parent, &protected) as u32;
+            }
         }
         drop(c);
         // 持久化新 scheme 到曲库配置 <曲库>/.mt/config.toml（曲库级）。
         let cp = cp_arc.lock().unwrap().clone();
         cfg.save_library(&cp)?;
-        Ok(serde_json::json!({ "ok": true, "moved": moved }))
+        t.set_source("曲库重组（完成）");
+        t.finish();
+        Ok(serde_json::json!({ "ok": true, "moved": moved, "pruned": pruned }))
     })
     .await
     {
         Ok(v) => {
-            // 同步运行态 scheme。
-            let mut g = st.cfg.lock().unwrap();
-            g.library.file_scheme = scheme;
+            let cancelled = v.get("cancelled").and_then(|x| x.as_bool()).unwrap_or(false);
+            if !cancelled {
+                // 同步运行态 scheme（仅成功且未取消时）。
+                let mut g = st.cfg.lock().unwrap();
+                g.library.file_scheme = scheme;
+            }
             axum::Json(v).into_response()
         }
-        Err(e) => err_json(&e.to_string()),
+        // 失败路径也要让跟踪器收敛，否则前端会一直轮询一个永远不会完成的快照。
+        Err(e) => {
+            tracker.finish();
+            err_json(&e.to_string())
+        }
     }
 }
 
-/// 重组失败回滚：把已移动的文件还原并更新 DB。
-fn rollback_reorg(conn: &Connection, mapping: &[(i64, PathBuf, PathBuf)]) {
-    for (id, old, new) in mapping {
-        let _ = std::fs::rename(new, old);
+/// 从 `start` 向上逐层删除因重组而变空的目录，止于曲库根 / download/ 保护目录。
+/// 返回实际删除的目录数。清理失败一律忽略（空目录残留不影响数据正确性）。
+fn prune_empty_dirs_upward(root: &Path, start: &Path, protected: &Path) -> usize {
+    let mut cur = start.to_path_buf();
+    let mut n = 0;
+    loop {
+        if cur == root || !cur.starts_with(root) || cur == protected {
+            break;
+        }
+        match std::fs::read_dir(&cur) {
+            Ok(mut it) => {
+                if it.next().is_some() {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+        if std::fs::remove_dir(&cur).is_err() {
+            break;
+        }
+        n += 1;
+        match cur.parent() {
+            Some(p) => cur = p.to_path_buf(),
+            None => break,
+        }
+    }
+    n
+}
+
+/// 重组失败 / 停止时的整体回滚：还原音频与歌词、恢复 DB 路径，重建被清理掉的旧目录。
+fn rollback_reorg(conn: &Connection, mapping: &[ReorgMove]) -> usize {
+    let mut restored = 0;
+    for (id, old, new, old_lrc) in mapping {
+        if let Some(parent) = old.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if new.exists() && std::fs::rename(new, old).is_ok() {
+            restored += 1;
+        }
+        if let Some(src_lrc) = old_lrc {
+            let dst_lrc = new.with_extension("lrc");
+            if src_lrc != &dst_lrc && dst_lrc.exists() {
+                let _ = std::fs::rename(&dst_lrc, src_lrc);
+            }
+        }
         let _ = db::update_file_path(conn, *id, &old.to_string_lossy());
     }
+    restored
 }
 
 async fn pick_library_directory_handler(State(st): State<AppState>) -> Response {
@@ -2133,6 +2439,7 @@ async fn import_netease_handler(State(st): State<AppState>) -> Response {
             "ok": true,
             "imported": r.imported,
             "skipped": r.skipped,
+            "ncm_skipped": r.ncm_skipped,
             "pending": r.pending,
             "failed": r.failed,
             "held": r.held
@@ -2148,6 +2455,26 @@ async fn import_progress_handler(State(st): State<AppState>) -> Response {
     axum::Json(st.import_progress.snapshot()).into_response()
 }
 
+/// `POST /api/import-cancel`：请求停止当前导入。
+/// 只置协作式取消标志，不持 DB 锁、不回滚已入库结果；剩余候选由
+/// `finalize_with_hook` 结算为「已停止 / 跳过」，保证进度收敛到总数。
+async fn import_cancel_handler(State(st): State<AppState>) -> Response {
+    st.import_progress.request_cancel();
+    axum::Json(serde_json::json!({ "ok": true })).into_response()
+}
+
+/// `POST /api/import-pause`：请求暂停当前导入（协作式，导入线程到下一个检查点挂起）。
+async fn import_pause_handler(State(st): State<AppState>) -> Response {
+    st.import_progress.request_pause();
+    axum::Json(serde_json::json!({ "ok": true })).into_response()
+}
+
+/// `POST /api/import-resume`：恢复被暂停的导入。
+async fn import_resume_handler(State(st): State<AppState>) -> Response {
+    st.import_progress.request_resume();
+    axum::Json(serde_json::json!({ "ok": true })).into_response()
+}
+
 // ============================================================
 // 曲库来源管理（app 级 [[sources]]，就地写入，旧字段 / 旧端点全部保留）
 // ============================================================
@@ -2160,7 +2487,8 @@ fn source_json(s: &config::SourceEntry) -> serde_json::Value {
         "path": s.path,
         "is_netease": s.is_netease,
         "mode": s.mode,
-        "enabled": s.enabled
+        "enabled": s.enabled,
+        "watch": s.watch
     })
 }
 
@@ -2296,6 +2624,10 @@ async fn sources_create_handler(
         .unwrap_or(true);
 
     let current = st.cfg.lock().unwrap().sources.clone();
+    let watch = body
+        .get("watch")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let mut entry = config::SourceEntry {
         id: new_source_id(&current),
         name,
@@ -2303,6 +2635,7 @@ async fn sources_create_handler(
         is_netease,
         mode,
         enabled,
+        watch,
     };
     config::normalize_source(&mut entry);
     let mut next = current;
@@ -2325,6 +2658,10 @@ async fn sources_update_handler(
     AxumPath(id): AxumPath<String>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> Response {
+    // v0.12.12：内置「本地曲库」不是配置里的 [[sources]]，禁止被伪造的 PUT 写入。
+    if id == db::UNSPECIFIED_SOURCE {
+        return err_json("本地曲库是内置曲源，不能修改");
+    }
     let current = st.cfg.lock().unwrap().sources.clone();
     let Some(mut entry) = current.iter().find(|s| s.id == id).cloned() else {
         return err_json("来源不存在");
@@ -2356,6 +2693,9 @@ async fn sources_update_handler(
     if let Some(v) = body.get("enabled").and_then(|v| v.as_bool()) {
         entry.enabled = v;
     }
+    if let Some(v) = body.get("watch").and_then(|v| v.as_bool()) {
+        entry.watch = v;
+    }
     config::normalize_source(&mut entry);
     let next: Vec<config::SourceEntry> = current
         .iter()
@@ -2380,6 +2720,10 @@ async fn sources_delete_handler(
     State(st): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
+    // v0.12.12：内置「本地曲库」不可删除（前端已隐藏删除入口，这里再加一道 API 防线）。
+    if id == db::UNSPECIFIED_SOURCE {
+        return err_json("本地曲库是内置曲源，不能删除");
+    }
     let current = st.cfg.lock().unwrap().sources.clone();
     if !current.iter().any(|s| s.id == id) {
         return err_json("来源不存在");
@@ -2401,6 +2745,10 @@ async fn sources_import_handler(
     State(st): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
+    // v0.12.12：内置「本地曲库」不是上游目录，不能按曲源导入（避免曲库复制到自身）。
+    if id == db::UNSPECIFIED_SOURCE {
+        return err_json("本地曲库是内置曲源，不能按曲源导入");
+    }
     let (cfg, source) = {
         let g = st.cfg.lock().unwrap();
         (g.clone(), g.sources.iter().find(|s| s.id == id).cloned())
@@ -2422,9 +2770,11 @@ async fn sources_import_handler(
     let t = tracker.clone();
     let path = PathBuf::from(&s.path);
     let is_netease = s.is_netease;
+    // 曲源稳定 id 沿导入链路落到 download_records.source_kind，改名不会让归属失效。
+    let source_id = s.id.clone();
     let res = blocking(move || {
         let c = conn.lock().unwrap();
-        import::import_source_with_progress(&cfg, &c, &path, is_netease, mode, &t)
+        import::import_source_with_progress(&cfg, &c, &path, is_netease, mode, &source_id, &t)
     })
     .await;
     tracker.finish();
@@ -2433,6 +2783,7 @@ async fn sources_import_handler(
             "ok": true,
             "imported": r.imported,
             "skipped": r.skipped,
+            "ncm_skipped": r.ncm_skipped,
             "pending": r.pending,
             "failed": r.failed,
             "held": r.held
@@ -2441,6 +2792,139 @@ async fn sources_import_handler(
         Err(e) => axum::Json(serde_json::json!({ "ok": false, "error": e.to_string() }))
             .into_response(),
     }
+}
+
+// ---------- 曲源总览 / rail 曲源页（只读）----------
+
+/// `POST /api/sources/check`：只读扫描 `watch=true` 且启用的曲源，返回候选新增数。
+///
+/// 零新增线程、不写库、不复制、不联网；仅提示，导入必须由用户点「立即导入一次」触发。
+/// 「新增数」= 源目录内可导入音频数（不含 `.ncm`）− 曲库中归属该曲源的曲目数（下限 0），
+/// 属保守估计：真实去重由导入时的 `finalize_with_hook` 判定。
+/// `.ncm` 另以 `ncm_pending_tool` 单列返回，永不并入 found / added / total。
+async fn sources_check_handler(State(st): State<AppState>) -> Response {
+    let watched: Vec<config::SourceEntry> = st
+        .cfg
+        .lock()
+        .unwrap()
+        .sources
+        .iter()
+        .filter(|s| s.watch && s.enabled)
+        .cloned()
+        .collect();
+    let conn = st.conn.clone();
+    let (results, total) = blocking(move || {
+        let c = conn.lock().unwrap();
+        let counts = db::source_counts(&c).unwrap_or_default();
+        let mut out = Vec::new();
+        let mut total = 0u32;
+        for s in &watched {
+            let (found, ncm_pending_tool) =
+                import::count_source_audio_and_ncm(Path::new(&s.path));
+            let in_library = counts
+                .iter()
+                .find(|(k, _)| k == &s.id)
+                .map(|(_, n)| *n)
+                .unwrap_or(0);
+            let added = found.saturating_sub(in_library);
+            total = total.saturating_add(added);
+            out.push(serde_json::json!({
+                "id": s.id,
+                "name": s.name,
+                "found": found,
+                "ncm_pending_tool": ncm_pending_tool,
+                "in_library": in_library,
+                "added": added
+            }));
+        }
+        (out, total)
+    })
+    .await;
+    axum::Json(serde_json::json!({ "ok": true, "results": results, "total": total }))
+        .into_response()
+}
+
+/// `GET /api/sources/groups`：曲源分组（按 `source_kind`，含内置「本地曲库」）。
+/// 只返回统计，不批量 UPDATE；曲源被删后其歌曲自动落入内置组。
+async fn sources_groups_handler(State(st): State<AppState>) -> Response {
+    let sources: Vec<config::SourceEntry> = st.cfg.lock().unwrap().sources.clone();
+    let conn = st.conn.clone();
+    let counts = blocking(move || {
+        let c = conn.lock().unwrap();
+        db::source_counts(&c).unwrap_or_default()
+    })
+    .await;
+    let known: Vec<String> = sources.iter().map(|s| s.id.clone()).collect();
+    let mut unspecified = 0u32;
+    for (key, n) in &counts {
+        if key == db::UNSPECIFIED_SOURCE || !known.iter().any(|k| k == key) {
+            unspecified = unspecified.saturating_add(*n);
+        }
+    }
+    let groups: Vec<serde_json::Value> = sources
+        .iter()
+        .map(|s| {
+            let n = counts
+                .iter()
+                .find(|(k, _)| k == &s.id)
+                .map(|(_, n)| *n)
+                .unwrap_or(0);
+            serde_json::json!({
+                "id": s.id,
+                "name": s.name,
+                "count": n,
+                "enabled": s.enabled,
+                "path": s.path,
+                "is_netease": s.is_netease,
+                "mode": s.mode,
+                "watch": s.watch
+            })
+        })
+        .chain(std::iter::once(serde_json::json!({
+            "id": db::UNSPECIFIED_SOURCE,
+            "name": "本地曲库",
+            "count": unspecified,
+            "enabled": true,
+            "path": "",
+            "is_netease": false,
+            "mode": "copy",
+            "watch": false
+        })))
+        .collect();
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "groups": groups,
+        "unspecified_id": db::UNSPECIFIED_SOURCE
+    }))
+    .into_response()
+}
+
+/// `GET /api/sources/tracks?id=...`：取某曲源导入的曲目（缺省为未指定来源）。
+/// 返回结构与 `/api/tracks` 一致，前端可直接复用 `renderBrowseTracks()`。
+async fn sources_tracks_handler(
+    State(st): State<AppState>,
+    Query(q): Query<SourceTracksQuery>,
+) -> Response {
+    let id = q
+        .id
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| db::UNSPECIFIED_SOURCE.to_string());
+    let known: Vec<String> = st
+        .cfg
+        .lock()
+        .unwrap()
+        .sources
+        .iter()
+        .map(|s| s.id.clone())
+        .collect();
+    let conn = st.conn.clone();
+    let rows = blocking(move || {
+        let c = conn.lock().unwrap();
+        db::get_tracks_by_source(&c, &id, &known)
+    })
+    .await
+    .unwrap_or_default();
+    axum::Json(serde_json::json!({ "tracks": rows, "count": rows.len() })).into_response()
 }
 
 async fn import_handler(

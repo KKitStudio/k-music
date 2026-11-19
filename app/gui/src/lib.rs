@@ -314,7 +314,7 @@ pub fn run() {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()));
     // 启动早期单实例锁：必须早于配置加载 / DB 打开 / axum 服务 / 全库后台扫描。
     // 第二个实例在此直接退出（并唤起已有窗口），不会产生第二份 DB 写入与重复扫描。
-    let instance_guard = single_instance::acquire(exe_dir.as_deref());
+    let mut instance_guard = single_instance::acquire(exe_dir.as_deref());
     // 主窗口几何状态（独立于配置双文件，理由见 window_state 模块头注释）。
     let window_state_path = window_state::state_path(exe_dir.as_deref());
     let saved_geometry = window_state::load(&window_state_path);
@@ -420,6 +420,9 @@ pub fn run() {
             if let Some(g) = geom {
                 window_state::restore(&win, &g);
             }
+            // v0.14.13：几何恢复（含上次最大化态）完成后立即同步给前端，
+            // 否则首屏 /api/status 拿不到真实状态，图标停留在「最大化」。
+            serve::set_window_maximized(win.is_maximized().unwrap_or(false));
             // 交互增强 b 级：先建托盘状态原子（供 track 共享），再建托盘；
             // 关闭行为按「开关 + 托盘可用性」决策（R1：托盘失败则开关强制 false）。
             let tray_atomic = Arc::new(AtomicBool::new(false));
@@ -440,11 +443,17 @@ pub fn run() {
             Ok(())
         })
         .plugin(tauri_plugin_shell::init())
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
-    // 正常退出时删除端口文件并关闭互斥体；崩溃时句柄由内核回收，
-    // 残留端口文件会在下一次启动时被连接探测判定为陈旧，不影响正确性。
-    drop(instance_guard);
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(move |_app, event| {
+            // App::run 内部直接 process::exit()、永不返回，run() 之后的 drop 不会执行。
+            // 端口文件必须在真正的退出事件里清理，否则每次正常关闭都残留。
+            // RunEvent::Exit 由 Tauri 在事件循环退出时触发（含托盘退出 / 关窗退出），
+            // 且早于 process::exit()，是可靠的清理点。
+            if matches!(event, tauri::RunEvent::Exit) {
+                instance_guard.cleanup();
+            }
+        });
 }
 
 /// 轮询后端端口直至可连接（最多 `timeout`），避免 WebView 打开瞬间后端尚未就绪。

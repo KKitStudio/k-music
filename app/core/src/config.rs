@@ -4,7 +4,7 @@
 //!   服务器、界面偏好等），**外加「当前曲库路径」**（`last_library_dir`）——这是唯一放在 app 目录的
 //!   「曲库相关」项，因为应用必须先知道当前曲库才能找到它的配置。
 //! - **曲库级** → `<曲库>/.mt/config.toml`：只存与**该曲库**相关的设置：曲库名称、文件结构方案、
-//!   目录布局（download 体系、tools、app_data）。
+//!   目录布局（download 体系、app_data）。
 //!
 //! 运行期使用 `Config`（两份配置的合并视图），调用方（serve / library / import / db / log）无感知。
 //! 持久化时按 `split()` 拆回两份分别写盘；`save_app()` 写 app 目录，`save_library()` 写 `.mt/`。
@@ -61,8 +61,6 @@ pub struct PathsConfig {
     /// 已转换 ncm 的原始 .ncm 归档（= download_dir/ncm）。顶层 _ncm_raw 已废弃，统一到 download 体系。
     #[serde(default)]
     pub ncm_raw_dir: PathBuf,
-    #[serde(default)]
-    pub tools_dir: PathBuf,
 }
 
 /// 网易云音乐（本地导入源）。2026-10-29 起不再含登录/下载能力：
@@ -96,6 +94,10 @@ pub struct SourceEntry {
     pub mode: String,
     #[serde(default = "default_source_enabled")]
     pub enabled: bool,
+    /// 「持续监听」开关：仅在应用启动 / 打开曲源总览 / 手动「检查」时只读扫描一次，
+    /// 发现新歌只提示，不自动导入、不建后台线程。`serde(default)` 兼容旧 TOML。
+    #[serde(default)]
+    pub watch: bool,
 }
 
 fn default_source_mode() -> String {
@@ -125,12 +127,20 @@ pub fn normalize_source(s: &mut SourceEntry) {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NcmConfig {
-    /// NCM 解密工具路径（如 ncmdump.exe）。置空或指向不存在的文件 = 未配置。
-    /// 唯一开关 = tool_ready()（tool_path 指向存在的文件），指定了工具即自动转换所有 .ncm。
+    /// NCM 插件启用开关。禁用时工具文件保留在 plugin 目录，随时可再开启。
+    /// `#[serde(default = "default_enabled")]`：老配置无此键时默认启用，升级不静默失效。
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    /// NCM 解密工具路径（安装后指向 `<exe目录>/plugin/` 下的文件）。
+    /// 置空或指向不存在的文件 = 未安装。
     #[serde(default)]
     pub tool_path: PathBuf,
     #[serde(default = "default_command_template")]
     pub command_template: String,
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 /// NCM 命令模板默认值。
@@ -140,14 +150,18 @@ fn default_command_template() -> String {
 
 impl Default for NcmConfig {
     fn default() -> Self {
-        Self { tool_path: PathBuf::new(), command_template: default_command_template() }
+        Self {
+            enabled: true,
+            tool_path: PathBuf::new(),
+            command_template: default_command_template(),
+        }
     }
 }
 
 impl NcmConfig {
-    /// NCM 转换的唯一开关：指定了工具（路径存在）即视为已配置，所有 .ncm 自动转换。
+    /// NCM 转换的唯一开关：插件启用且工具文件存在才视为就绪。
     pub fn tool_ready(&self) -> bool {
-        self.tool_path.is_file()
+        self.enabled && self.tool_path.is_file()
     }
 }
 
@@ -305,7 +319,7 @@ fn default_lyrics_opacity() -> u32 { LYRICS_OPACITY_DEFAULT }
 fn default_skin_blur() -> u32 { SKIN_BLUR_DEFAULT }
 fn default_update_source() -> String { UPDATE_SOURCE_DEFAULT.to_string() }
 fn default_update_interval() -> String { UPDATE_INTERVAL_DEFAULT.to_string() }
-/// 布局皮肤（界面整体风格）：classic(经典) / modern(现代)。默认 modern（v0.6 起，配合图标蓝强调色 + 深海背景皮肤）。
+/// 布局皮肤：v0.15.0 起唯一 modern。字段保留仅为兼容旧配置（classic 等值读时自动回退 modern）。
 /// 与 `skin_type`/`skin_preset`（底层背景皮肤）正交：前者换「布局风格」，后者换「背景图」。
 fn default_layout_skin() -> String { "modern".to_string() }
 /// 列表密度：comfortable(舒适) / compact(紧凑)。默认 comfortable。
@@ -520,7 +534,7 @@ pub struct UiConfig {
     /// 默认 #4F7CFF（更亮品牌蓝，与出厂强调色一致，深海背景的自动强调色）。
     #[serde(default = "default_skin_accent")]
     pub skin_accent: String,
-    /// 布局皮肤（界面整体风格）：classic(经典) / modern(现代)。默认 modern（v0.6 起）。
+    /// 布局皮肤：v0.15.0 起唯一 modern；字段保留兼容旧配置，读时归一。
     /// 与 `skin_type`/`skin_preset`（底层背景皮肤）正交：前者换「布局风格」，后者换「背景图」。
     #[serde(default = "default_layout_skin")]
     pub layout_skin: String,
@@ -812,8 +826,8 @@ impl UiConfig {
         if self.skin_type.is_empty() {
             self.skin_accent.clear();
         }
-        // 布局皮肤：只认 classic / modern，其余回退默认 modern。
-        if !matches!(self.layout_skin.as_str(), "classic" | "modern") {
+        // 布局皮肤：v0.15.0 起唯一 modern；旧配置里的 classic 与任何非法值一律回退默认 modern。
+        if self.layout_skin != "modern" {
             self.layout_skin = default_layout_skin();
         }
         // 列表密度：只认 comfortable / compact，其余回退默认 comfortable。
@@ -1060,7 +1074,11 @@ pub struct AppSettings {
     #[serde(default)]
     pub ui: UiConfig,
     /// 曲库来源数组（`[[sources]]`）。缺失时回退空数组，兼容旧配置。
-    #[serde(default)]
+    ///
+    /// 空数组时**不写出**该键：`toml::to_string_pretty` 对空 Vec 会生成顶层
+    /// `sources = []`，若之后又经 `save_sources_in_place` 追加 `[[sources]]`，
+    /// 同一键出现两次会让整份 TOML 解析失败（历史 bug：重启后误回首跑向导）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<SourceEntry>,
 }
 
@@ -1147,7 +1165,8 @@ pub fn default_app_settings() -> AppSettings {
             library_dir: PathBuf::new(), // 未设置（向导或设置页指定后才写入）
         },
         ncm: NcmConfig {
-            tool_path: PathBuf::new(), // 未配置（指定工具后写入，含 .mt/tools 内副本路径）
+            enabled: true,
+            tool_path: PathBuf::new(), // 未安装（安装后写入 <exe目录>/plugin/ 下工具路径）
             command_template: r#"{tool} "{input}""#.into(),
         },
         scanner: ScannerConfig {
@@ -1180,7 +1199,6 @@ pub fn default_library_settings(library_dir: &Path) -> LibrarySettings {
             download_dir: library_dir.join("download"),
             download_ing_dir: library_dir.join("download").join("ing"),
             ncm_raw_dir: library_dir.join("download").join("ncm"),
-            tools_dir: mt.join("tools"),
         },
         library: LibraryConfig {
             file_scheme: "artist_album".into(),
@@ -1227,6 +1245,12 @@ pub fn app_dir() -> PathBuf {
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// 插件目录（app 级，跨曲库共享）：`<exe目录>/plugin/`。
+/// 目录本身只由程序创建；插件二进制由用户自行放入，不随程序分发。
+pub fn plugin_dir() -> PathBuf {
+    app_dir().join("plugin")
 }
 
 // ============================================================
@@ -1289,13 +1313,14 @@ impl Config {
     /// 确保运行时目录（app_data / download_root / download 体系 / ncm 归档）存在。
     pub fn ensure_dirs(&self) -> Result<()> {
         let pending = self.paths.pending_ncm_dir();
+        let plugin = plugin_dir();
         for d in [&self.paths.app_data,
                   &self.paths.download_root,
                   &self.paths.download_dir,
                   &self.paths.download_ing_dir,
                   &self.paths.ncm_raw_dir,
                   &pending,
-                  &self.paths.tools_dir] {
+                  &plugin] {
             std::fs::create_dir_all(d)?;
         }
         Ok(())
@@ -1684,6 +1709,24 @@ fn has_sources_section(text: &str) -> bool {
     })
 }
 
+/// 是否为顶层的 inline 数组赋值 `sources = [...]`（含空数组 `sources = []`）。
+///
+/// toml crate 把空 `Vec<SourceEntry>` 序列化为该形态；它与后续写入的 `[[sources]]`
+/// 表数组是同一键的两种 TOML 表示，共存即非法。判断依据：无前导空白的行，
+/// 以 `sources` 开头紧跟 `=`（排除 `sources_meta` 等），值以 `[` 起，且不在表头内。
+fn is_top_level_inline_sources(trimmed_line: &str) -> bool {
+    if trimmed_line.starts_with(char::is_whitespace) {
+        return false;
+    }
+    let Some(rest) = trimmed_line.strip_prefix("sources") else {
+        return false;
+    };
+    let Some(value) = rest.trim_start().strip_prefix('=') else {
+        return false;
+    };
+    value.trim_start().starts_with('[')
+}
+
 /// 就地更新 app 配置文件中的来源数组。
 ///
 /// 只重写 `[[sources]]` 与 `[sources_meta]` 两段，其余段、注释、未知键与键序原样保留
@@ -1707,6 +1750,13 @@ pub fn upsert_sources_section(text: &str, sources: &[SourceEntry]) -> String {
             }
             continue;
         }
+        // 顶层 inline 空数组 `sources = []`（toml 对空 Vec 的序列化形态，或用户手改遗留）。
+        // 若与下面追加的 `[[sources]]` 共存，同一键既是内联数组又是表数组 → TOML 解析失败，
+        // 下次启动判为冲突并重建为 guest（表现为「又提示设置曲库」）。必须一并剥离。
+        // 仅匹配无缩进的顶层键，避免误伤子表内的同名键 / 注释。
+        if is_top_level_inline_sources(trimmed) {
+            continue;
+        }
         out.push(line.to_string());
     }
     // 去掉尾部累积空行，再统一追加一段，避免每次写入都让段落漂移。
@@ -1728,6 +1778,7 @@ pub fn upsert_sources_section(text: &str, sources: &[SourceEntry]) -> String {
         out.push(format!("is_netease = {}", s.is_netease));
         out.push(format!("mode = {}", toml::Value::String(s.mode.clone())));
         out.push(format!("enabled = {}", s.enabled));
+        out.push(format!("watch = {}", s.watch));
     }
     let mut result = out.join("\n");
     if !result.ends_with('\n') {
@@ -1771,6 +1822,7 @@ pub fn migrate_legacy_netease_source(app: &mut AppSettings, path: &Path) {
         is_netease: true,
         mode: "copy".to_string(),
         enabled: true,
+        watch: false,
     });
     if let Err(e) = save_sources_in_place(path, &app.sources) {
         eprintln!("[config] 迁移本地网易云曲库来源失败：{e}");
@@ -1800,33 +1852,93 @@ pub fn backup_conflict(path: &Path) -> Option<PathBuf> {
 /// 避免「每次构建都要重新指定」的困扰。语义可能变化的复杂结构则不抢救。
 fn salvage_app_settings(text: &str) -> AppSettings {
     let mut app = default_app_settings();
-    let Ok(v) = text.parse::<toml::Value>() else {
-        return app;
-    };
-    if let Some(p) = v.get("last_library_dir").and_then(|x| x.as_str()) {
-        if !p.is_empty() {
-            app.last_library_dir = Some(PathBuf::from(p));
+    match text.parse::<toml::Value>() {
+        Ok(v) => {
+            if let Some(p) = v.get("last_library_dir").and_then(|x| x.as_str()) {
+                if !p.is_empty() {
+                    app.last_library_dir = Some(PathBuf::from(p));
+                }
+            }
+            if let Some(p) = v
+                .get("netease")
+                .and_then(|n| n.get("library_dir"))
+                .and_then(|x| x.as_str())
+            {
+                if !p.is_empty() {
+                    app.netease.library_dir = PathBuf::from(p);
+                }
+            }
+            if let Some(p) = v
+                .get("ncm")
+                .and_then(|n| n.get("tool_path"))
+                .and_then(|x| x.as_str())
+            {
+                if !p.is_empty() {
+                    app.ncm.tool_path = PathBuf::from(p);
+                }
+            }
         }
-    }
-    if let Some(p) = v
-        .get("netease")
-        .and_then(|n| n.get("library_dir"))
-        .and_then(|x| x.as_str())
-    {
-        if !p.is_empty() {
-            app.netease.library_dir = PathBuf::from(p);
-        }
-    }
-    if let Some(p) = v
-        .get("ncm")
-        .and_then(|n| n.get("tool_path"))
-        .and_then(|x| x.as_str())
-    {
-        if !p.is_empty() {
-            app.ncm.tool_path = PathBuf::from(p);
+        Err(_) => {
+            // 整份 TOML 解析失败（如 `sources = []` 与 `[[sources]]` 重复键）时，
+            // toml::Value 同样救不回任何字段。逐行文本兜底抢救路径类标量，
+            // 避免退化成全默认配置 → 被当成新用户、又进入曲库向导。
+            if let Some(p) = salvage_text_scalar(text, None, "last_library_dir") {
+                if !p.is_empty() {
+                    app.last_library_dir = Some(PathBuf::from(p));
+                }
+            }
+            if let Some(p) = salvage_text_scalar(text, Some("netease"), "library_dir") {
+                if !p.is_empty() {
+                    app.netease.library_dir = PathBuf::from(p);
+                }
+            }
+            if let Some(p) = salvage_text_scalar(text, Some("ncm"), "tool_path") {
+                if !p.is_empty() {
+                    app.ncm.tool_path = PathBuf::from(p);
+                }
+            }
         }
     }
     app
+}
+
+/// 从 TOML 文本中按 `[section]` + key 逐行提取字符串标量，作为整份解析失败时的兜底。
+/// `section=None` 表示顶层（第一个表头之前）。只认无缩进的直属键；取 `=` 右侧值，
+/// 支持单引号 / 双引号字面量与行内注释。
+fn salvage_text_scalar(text: &str, section: Option<&str>, key: &str) -> Option<String> {
+    let wanted = section.unwrap_or("");
+    let mut current = String::new();
+    for line in text.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if t.starts_with('[') && t.ends_with(']') && !t.starts_with("[[") {
+            current = t[1..t.len() - 1].trim().to_string();
+            continue;
+        }
+        if current != wanted || t.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let Some((k, v)) = t.split_once('=') else {
+            continue;
+        };
+        if k.trim() != key {
+            continue;
+        }
+        let raw = v.trim();
+        let value = if raw.starts_with('\'') || raw.starts_with('"') {
+            let quote = raw.as_bytes()[0] as char;
+            raw[1..]
+                .find(quote)
+                .map(|i| &raw[1..1 + i])
+                .unwrap_or(raw)
+        } else {
+            raw.split('#').next().unwrap_or(raw).trim()
+        };
+        return Some(value.to_string());
+    }
+    None
 }
 
 /// 读取 app 级配置 + 兼容判定。返回 `(配置, 判定, 文件是否原本存在)`。
@@ -2201,7 +2313,6 @@ pub fn load_startup() -> Result<LoadedConfig> {
                     download_dir: guest.join("download"),
                     download_ing_dir: guest.join("download").join("ing"),
                     ncm_raw_dir: guest.join("download").join("ncm"),
-                    tools_dir: guest.join("tools"),
                 },
                 library: LibraryConfig {
                     file_scheme: "artist_album".into(),
@@ -2250,9 +2361,8 @@ pub fn init_library(library_dir: &Path, scheme: &str, name: &str) -> Result<Conf
         // 限制长度，避免极端输入影响 UI / 配置可读性。
         trimmed.chars().take(120).collect()
     };
-    // NCM 开关 = tool_ready()：.mt/tools/ 下检测到工具则用其路径；否则置空（未配置，.ncm 暂存 pendingNcm）。
-    lib.paths.tools_dir = mt.join("tools");
-    let detected = detect_ncm_tool(&mt).unwrap_or_else(PathBuf::new);
+    // NCM 开关 = tool_ready()：plugin/ 下检测到工具则用其路径；否则置空（未安装，.ncm 暂存 pendingNcm）。
+    let detected = detect_ncm_tool().unwrap_or_else(PathBuf::new);
 
     // 合并：app 级沿用当前 app 配置（保留 NCM 工具 / 导入源 / 界面偏好等），曲库级用新建的。
     // 用兼容感知加载：坏配置不再静默清空，而是先备份原文件再重建。
@@ -2291,7 +2401,6 @@ pub fn build_library_config(library_dir: &Path, scheme: &str, name: &str) -> Con
     cfg.paths.download_dir = library_dir.join("download");
     cfg.paths.download_ing_dir = library_dir.join("download").join("ing");
     cfg.paths.ncm_raw_dir = library_dir.join("download").join("ncm");
-    cfg.paths.tools_dir = mt.join("tools");
     if LibraryConfig::is_valid_scheme(scheme) {
         cfg.library.file_scheme = scheme.to_string();
     }
@@ -2305,7 +2414,7 @@ pub fn build_library_config(library_dir: &Path, scheme: &str, name: &str) -> Con
     } else {
         trimmed.chars().take(120).collect()
     };
-    cfg.ncm.tool_path = detect_ncm_tool(&mt).unwrap_or_else(PathBuf::new);
+    cfg.ncm.tool_path = detect_ncm_tool().unwrap_or_else(PathBuf::new);
     cfg
 }
 
@@ -2314,12 +2423,12 @@ pub fn resolve_download_root(app_data: &Path) -> PathBuf {
     app_data.parent().unwrap_or(app_data).to_path_buf()
 }
 
-/// 在 .mt/tools/ 下检测 ncm 解密工具（候选名）。找到返回其路径。
-pub fn detect_ncm_tool(app_data: &Path) -> Option<PathBuf> {
-    let tools = app_data.join("tools");
+/// 在 `<exe目录>/plugin/` 下检测 ncm 解密工具（候选名）。找到返回其路径。
+pub fn detect_ncm_tool() -> Option<PathBuf> {
+    let dir = plugin_dir();
     const CANDIDATES: &[&str] = &["ncmdump.exe", "ncmdump", "ncmpy.exe"];
     for name in CANDIDATES {
-        let p = tools.join(name);
+        let p = dir.join(name);
         if p.is_file() {
             return Some(p);
         }
@@ -2442,7 +2551,6 @@ mod config_tests {
             download_dir = "./musiclibrary/download"
             download_ing_dir = "./musiclibrary/download/ing"
             ncm_raw_dir = "./musiclibrary/download/ncm"
-            tools_dir = "./tools"
             [netease]
             library_dir = ""
             [ncm]
@@ -2481,8 +2589,7 @@ mod config_tests {
         assert_eq!(app.netease.library_dir, PathBuf::from("D:/Music"));
         assert_eq!(app.last_library_dir, Some(PathBuf::from("E:/Lib")));
         assert_eq!(lib.library.name, "曲库A");
-        // 曲库级不应携带 app 级字段。
-        assert!(!lib.paths.tools_dir.as_os_str().is_empty());
+        // 曲库级不应携带 app 级字段（NCM 工具路径属 app 级，见上方断言）。
 
         let merged = Config::merge(&app, &lib);
         assert_eq!(merged.library.name, "曲库A");
@@ -2519,7 +2626,6 @@ mod config_tests {
             download_dir = "./musiclibrary/download"
             download_ing_dir = "./musiclibrary/download/ing"
             ncm_raw_dir = "./musiclibrary/download/ncm"
-            tools_dir = "./tools"
             [netease]
             library_dir = "D:/Music"
             [ncm]
@@ -3105,6 +3211,7 @@ my_custom = "keep me"
             is_netease: true,
             mode: "copy".into(),
             enabled: true,
+            watch: true,
         }];
         let out = upsert_sources_section(orig, &sources);
         assert!(out.contains("# 用户自备配置，请勿删除"), "注释应保留");
@@ -3112,10 +3219,19 @@ my_custom = "keep me"
         assert!(out.contains("my_custom = \"keep me\""), "未知键应保留");
         assert!(out.contains("[[sources]]"), "应写出来源段");
         assert!(out.contains("is_netease = true"));
+        assert!(out.contains("watch = true"), "监听开关必须落盘，否则重启丢失");
+        // 旧 TOML（有 [[sources]] 但无 watch 键）必须解析为 false，不报错。
+        let legacy: AppSettings = toml::from_str(
+            "[[sources]]\nid = \"old\"\nname = \"旧\"\npath = \"D:/x\"\nenabled = true\n",
+        )
+        .expect("旧配置应仍可解析");
+        assert_eq!(legacy.sources.len(), 1);
+        assert!(!legacy.sources[0].watch, "缺少 watch 键时默认关闭");
         // [sources_meta] 属未知段，serde 应忽略；结果仍是可解析的合法 TOML。
         let parsed: AppSettings = toml::from_str(&out).expect("应为合法 TOML");
         assert_eq!(parsed.sources.len(), 1);
         assert_eq!(parsed.sources[0].path, "D:/CloudMusic");
+        assert!(parsed.sources[0].watch, "写盘后回读应保留 watch");
         assert_eq!(parsed.netease.library_dir, PathBuf::from("D:/CloudMusic"));
     }
 
@@ -3150,6 +3266,7 @@ enabled = false
             is_netease: true,
             mode: "move".into(),
             enabled: true,
+            watch: false,
         };
         normalize_source(&mut s);
         assert_eq!(s.id, "x");
@@ -3174,6 +3291,7 @@ enabled = false
             is_netease: true,
             mode: "move".into(),
             enabled: false,
+            watch: false,
         }];
         save_sources_in_place(&path, &sources).expect("保存应成功");
         let text = std::fs::read_to_string(&path).expect("应能读回");
@@ -3184,5 +3302,79 @@ enabled = false
         assert_eq!(back.sources[0].mode, "copy", "网易云来源落盘时强制复制");
         assert!(!back.sources[0].enabled);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn upsert_sources_section_removes_top_level_inline_empty_sources() {
+        // 复现历史 bug：save_app() 写出顶层 `sources = []`，再加曲源追加 [[sources]]，
+        // 两种表示共存使整份 TOML 解析失败 → 下次启动冲突重建 → 又进曲库向导。
+        let orig = r#"sources = []
+last_library_dir = 'D:\music\lib'
+
+[meta]
+config_version = "0.14.1"
+min_compatible_version = "0.2.0"
+
+[netease]
+library_dir = "D:/CloudMusic"
+"#;
+        let sources = vec![SourceEntry {
+            id: "src-a".into(),
+            name: "来源 A".into(),
+            path: "D:/A".into(),
+            is_netease: false,
+            mode: "copy".into(),
+            enabled: true,
+            watch: false,
+        }];
+        let out = upsert_sources_section(orig, &sources);
+        let inline_count = out
+            .lines()
+            .filter(|l| is_top_level_inline_sources(l.trim()))
+            .count();
+        assert_eq!(inline_count, 0, "顶层 inline sources = [] 必须被剥离");
+        assert!(out.contains("last_library_dir = 'D:\\music\\lib'"), "曲库路径应保留");
+        let parsed: AppSettings = toml::from_str(&out).expect("修复后必须能被完整解析");
+        assert_eq!(parsed.sources.len(), 1);
+        assert_eq!(parsed.last_library_dir, Some(PathBuf::from("D:\\music\\lib")));
+    }
+
+    #[test]
+    fn save_app_omits_empty_sources_key() {
+        // 空 sources 时 skip_serializing_if 生效：整份写出不得含顶层 `sources = []`，
+        // 从源头消除与 [[sources]] 的重复键冲突。
+        let mut app = default_app_settings();
+        app.sources.clear();
+        let text = toml::to_string_pretty(&app).expect("序列化应成功");
+        assert!(
+            !text.lines().any(|l| is_top_level_inline_sources(l.trim())),
+            "空来源不应写出 sources = []（实得：\n{text}）"
+        );
+    }
+
+    #[test]
+    fn salvage_app_settings_recovers_paths_from_broken_toml_text() {
+        // 整份 TOML 因重复键无法解析时，toml::Value 也失败；文本兜底必须救回曲库路径，
+        // 否则会被当成新用户回到向导。
+        let broken = r#"sources = []
+last_library_dir = 'D:\temp\testMusicLab'
+[netease]
+library_dir = "D:/CloudMusic"
+[ncm]
+tool_path = "C:/tools/ncmdump.exe"
+[[sources]]
+id = "src-1"
+name = "Penny"
+path = "E:/Music/Penny"
+"#;
+        assert!(broken.parse::<toml::Value>().is_err(), "该文本本应非法");
+        let saved = salvage_app_settings(broken);
+        assert_eq!(
+            saved.last_library_dir,
+            Some(PathBuf::from("D:\\temp\\testMusicLab")),
+            "坏配置也必须救回当前曲库路径"
+        );
+        assert_eq!(saved.netease.library_dir, PathBuf::from("D:/CloudMusic"));
+        assert_eq!(saved.ncm.tool_path, PathBuf::from("C:/tools/ncmdump.exe"));
     }
 }

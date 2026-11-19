@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>K music</title>
   <!--KQK_BOOT_APPEARANCE-->
+  <script src="radix.js"></script>
   <script>
   // 首屏外观预置：styles.css 的 :root 是浅色，若等 body 末尾的 app.js 或异步 /api/status
   // 才应用外观，浏览器会先画出一帧默认浅色再切换（可见闪烁）。
@@ -37,17 +38,15 @@
     if (!isFinite(blur) || blur < 0 || blur > 40) blur = 18;
     root.style.setProperty('--skin-blur', Math.round(blur) + 'px');
 
-    // #37：主题色（配置注入用下划线键名；皮肤激活时 skin_accent 优先于手动 accent）。
-    // 只接受 #RRGGBB，与后端 UiConfig::sanitize() 的 is_hex_color 同口径。
+    // v0.13.0：主题色（配置注入用下划线键名；皮肤激活时 skin_accent 优先于手动 accent）。
+    // 与 core.js::applyAppearance() 共用 radix.js，把色值映射到最近的 Radix 色阶并成套预设，
+    // 避免首屏先画一帧旧色再跳变（防闪烁链路：后端注入 → 本脚本 → applyAppearance()）。
     var hex = (src.skin_type && src.skin_accent) ? src.skin_accent : (src.accent || '');
     if (!hex && local && local.skin && local.skin.enabled && local.skin.accent) hex = local.skin.accent;
-    if (/^#[0-9a-fA-F]{6}$/.test(hex)) {
-      root.style.setProperty('--primary', hex);
-      var num = parseInt(hex.slice(1), 16);
-      var dm = dark ? 0.72 : 0.78;
-      var hx = function (x) { return ('0' + Math.round(Math.max(0, Math.min(255, x))).toString(16)).slice(-2); };
-      root.style.setProperty('--primary-dark', '#' + hx(((num >> 16) & 255) * dm) +
-        hx(((num >> 8) & 255) * dm) + hx((num & 255) * dm));
+    if (window.Radix && window.Radix.isHex(hex)) {
+      var radix = window.Radix.accent(hex, dark ? 'dark' : 'light');
+      Object.keys(radix.vars).forEach(function (k) { root.style.setProperty(k, radix.vars[k]); });
+      root.setAttribute('data-radix-scale', radix.scale);
       root.classList.add('has-accent'); // rail / 侧栏染色与派生色令牌的开关
     }
 
@@ -78,14 +77,11 @@
     }
   })();
   </script>
-  <link id="skin-css" rel="stylesheet" href="skins/classic.css" />
+  <link id="skin-css" rel="stylesheet" href="skins/modern.css" />
   <script>
-    // 首屏按 layout_skin 选取皮肤 CSS（在样式表加载前设定 href，避免经典皮肤先闪一帧再切现代）。
+    // v0.15.0：唯一布局皮肤，首屏固定加 skin-modern（兼容旧配置里 layout_skin=classic，一律按 modern 呈现）。
     (function () {
-      var sk = (window.__KQK_BOOT_APPEARANCE__ && window.__KQK_BOOT_APPEARANCE__.layout_skin) || 'classic';
-      var link = document.getElementById('skin-css');
-      if (link) link.href = 'skins/' + sk + '.css';
-      if (sk === 'modern') document.documentElement.classList.add('skin-modern');
+      document.documentElement.classList.add('skin-modern');
     })();
   </script>
 </head>
@@ -98,7 +94,7 @@
     </button>
     <!-- 曲库维护操作组：来源管理（纯图标 + 悬浮提示，未决状态为无数字小圆点）与重新扫描，紧邻切换曲库 -->
     <div class="lib-extra-actions">
-      <button id="btn-sources" class="md-btn icon-btn lib-btn" type="button" title="曲库来源管理" aria-label="曲库来源管理">
+      <button id="btn-sources" class="md-btn icon-btn lib-btn" type="button" title="曲源" aria-label="曲源">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 9 4.5-9 4.5-9-4.5 9-4.5Z"/><path d="m3 12 9 4.5 9-4.5"/><path d="m3 16.5 9 4.5 9-4.5"/></svg>
         <i id="sources-badge" class="src-dot" hidden></i>
       </button>
@@ -114,7 +110,6 @@
     </div>
     <div class="topbar-extras" id="topbar-extras">
       <span id="track-count" class="track-count">共 0 首</span>
-      <button id="btn-refresh" class="md-btn">刷新</button>
     </div>
     <div class="status" id="status">加载中…</div>
     <div class="actions">
@@ -153,13 +148,28 @@
       <span class="pp-spinner" aria-hidden="true"></span>
       <span class="pp-title" id="pp-title">正在导入…</span>
       <span class="pp-count" id="pp-count"></span>
-      <button class="pp-close" id="pp-close" type="button" aria-label="隐藏进度面板">×</button>
+      <button class="pp-btn" id="pp-pause" type="button" data-i18n="progress.pause"
+              aria-label="暂停导入">暂停</button>
+      <button class="pp-btn pp-btn-danger" id="pp-stop" type="button" data-i18n="progress.stop"
+              aria-label="停止导入，保留已入库">停止</button>
+      <button class="pp-close pp-minimize" id="pp-minimize" type="button" title="最小化到浮动图标"
+              aria-label="最小化到浮动图标">−</button>
+      <button class="pp-close" id="pp-close" type="button" title="关闭进度面板"
+              aria-label="关闭进度面板">×</button>
     </div>
     <div class="pp-bar"><div class="pp-bar-fill" id="pp-bar-fill"></div></div>
     <div class="pp-current" id="pp-current"></div>
+    <div class="pp-time" id="pp-time"></div>
     <ul class="pp-log" id="pp-log"></ul>
     <div class="pp-summary" id="pp-summary"></div>
   </div>
+
+  <!-- 收起 / 暂停 / 停止后的右下角胶囊：显示 N/M 与状态点，点击整枚展开并恢复轮询 -->
+  <button id="progress-pill" class="progress-pill" type="button" hidden aria-live="polite">
+    <span class="pill-dot" id="pill-dot" aria-hidden="true"></span>
+    <span class="pill-count" id="pill-count">0 / 0</span>
+    <span class="pill-status" id="pill-status" data-i18n="progress.updating">导入中</span>
+  </button>
 
   <main class="layout">
     <nav class="sidebar" id="sidebar">
@@ -173,6 +183,9 @@
               title="喜爱（双击整组播放）" aria-label="喜爱">
         <span>喜爱</span><span class="fav-entry-count" id="fav-count">0</span>
       </button>
+      <!-- v0.12.7：第 6 个一级 Tab「曲源」，与专辑/歌手同构的二级列表 + 三级歌曲表 -->
+      <button class="tab-btn" id="tab-sources" type="button" data-icon="⇥"
+              title="曲源" aria-label="曲源"><span data-i18n="sources.tab">曲源</span></button>
       <button class="pane-handle" id="handle-sidebar" data-toggle="sidebar" type="button" data-tip="收起一级菜单" aria-label="收起一级菜单">‹</button>
       <div class="pane-resizer" data-resize="sidebar" title="拖动调整一级菜单宽度"></div>
     </nav>
@@ -201,6 +214,8 @@
         <div class="inline-cover" id="lib-detail-cover" hidden></div>
         <div class="inline-fields" id="lib-detail-fields" hidden></div>
       </div>
+      <!-- v0.16.2：曲库列表加载状态条（加载中 / 无结果 / 失败+重试），缺数据时也不清空旧表格 -->
+      <div class="track-load-status" id="track-load-status" hidden></div>
       <div class="list-scroll" id="library-scroll">
         <table class="track-table" id="track-table">
           <thead>
@@ -229,6 +244,7 @@
           <span id="pl-title">播放列表内容</span>
           <div class="pl-head-actions">
             <button id="pl-add-current" class="md-btn primary" type="button" hidden>＋ 加入选中歌曲</button>
+            <span class="pl-add-hint" id="pl-add-hint" hidden>先在「全部曲库」选中歌曲，或右键歌曲直接加入</span>
             <button id="pl-rename" class="md-btn" type="button" hidden>重命名</button>
             <button id="pl-export" class="md-btn" type="button" hidden>导出</button>
             <button id="pl-import" class="md-btn" type="button">导入列表</button>
@@ -258,7 +274,7 @@
           </div>
         </div>
         <ul id="al-list" class="pl-list">
-          <li class="pl-empty">暂无智能播放列表 · 专辑</li>
+          <li class="pl-empty">暂无专辑</li>
         </ul>
         <button class="pane-handle group-handle" data-toggle="group" type="button" data-tip="收起二级列表" aria-label="收起二级列表">‹</button>
         <div class="pane-mini-icon" aria-hidden="true">◉</div>
@@ -276,7 +292,7 @@
           <div class="inline-fields" id="al-detail-fields" hidden></div>
         </div>
         <div id="al-content" class="pl-content">
-          <div class="placeholder">智能播放列表 · 请从左侧选择一个专辑</div>
+          <div class="placeholder">请从左侧选择一个专辑</div>
         </div>
       </div>
     </div>
@@ -288,7 +304,7 @@
           <span>歌手</span>
         </div>
         <ul id="ar-list" class="pl-list">
-          <li class="pl-empty">暂无智能播放列表 · 歌手</li>
+          <li class="pl-empty">暂无歌手</li>
         </ul>
         <button class="pane-handle group-handle" data-toggle="group" type="button" data-tip="收起二级列表" aria-label="收起二级列表">‹</button>
         <div class="pane-mini-icon" aria-hidden="true">♫</div>
@@ -308,7 +324,30 @@
           <div class="inline-fields ar-detail-fields" id="ar-detail-fields" hidden></div>
         </div>
         <div id="ar-content" class="pl-content">
-          <div class="placeholder">智能播放列表 · 请从左侧选择一个歌手</div>
+          <div class="placeholder">请从左侧选择一个歌手</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- v0.12.7 曲源页：二级列表按曲源 id 分组，三级显示由该曲源导入的歌曲。
+         刻意不复制 pane-handle / pane-mini-icon / pane-resizer，避免破坏既有「5 条细条」几何断言。 -->
+    <div class="playlists-pane sources-view-pane" id="sources-view-pane" hidden>
+      <div class="pl-sidebar">
+        <div class="pl-sidebar-head">
+          <span data-i18n="sources.tab">曲源</span>
+          <button id="sv-refresh" class="md-btn sm" type="button" data-i18n="sources.refresh">刷新</button>
+        </div>
+        <ul id="sv-list" class="pl-list">
+          <li class="pl-empty">暂无曲源</li>
+        </ul>
+      </div>
+      <div class="pl-main">
+        <div class="pl-main-head" id="sv-main-head">
+          <span id="sv-title" data-i18n="sources.tracks_title">曲源歌曲</span>
+          <span class="sv-count" id="sv-count"></span>
+        </div>
+        <div id="sv-content" class="pl-content">
+          <div class="placeholder">请从左侧选择一个曲源查看歌曲</div>
         </div>
       </div>
     </div>
@@ -332,24 +371,31 @@
     </aside>
   </main>
 
+  <!-- v0.12.15：按重设计稿把播放栏分为三列（当前曲目 / 播放键+进度 / 工具组）。
+       只调整容器分组与顺序，全部 id、class、事件绑定与播放状态机一字不改。 -->
   <footer class="player">
     <div class="player-info">
       <div class="now-playing" id="now-playing">未在播放</div>
-      <div class="queue-title" id="queue-title"></div>
     </div>
     <div class="controls">
-      <button id="btn-prev" class="md-btn round sm" type="button" title="上一首" aria-label="上一首">⏮</button>
-      <button id="btn-play" class="md-btn round">▶</button>
-      <button id="btn-next" class="md-btn round sm" type="button" title="下一首" aria-label="下一首">⏭</button>
-      <button id="btn-shuffle" class="md-btn sm" type="button" title="随机播放当前队列" aria-label="随机播放">🔀</button>
-      <button id="btn-repeat" class="md-btn sm" type="button" title="列表循环" aria-label="列表循环">🔁</button>
-      <button id="btn-queue" class="md-btn sm" type="button" title="查看当前播放队列">队列</button>
-      <button id="btn-lyrics" class="md-btn sm" type="button" title="显示歌词">词</button>
+      <div class="cbtns">
+        <button id="btn-shuffle" class="md-btn sm" type="button" title="随机播放当前播放列表" aria-label="随机播放">🔀</button>
+        <button id="btn-prev" class="md-btn round sm" type="button" title="上一首" aria-label="上一首">⏮</button>
+        <button id="btn-play" class="md-btn round">▶</button>
+        <button id="btn-next" class="md-btn round sm" type="button" title="下一首" aria-label="下一首">⏭</button>
+        <button id="btn-repeat" class="md-btn sm" type="button" title="列表循环" aria-label="列表循环">🔁</button>
+      </div>
+      <div class="seek">
+        <span id="cur-time" class="time">0:00</span>
+        <input id="seek" type="range" min="0" max="1000" value="0" />
+        <span id="dur-time" class="time">0:00</span>
+      </div>
+    </div>
+    <div class="player-extras">
+      <button id="btn-queue" class="md-btn sm" type="button" title="播放列表" aria-label="播放列表">☰</button>
+      <button id="btn-lyrics" class="md-btn sm" type="button" title="显示歌词" aria-label="显示歌词"><span class="ch">词</span></button>
       <!-- #29：全屏「正在播放 / 歌词」覆盖层入口；抽屉「词」按钮保持原行为不变。 -->
-      <button id="btn-now-view" class="md-btn sm" type="button" title="全屏歌词" aria-label="全屏歌词">⛶</button>
-      <span id="cur-time" class="time">0:00</span>
-      <input id="seek" type="range" min="0" max="1000" value="0" />
-      <span id="dur-time" class="time">0:00</span>
+      <button id="btn-now-view" class="md-btn sm" type="button" title="全屏歌词" aria-label="全屏歌词"><svg viewBox="0 0 14 14"><path d="M5 2H2v3M9 2h3v3M5 12H2V9M9 12h3V9"/></svg></button>
       <button id="btn-mute" class="md-btn sm volume-mute-btn" type="button" title="静音 / 恢复" aria-label="静音 / 恢复">🔊</button>
       <input id="volume" type="range" min="0" max="100" value="100" title="音量" aria-label="音量" />
     </div>
@@ -439,7 +485,7 @@
       <!-- 通用来源目录（可选）：不再是专门「导入网易云曲库」的界面，选完由后端自动检测类型 -->
       <div class="wizard-step" data-step="3" hidden>
         <h4>来源目录（可选）</h4>
-        <p class="modal-hint">可指定一个本地歌曲目录作为更新源；选定后自动检测它是否为网易云曲库、是否含 .ncm 文件。没有可跳过。</p>
+        <p class="modal-hint">可指定一个本地歌曲目录作为导入源；选定后自动检测它是否为网易云曲库、是否含 .ncm 文件（没有会跳过）。</p>
         <div class="directory-picker">
           <input id="wiz-netease-input" type="text" autocomplete="off" placeholder="来源目录（可选）" />
           <button id="wiz-netease-browse" class="md-btn" type="button">浏览…</button>
@@ -447,17 +493,12 @@
         <div id="wiz-netease-status" class="ncm-status"></div>
       </div>
 
-      <!-- 条件步骤：仅当探测命中网易云曲库或 .ncm 文件时才出现 -->
+      <!-- 条件步骤：仅当探测命中网易云曲库或 .ncm 文件时才出现。插件化后不再填路径，统一到 设置→插件 安装。 -->
       <div class="wizard-step" data-step="4" hidden id="wiz-ncm-step">
-        <h4>NCM 解密工具（可选）</h4>
-        <p class="modal-hint">检测到网易云曲库或 .ncm 文件，可在此指定 ncmdump.exe；没有可跳过，之后也能在「来源管理」里补配。</p>
+        <h4>NCM 转换器插件（可选）</h4>
+        <p class="modal-hint">检测到网易云曲库或 .ncm 文件。如需转换加密歌曲，请在初始化完成后到「设置 → 插件」安装 NCM 转换器；没有可跳过，之后也能随时补装。</p>
         <p class="modal-hint">请注意，转换加密音乐文件的行为本身可能涉及版权问题。请确保你转换的音乐是已购买或拥有合法使用权限的，仅供自己方便使用，不要用于传播。</p>
-        <div id="wiz-ncm-status" class="ncm-status">未指定 NCM 工具</div>
-        <div class="directory-picker">
-          <input id="wiz-ncm-input" type="text" autocomplete="off" placeholder="ncmdump.exe 路径（可选）" />
-          <button id="wiz-ncm-pick" class="md-btn" type="button">选择文件…</button>
-        </div>
-        <label class="copy-opt"><input type="checkbox" id="wiz-ncm-copy" checked /> 复制到本曲库 .mt/tools</label>
+        <div id="wiz-ncm-status" class="ncm-status">插件状态：未安装</div>
       </div>
       </div><!-- /wizard-body -->
 
@@ -476,28 +517,31 @@
       <div class="settings-head">
         <div class="settings-head-text">
           <h3>设置</h3>
-          <p>管理曲库、界面与导入选项</p>
         </div>
-        <button id="settings-close" class="md-btn primary" type="button">关闭</button>
+        <button id="settings-close" class="md-btn" type="button">关闭</button>
       </div>
 
       <div class="settings-layout">
         <nav class="settings-nav" aria-label="设置分类">
           <button class="settings-tab active" type="button" data-tab="appearance">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 3v18M12 3a9 9 0 0 1 0 18" /></svg>
-            <span><strong>界面</strong><small>主题 · 换肤 · 歌词</small></span>
+            <span><strong>界面</strong><small>主题 换肤 歌词</small></span>
           </button>
           <button class="settings-tab" type="button" data-tab="library">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7" /></svg>
-            <span><strong>曲库</strong><small>位置 · 名称 · 文件结构</small></span>
+            <span><strong>曲库</strong><small>位置 名称 文件结构</small></span>
           </button>
           <button class="settings-tab" type="button" data-tab="import">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" /></svg>
-            <span><strong>导入</strong><small>NCM 工具 · 本地曲库</small></span>
+            <span><strong data-i18n="sources.title">曲源</strong><small>曲源 重复</small></span>
+          </button>
+          <button class="settings-tab" type="button" data-tab="plugins">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3v3m6-3v3M7 6h10a2 2 0 0 1 2 2v3a3 3 0 0 0 0 6v3H5v-3a3 3 0 0 0 0-6V8a2 2 0 0 1 2-2z" /></svg>
+            <span><strong>插件</strong><small>NCM 转换器</small></span>
           </button>
           <button class="settings-tab" type="button" data-tab="columns">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 9h18M9 9v11M15 9v11" /></svg>
-            <span><strong>列表</strong><small>布局风格 · 显示列与宽度</small></span>
+            <span><strong>列表</strong><small>布局风格 显示列与宽度</small></span>
           </button>
           <button class="settings-tab" type="button" data-tab="playback">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" /><path d="m17 16 4 2-4 2v-4z" /></svg>
@@ -505,11 +549,11 @@
           </button>
           <button class="settings-tab has-dot" type="button" data-tab="network">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.5 2.5 3.8 5.7 3.8 9S14.5 18.5 12 21c-2.5-2.5-3.8-5.7-3.8-9S9.5 5.5 12 3z" /></svg>
-            <span><strong>联网</strong><small>默认关闭 · 版本检测</small></span>
+            <span><strong>联网</strong><small>默认关闭 版本检测</small></span>
           </button>
           <button class="settings-tab has-dot" type="button" data-tab="about">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></svg>
-            <span><strong>关于</strong><small>版本 · 配置文件</small></span>
+            <span><strong>关于</strong><small>版本 配置文件</small></span>
             <!-- FR-30：关于红点常驻（有更新且未升级就一直在），点开页面不熄灭。 -->
             <i id="update-dot-about" class="update-dot" hidden></i>
           </button>
@@ -517,7 +561,7 @@
 
         <div class="settings-content">
           <div class="settings-pane active" data-pane="appearance">
-            <div class="settings-pane-head"><h4>界面</h4><p>主题模式、皮肤背景与歌词面板</p></div>
+            <div class="settings-pane-head"><h4>界面</h4></div>
 
             <div class="settings-section">
         <h4>界面（主题 / 换肤 / 歌词）</h4>
@@ -532,10 +576,9 @@
         </div>
         <div class="appearance-block">
           <div class="ap-label" id="ap-layout-label">布局</div>
-          <!-- 与上方「主题模式」同款分段控件，不再用下拉。 -->
+          <!-- v0.15.0：单皮肤，仅展示当前布局，不可切换。 -->
           <div class="seg" id="ap-layout-skin" role="group" aria-label="布局">
-            <button class="seg-btn" type="button" data-skin="classic" aria-pressed="false">经典</button>
-            <button class="seg-btn active" type="button" data-skin="modern" aria-pressed="true">现代（默认）</button>
+            <button class="seg-btn active" type="button" data-skin="modern" aria-pressed="true" disabled>现代</button>
           </div>
           <div class="ap-subhint">切换整体界面风格（配色 / 视觉），实时生效并自动保存，下次启动沿用。</div>
         </div>
@@ -607,84 +650,147 @@
           </div><!-- /pane: appearance -->
 
           <div class="settings-pane" data-pane="library">
-            <div class="settings-pane-head"><h4>曲库</h4><p>曲库位置、名称与文件组织方式</p></div>
+            <div class="settings-pane-head"><h4>曲库</h4></div>
 
-      <div class="settings-section">
-        <h4>曲库位置</h4>
-        <div id="set-library-path" class="settings-value"></div>
-        <button id="set-change-library" class="md-btn" type="button">更改曲库</button>
+      <!-- v0.15.6：三块按曲源总览风格改为左右两栏（左内容 / 右竖排按钮），id/data-* 与事件绑定不变。 -->
+      <div class="settings-section lib-block">
+        <div class="lib-block-main">
+          <h4>曲库位置</h4>
+          <div id="set-library-path" class="settings-value"></div>
+        </div>
+        <div class="lib-block-actions">
+          <button id="set-change-library" class="md-btn" type="button">更改曲库</button>
+        </div>
       </div>
 
-      <div class="settings-section">
-        <h4>曲库名称</h4>
-        <p class="modal-hint">用于标识本曲库，便于在多曲库 / 多用户场景下区分。修改后写入本曲库的 .mt/config.toml。</p>
-        <div id="set-library-name" class="settings-value"></div>
-        <div class="directory-picker">
-          <input id="set-name-input" type="text" autocomplete="off" placeholder="输入新的曲库名称" />
+      <div class="settings-section lib-block">
+        <div class="lib-block-main">
+          <h4>曲库名称</h4>
+          <p class="modal-hint">用于标识本曲库，便于在多曲库 / 多用户场景下区分。修改后写入本曲库的 .mt/config.toml。</p>
+          <div id="set-library-name" class="settings-value"></div>
+          <div class="directory-picker">
+            <input id="set-name-input" type="text" autocomplete="off" placeholder="输入新的曲库名称" />
+          </div>
         </div>
-        <button id="set-name-apply" class="md-btn primary" type="button">保存名称</button>
+        <div class="lib-block-actions">
+          <button id="set-name-apply" class="md-btn primary" type="button">保存名称</button>
+        </div>
       </div>
 
-      <div class="settings-section">
-        <h4>曲库文件结构方案</h4>
-        <div class="scheme-options" id="set-scheme-options">
-          <label><input type="radio" name="set-scheme" value="artist_album" /> 艺人 / 专辑 / 曲目</label>
-          <label><input type="radio" name="set-scheme" value="album" /> 专辑 / 曲目</label>
-          <label><input type="radio" name="set-scheme" value="artist" /> 艺人 / 曲目</label>
-          <label><input type="radio" name="set-scheme" value="flat" /> 平铺（曲名 - 艺人）</label>
+      <div class="settings-section lib-block">
+        <div class="lib-block-main">
+          <h4>曲库文件结构方案</h4>
+          <div class="scheme-options" id="set-scheme-options">
+            <label><input type="radio" name="set-scheme" value="artist_album" /> 艺人 / 专辑 / 曲目</label>
+            <label><input type="radio" name="set-scheme" value="album" /> 专辑 / 曲目</label>
+            <label><input type="radio" name="set-scheme" value="artist" /> 艺人 / 曲目</label>
+            <label><input type="radio" name="set-scheme" value="flat" /> 平铺（曲名 - 艺人）</label>
+          </div>
+          <p class="modal-hint warn">切换方案会按新结构整体移动 / 重命名文件，目录结构将大幅变化；建议先确认媒体播放器已退出本曲库。重组中可暂停或结束，结束会整体回滚到原结构。</p>
         </div>
-        <button id="set-apply-scheme" class="md-btn primary" type="button">应用并重排</button>
-        <p class="modal-hint warn">切换方案会按新结构整体移动 / 重命名文件，目录结构将大幅变化；建议先确认媒体播放器已退出本曲库。</p>
+        <div class="lib-block-actions">
+          <button id="set-apply-scheme" class="md-btn primary" type="button">应用并重排</button>
+        </div>
       </div>
           </div><!-- /pane: library -->
 
-          <div class="settings-pane" data-pane="import">
-            <div class="settings-pane-head"><h4>导入</h4><p>解密工具与本地网易云曲库增量合并</p></div>
+          <!-- v0.12.11：设置 → 曲源总览，不再弹独立窗口。B2 四块单栏纵向堆叠；C2 右侧详情直接可编辑 -->
+          <div class="settings-pane src-pane" data-pane="import">
+            <div class="settings-pane-head">
+              <h4><span data-i18n="sources.overview">曲源</span>
+                <span class="src-tip" id="ov-tip" data-tip="曲库是本地管理的曲库文件夹，曲源是外部上游目录；这里的重命名与删除不会改动曲库，也不会改动原始文件夹" tabindex="0" aria-label="说明">?</span>
+              </h4>
+            </div>
 
-      <!-- 来源相关配置统一由「来源管理」维护，设置里只留一个跳转入口，避免两处写同一份配置。
-           旧控件以 hidden 容器保留：core.js 的既有事件绑定 / 回填与 demo 断言继续有效，但用户不可见、不可写。 -->
-      <div class="settings-section sources-jump">
-        <h4 data-i18n="sources.title">曲库来源管理</h4>
-        <p class="modal-hint">更新源目录、导入方式（复制 / 移动）、NCM 工具与 .ncm 积压都在这里统一配置。</p>
-        <button id="set-open-sources" class="md-btn primary" type="button" data-i18n="sources.open">打开来源管理</button>
-      </div>
+            <!-- 1. 曲源信息：并入原「汇总」块（已完成字样 + 导入全部/添加曲源）。
+                 左栏：summary + 曲源列表 + 点选树形展开详情；右栏：全局按钮 + 复制/移动 + 浏览 + 保存/导入/删除。
+                 .src-split 类名保留作既有断言锚点；src-*/ov-* id 一律不变。 -->
+            <div class="settings-section src-pane-block src-block src-split" id="src-info-block">
+              <div class="src-block-main">
+                <h4>曲源信息 <small class="src-block-hint">点左侧曲源，向下展开详情</small></h4>
+                <!-- v0.16.2：汇总行仅作操作反馈，空闲态隐藏；由 renderSourceSummary() 控制显隐与 2.5s 自动收起 -->
+                <span id="ov-summary" class="ov-summary" hidden>已完成 0/0，入库 0，跳过 0</span>
+                <div id="sources-list" class="sources-list"></div>
+                <div id="src-empty" class="sources-empty">选择左侧曲源查看与编辑；添加曲源请点右侧按钮。</div>
+                <div id="src-form" hidden>
+                  <h5 id="src-detail-title">曲源详情</h5>
+                  <p class="modal-hint" id="src-detail-sub">可修改名称、目录、导入方式，或立即按此曲源导入曲库。</p>
+                  <label class="src-label" for="src-name">名称
+                    <span class="src-tip" id="src-name-tip" data-tip="仅改显示名称，不影响实际目录，也不改变已导入歌曲的归属" tabindex="0" aria-label="说明">?</span>
+                  </label>
+                  <div class="directory-picker"><input id="src-name" type="text" autocomplete="off" placeholder="曲源名称" /></div>
+                  <label class="src-label" for="src-path">曲源目录</label>
+                  <div class="directory-picker">
+                    <input id="src-path" type="text" autocomplete="off" placeholder="选择或输入目录" />
+                  </div>
+                  <div id="src-probe" class="ncm-status"></div>
+                  <label class="copy-opt" id="src-netease-row"><input type="checkbox" id="src-netease" /> 这是网易云曲库（自动检测得出，可手动更正）</label>
+                  <label class="copy-opt"><input type="checkbox" id="src-enabled" checked /> 启用此曲源</label>
+                </div>
+              </div>
+              <div class="src-block-actions">
+                <!-- 全局按钮：始终可见，不受 no-selection / is-builtin 隐藏（那两态只隐藏下面的曲源相关动作） -->
+                <div class="ov-toolbar src-global-actions">
+                  <button id="ov-update-all" class="md-btn primary" type="button" data-i18n="sources.update_all">导入全部曲源</button>
+                  <button id="sources-add" class="md-btn" type="button" data-i18n="sources.add">添加曲源</button>
+                </div>
+                <div class="scheme-options imp-options" id="src-mode-options">
+                  <label class="imp-option">
+                    <input type="radio" name="src-mode" value="copy" checked />
+                    <span class="imp-option-body"><span class="imp-option-title">复制<span class="imp-badge">推荐</span></span><span class="imp-option-desc">保留源文件，把副本加入曲库</span></span>
+                  </label>
+                  <label class="imp-option">
+                    <input type="radio" name="src-mode" value="move" />
+                    <span class="imp-option-body"><span class="imp-option-title">移动</span><span class="imp-option-desc">源文件移入曲库，原位置不再保留</span></span>
+                  </label>
+                </div>
+                <button id="src-browse" class="md-btn" type="button">浏览…</button>
+                <div class="modal-actions src-actions">
+                  <button id="src-save" class="md-btn" type="button">保存设置</button>
+                  <button id="src-import" class="md-btn primary" type="button" data-i18n="sources.import_once">导入此曲源</button>
+                  <button id="src-delete" class="md-btn" type="button">删除曲源</button>
+                </div>
+              </div>
+            </div>
 
-      <div hidden class="legacy-source-config">
-      <div class="settings-section">
-        <h4>NCM 解密工具</h4>
-        <p class="modal-hint">请注意，转换加密音乐文件的行为本身可能涉及版权问题。请确保你转换的音乐是已购买或拥有合法使用权限的，仅供自己方便使用，不要用于传播。</p>
-        <div id="set-ncm-status" class="settings-value"></div>
-        <div class="directory-picker">
-          <input id="set-ncm-input" type="text" autocomplete="off" placeholder="ncmdump.exe 路径（可选）" />
-          <button id="set-ncm-pick" class="md-btn" type="button">选择文件…</button>
-        </div>
-        <label class="copy-opt"><input type="checkbox" id="set-ncm-copy" checked /> 复制到本曲库 .mt/tools</label>
-        <button id="set-ncm-apply" class="md-btn primary" type="button">应用 NCM 工具</button>
-      </div>
+            <!-- 2. 导入状态：待处理重复（历史已拆为独立块 v0.16.1） -->
+            <div class="settings-section src-pane-block src-block" id="src-dup-section">
+              <div class="src-block-main">
+                <h4><span>导入状态</span>
+                  <i id="sources-nav-badge" class="dup-badge" hidden>0</i></h4>
+                <h5 class="dup-sub-title" data-i18n="sources.duplicates">待处理重复</h5>
+                <p class="modal-hint" id="sources-dup-sub">逐组选择要保留的版本；「稍后处理」不改动任何文件。</p>
+                <div class="dup-count" id="src-dup-count"></div>
+                <div class="dup-path" id="src-dup-path"></div>
+                <div id="src-dup-groups" class="dup-groups"></div>
+              </div>
+              <div class="src-block-actions">
+                <button id="src-dup-later" class="md-btn" type="button">稍后处理</button>
+                <button id="src-dup-apply" class="md-btn primary" type="button">应用所选</button>
+              </div>
+            </div>
 
-      <div class="settings-section">
-        <h4>本地网易云音乐曲库</h4>
-        <p class="modal-hint">指定你在网易云 App 内维护的本地曲库目录（导入源）；点「从本地网易云曲库更新」即可增量合并新歌（只加不删）。</p>
-        <div id="set-netease-dir" class="settings-value"></div>
-        <div class="directory-picker">
-          <input id="set-netease-input" type="text" autocomplete="off" placeholder="本地网易云音乐曲库目录（可选）" />
-          <button id="set-netease-browse" class="md-btn" type="button">浏览…</button>
-        </div>
-        <span id="set-netease-status" class="modal-hint"></span>
-        <button id="set-netease-apply" class="md-btn primary" type="button">保存目录</button>
-        <button id="set-netease-update" class="md-btn primary" type="button">从本地网易云曲库更新</button>
-      </div>
-      </div><!-- /legacy-source-config -->
+            <!-- 3. 同步 / 导入历史：v0.16.1 拆为独立块，清除按钮进右栏，与其余两块风格一致；折叠摘要与 id/事件不变 -->
+            <div class="settings-section src-pane-block src-block" id="src-history-section">
+              <div class="src-block-main">
+                <h4>同步 / 导入历史</h4>
+                <button id="src-history-toggle" class="src-history-summary" type="button" aria-expanded="false">
+                  <span id="src-history-summary-text">暂无历史记录</span>
+                  <span class="src-history-chevron" aria-hidden="true">▸</span>
+                </button>
+                <div id="src-history-body" class="src-history-body" hidden>
+                  <p class="modal-hint">曲库的同步与导入流水单独记录在 .mt/sync-import.jsonl 中；重复对比窗口会把上次选择作为默认预选项。清除后可重新对比同一首歌。</p>
+                </div>
+              </div>
+              <div class="src-block-actions">
+                <button id="set-dup-clear-history" class="md-btn" type="button">清除历史</button>
+              </div>
+            </div>
 
-      <div class="settings-section">
-        <h4>同步 / 导入历史</h4>
-        <p class="modal-hint">曲库的同步与导入流水单独记录在 .mt/sync-import.jsonl 中；重复对比窗口会把上次选择作为默认预选项。清除后可重新对比同一首歌。</p>
-        <button id="set-dup-clear-history" class="md-btn" type="button">清除同步/导入历史</button>
-      </div>
           </div><!-- /pane: import -->
 
           <div class="settings-pane" data-pane="columns">
-            <div class="settings-pane-head"><h4>列表</h4><p>歌曲列表显示哪些列、按什么顺序，以及各页面的布局风格</p></div>
+            <div class="settings-pane-head"><h4>列表</h4></div>
 
       <div class="settings-section">
         <h4>布局风格</h4>
@@ -714,16 +820,16 @@
           </div><!-- /pane: columns -->
 
           <div class="settings-pane" data-pane="playback">
-            <div class="settings-pane-head"><h4>播放</h4><p>自动（无名）播放列表的生成规则</p></div>
+            <div class="settings-pane-head"><h4>播放</h4></div>
 
       <div class="settings-section">
         <h4>自动播放列表歌曲数上限</h4>
         <p class="modal-hint">
-          在曲库 / 专辑 / 歌手页面播放歌曲时，会按当前列表顺序自动生成一个临时播放队列，
+          在曲库 / 专辑 / 歌手页面播放歌曲时，会按当前列表顺序自动生成一个临时播放列表，
           最多列入 <b>n</b> 首（默认 20，范围 1–200）。<br />
-          该数值<b>只影响自动生成的播放队列</b>：不会改动任何播放列表的内容、列表行数或导出文件；
+          该数值<b>只影响自动生成的播放列表</b>：不会改动任何播放列表的内容、列表行数或导出文件；
           用户自己创建的有名播放列表始终按其全量曲目播放。<br />
-          修改后，<b>下一次</b>触发播放时才生效，当前正在播放的队列不变。<br />
+          修改后，<b>下一次</b>触发播放时才生效，当前正在播放的列表不变。<br />
           <b>双击左侧二级列表（专辑 / 歌手 / 播放列表）会播放该列表全量曲目，不受此上限约束</b>（FR-24 新增入口）。
         </p>
         <div class="playback-count-row">
@@ -736,9 +842,30 @@
       </div>
           </div><!-- /pane: playback -->
 
+          <!-- 插件管理页（L1 伪插件）：左栏插件列表 + 右栏竖排按钮；当前仅 NCM 转换器一项。 -->
+          <div class="settings-pane" data-pane="plugins">
+            <div class="settings-pane-head"><h4>插件</h4></div>
+
+            <div class="settings-section plugin-block" id="plugin-block">
+              <div class="plugin-block-main">
+                <h5 class="dup-sub-title">已安装插件</h5>
+                <p class="modal-hint">插件存放于应用目录 <code id="plugin-dir-text">plugin/</code>，不随程序分发。请选择已购买或拥有合法使用权限的音乐，仅供自己方便使用，不要传播。</p>
+                <div id="plugin-list" class="plugin-list"></div>
+              </div>
+              <div class="plugin-block-actions">
+                <button id="plugin-install" class="md-btn primary" type="button">安装插件…</button>
+                <button id="plugin-open-dir" class="md-btn" type="button">打开插件目录</button>
+                <button id="plugin-refresh" class="md-btn" type="button">重新检测</button>
+                <button id="plugin-toggle" class="md-btn" type="button" hidden>关闭插件</button>
+                <button id="plugin-organize" class="md-btn" type="button" hidden>转换积压 .ncm</button>
+                <button id="plugin-remove" class="md-btn danger" type="button" hidden>删除插件</button>
+              </div>
+            </div>
+          </div><!-- /pane: plugins -->
+
           <!-- FR-30：联网设置页。默认全部关闭；总闸关闭时子项只灰显禁用、值保留不清零。 -->
           <div class="settings-pane" data-pane="network">
-            <div class="settings-pane-head"><h4>联网</h4><p>默认关闭；开启后仅进行只读版本查询</p></div>
+            <div class="settings-pane-head"><h4>联网</h4></div>
 
             <div class="settings-section">
               <h4>联网总闸</h4>
@@ -777,11 +904,6 @@
               <p class="modal-hint">
                 频率按「启动后触发 + 间隔节流」计算，不会在后台定时轮询。关闭总闸时本区灰显、值仍保留。
               </p>
-              <!-- TODO 占位：始终灰显不可选，不写配置键、不实现任何逻辑。 -->
-              <label class="net-toggle-row net-todo" for="set-lyrics-remote-todo">
-                <input id="set-lyrics-remote-todo" type="checkbox" disabled />
-                <span>是否允许远程下载歌词（暂未开放）</span>
-              </label>
             </div>
 
             <div class="settings-section">
@@ -795,7 +917,7 @@
           </div><!-- /pane: network -->
 
           <div class="settings-pane" data-pane="about">
-            <div class="settings-pane-head"><h4>关于与配置</h4><p>应用信息与配置文件兼容状态</p></div>
+            <div class="settings-pane-head"><h4>关于与配置</h4></div>
 
       <div class="settings-section" id="about-section">
         <h4>关于</h4>
@@ -824,15 +946,18 @@
 
       <div class="settings-section">
         <h4>配置文件</h4>
-        <p class="modal-hint">配置记录了生成版本与最低兼容版本。版本兼容时既有配置会被完整保留，
-          仅按需更新版本信息；只有出现结构或字段不兼容时才会重建（原文件备份为 <code>*.conflict-<版本>.bak</code>）。</p>
-        <dl class="about-list">
-          <div class="about-row"><dt>配置文件生成版本</dt><dd id="cfg-version">—</dd></div>
-          <div class="about-row"><dt>最低兼容版本</dt><dd id="cfg-min-version">—</dd></div>
-          <div class="about-row"><dt>当前程序版本</dt><dd id="cfg-app-version">—</dd></div>
-          <div class="about-row"><dt>兼容状态</dt><dd id="cfg-compat">—</dd></div>
-          <div class="about-row"><dt>曲库配置版本</dt><dd id="cfg-library-version">—</dd></div>
-        </dl>
+        <p id="cfg-summary" class="modal-hint cfg-summary">配置文件状态：正常（app 与曲库配置均兼容）</p>
+        <div id="cfg-detail" hidden>
+          <p class="modal-hint">配置记录了生成版本与最低兼容版本。版本兼容时既有配置会被完整保留，
+            仅按需更新版本信息；只有出现结构或字段不兼容时才会重建（原文件备份为 <code>*.conflict-<版本>.bak</code>）。</p>
+          <dl class="about-list">
+            <div class="about-row"><dt>配置文件生成版本</dt><dd id="cfg-version">—</dd></div>
+            <div class="about-row"><dt>最低兼容版本</dt><dd id="cfg-min-version">—</dd></div>
+            <div class="about-row"><dt>当前程序版本</dt><dd id="cfg-app-version">—</dd></div>
+            <div class="about-row"><dt>兼容状态</dt><dd id="cfg-compat">—</dd></div>
+            <div class="about-row"><dt>曲库配置版本</dt><dd id="cfg-library-version">—</dd></div>
+          </dl>
+        </div>
         <p class="modal-hint config-conflict" id="cfg-conflict" hidden></p>
       </div>
           </div><!-- /pane: about -->
@@ -841,10 +966,10 @@
     </div>
   </div>
 
-  <!-- 播放队列面板：统一播放上下文的可视化（有名 / 无名队列共用） -->
+  <!-- 播放列表面板：统一播放上下文的可视化（有名 / 无名列表共用） -->
   <div class="queue-drawer" id="queue-drawer" hidden>
     <div class="queue-drawer-head">
-      <span class="queue-drawer-title" id="queue-drawer-title">播放队列</span>
+      <span class="queue-drawer-title" id="queue-drawer-title">播放列表</span>
       <span id="queue-count" class="queue-count"></span>
       <button id="queue-clear" class="md-btn sm" type="button">清空队列</button>
       <button id="queue-close" class="md-btn sm" type="button">关闭</button>
@@ -921,111 +1046,52 @@
     </div>
   </div>
 
-  <!-- 曲库来源管理：独立弹窗，复用设置面板「左侧列表 + 右侧信息与设置」骨架与样式类 -->
+  <!-- v0.12.11：添加曲源独立窗口（由设置→曲源总览的「添加曲源」按钮打开）。
+       C2：与设置子页右侧详情表单使用两套 id（add-src-* / src-*），互不干扰。 -->
   <div class="modal-mask" id="sources-modal" hidden>
-    <div class="modal settings-modal sources-modal">
+    <div class="modal settings-modal source-add-modal">
       <div class="settings-head">
         <div class="settings-head-text">
-          <h3 data-i18n="sources.title">曲库来源管理</h3>
-          <p data-i18n="sources.subtitle">管理歌曲从哪些本地目录进入曲库</p>
+          <h3 data-i18n="sources.add_title">添加曲源</h3>
+          <p>选择一个本地歌曲目录，系统会自动检测它是否是网易云曲库。</p>
         </div>
-        <button id="sources-close" class="md-btn primary" type="button">关闭</button>
+        <button id="sources-close" class="md-btn" type="button">关闭</button>
       </div>
-
-      <div class="settings-layout">
-        <nav class="settings-nav" aria-label="曲库来源列表">
-          <div id="sources-list" class="sources-list"></div>
-          <div class="sources-fixed-group">
-            <button class="settings-tab sources-fixed" type="button" data-pane="manual">
-              <span><strong>手动导入文件夹</strong><small>一次性复制 / 移动</small></span>
-            </button>
-            <button class="settings-tab sources-fixed" type="button" data-pane="duplicates">
-              <span><strong data-i18n="sources.duplicates">待处理重复</strong><small id="sources-dup-sub">逐组对比与决策</small></span>
-              <i id="sources-nav-badge" class="dup-badge" hidden>0</i>
-            </button>
-            <button class="settings-tab sources-fixed" type="button" data-pane="ncm">
-              <span><strong data-i18n="sources.ncm">NCM 工具</strong><small>解密工具与积压转换</small></span>
-            </button>
+      <div class="source-add-body">
+        <div class="settings-section">
+          <h4>基本信息</h4>
+          <label class="src-label" for="add-src-name">名称</label>
+          <div class="directory-picker"><input id="add-src-name" type="text" autocomplete="off" placeholder="曲源名称" /></div>
+          <label class="src-label" for="add-src-path">曲源目录</label>
+          <div class="directory-picker">
+            <input id="add-src-path" type="text" autocomplete="off" placeholder="选择或输入目录" />
+            <button id="add-src-browse" class="md-btn" type="button">浏览…</button>
           </div>
-          <button id="sources-add" class="md-btn primary sources-add" type="button" data-i18n="sources.add">＋ 新增来源</button>
-        </nav>
-
-        <div class="settings-content">
-          <!-- 来源详情 / 新增来源（同一表单，由 state.sourcesCurrentId 区分） -->
-          <div class="settings-pane active" data-pane="source">
-            <div class="settings-pane-head">
-              <h4 id="src-detail-title">来源详情</h4>
-              <p id="src-detail-sub">选择左侧来源查看与编辑；更新源目录后可自动检测类型。</p>
-            </div>
-            <div id="src-empty" class="sources-empty">还没有来源。点左下「新增来源」添加一个本地歌曲目录。</div>
-            <div id="src-form" hidden>
-              <div class="settings-section">
-                <h4>基本信息</h4>
-                <label class="src-label" for="src-name">名称</label>
-                <div class="directory-picker"><input id="src-name" type="text" autocomplete="off" placeholder="来源名称" /></div>
-                <label class="src-label" for="src-path">来源目录</label>
-                <div class="directory-picker">
-                  <input id="src-path" type="text" autocomplete="off" placeholder="选择或输入目录" />
-                  <button id="src-browse" class="md-btn" type="button">浏览…</button>
-                </div>
-                <div id="src-probe" class="ncm-status"></div>
-              </div>
-              <div class="settings-section">
-                <h4>来源类型</h4>
-                <label class="copy-opt"><input type="checkbox" id="src-netease" /> 这是网易云曲库（自动检测得出，可手动更正）</label>
-                <p class="modal-hint">网易云曲库沿用「只加不删、不联网不登录」逻辑，并强制使用复制方式。</p>
-              </div>
-              <div class="settings-section">
-                <h4>导入方式</h4>
-                <div class="scheme-options imp-options" id="src-mode-options">
-                  <label class="imp-option">
-                    <input type="radio" name="src-mode" value="copy" checked />
-                    <span class="imp-option-body"><span class="imp-option-title">复制<span class="imp-badge">推荐</span></span><span class="imp-option-desc">保留源文件，把副本加入曲库</span></span>
-                  </label>
-                  <label class="imp-option">
-                    <input type="radio" name="src-mode" value="move" />
-                    <span class="imp-option-body"><span class="imp-option-title">移动</span><span class="imp-option-desc">源文件移入曲库，原位置不再保留</span></span>
-                  </label>
-                </div>
-                <label class="copy-opt"><input type="checkbox" id="src-enabled" checked /> 启用此来源</label>
-              </div>
-              <div class="modal-actions src-actions">
-                <button id="src-save" class="md-btn primary" type="button">保存设置</button>
-                <button id="src-import" class="md-btn primary" type="button">立即更新</button>
-                <button id="src-delete" class="md-btn" type="button">删除来源</button>
-              </div>
-            </div>
-          </div>
-
-          <!-- 待处理重复：内嵌一份同构 DOM，与 #duplicates-modal 共用渲染 / 决策逻辑 -->
-          <div class="settings-pane" data-pane="duplicates">
-            <div class="settings-pane-head"><h4>待处理重复</h4><p>逐组选择要保留的版本；「稍后处理」不改动任何文件。</p></div>
-            <div class="settings-section">
-              <div class="dup-count" id="src-dup-count"></div>
-              <div class="dup-path" id="src-dup-path"></div>
-              <div id="src-dup-groups" class="dup-groups"></div>
-              <div class="modal-actions dup-actions">
-                <button id="src-dup-later" class="md-btn" type="button">稍后处理</button>
-                <button id="src-dup-apply" class="md-btn primary" type="button">应用所选</button>
-              </div>
-            </div>
-          </div>
-
-          <!-- NCM 工具：不再有独立引导界面，向导跳过后在这里补配 -->
-          <div class="settings-pane" data-pane="ncm">
-            <div class="settings-pane-head"><h4>NCM 解密工具</h4><p>请确保转换的是已购买或拥有合法使用权限的音乐，仅供自己方便使用，不要传播。</p></div>
-            <div class="settings-section">
-              <div id="src-ncm-status" class="settings-value"></div>
-              <div class="directory-picker">
-                <input id="src-ncm-input" type="text" autocomplete="off" placeholder="ncmdump.exe 路径（可选）" />
-                <button id="src-ncm-pick" class="md-btn" type="button">选择文件…</button>
-              </div>
-              <label class="copy-opt"><input type="checkbox" id="src-ncm-copy" checked /> 复制到本曲库 .mt/tools</label>
-              <button id="src-ncm-apply" class="md-btn primary" type="button">应用 NCM 工具</button>
-              <button id="src-ncm-organize" class="md-btn" type="button">转换积压 .ncm</button>
-            </div>
-          </div>
+          <div id="add-src-probe" class="ncm-status"></div>
         </div>
+        <div class="settings-section">
+          <h4>曲源类型</h4>
+          <label class="copy-opt"><input type="checkbox" id="add-src-netease" /> 这是网易云曲库（自动检测得出，可手动更正）</label>
+          <p class="modal-hint">网易云曲库沿用「只加不删、不联网不登录」逻辑，并强制使用复制方式。</p>
+        </div>
+        <div class="settings-section">
+          <h4>导入方式</h4>
+          <div class="scheme-options imp-options" id="add-src-mode-options">
+            <label class="imp-option">
+              <input type="radio" name="add-src-mode" value="copy" checked />
+              <span class="imp-option-body"><span class="imp-option-title">复制<span class="imp-badge">推荐</span></span><span class="imp-option-desc">保留源文件，把副本加入曲库</span></span>
+            </label>
+            <label class="imp-option">
+              <input type="radio" name="add-src-mode" value="move" />
+              <span class="imp-option-body"><span class="imp-option-title">移动</span><span class="imp-option-desc">源文件移入曲库，原位置不再保留</span></span>
+            </label>
+          </div>
+          <label class="copy-opt"><input type="checkbox" id="add-src-enabled" checked /> 启用此曲源</label>
+        </div>
+      </div>
+      <div class="modal-actions source-add-actions">
+        <button id="add-src-cancel" class="md-btn" type="button">取消</button>
+        <button id="add-src-save" class="md-btn primary" type="button" data-i18n="sources.add">添加曲源</button>
       </div>
     </div>
   </div>

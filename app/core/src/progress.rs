@@ -19,6 +19,7 @@
 //! 只入了 1 首」这类困惑。
 
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// 导入过程中对单个文件执行的动作。
@@ -60,6 +61,8 @@ pub enum EntryStatus {
     Skipped,
     /// 待转换（无 NCM 工具，暂存 pendingNcm）。
     Pending,
+    /// 重复文件已挂起，等待批量对比决策。
+    Held,
     /// 处理失败。
     Failed,
 }
@@ -105,6 +108,8 @@ pub struct ImportProgress {
     pub skipped: u32,
     /// 结果计数：待转换。
     pub pending: u32,
+    /// 结果计数：重复挂起（等待对比决策）。
+    pub held: u32,
     /// 结果计数：失败。
     pub failed: u32,
     /// 最近的动作日志（新的在前，最多保留 100 条）。
@@ -113,6 +118,10 @@ pub struct ImportProgress {
     pub latest_seq: u64,
     /// 最近一次错误描述。
     pub last_error: String,
+    /// 用户已请求停止（取消剩余文件、保留已入库）。前端据此显示「已停止」。
+    pub cancelled: bool,
+    /// 用户已请求暂停（协作式挂起导入线程）。前端据此显示「已暂停」。
+    pub paused: bool,
 }
 
 /// 日志保留上限（防止长时间导入导致内存与响应体无限膨胀）。
@@ -124,6 +133,10 @@ pub struct ProgressTracker {
     inner: Arc<Mutex<ImportProgress>>,
     /// 日志序号计数器（与 inner 分开存放，`start` 重置时同步归零）。
     seq: Arc<Mutex<u64>>,
+    /// 停止请求标志（与 DB 锁无关，`finalize` 分桶循环间以 Relaxed 读取）。
+    cancel: Arc<AtomicBool>,
+    /// 暂停请求标志（与 DB 锁无关，导入检查点以 Relaxed 读取后挂起等待）。
+    pause: Arc<AtomicBool>,
     /// 可选事件回调（CLI 用它逐行打印；GUI 用轮询，故不设）。
     on_event: Option<Arc<dyn Fn(&ImportProgress) + Send + Sync>>,
 }
@@ -140,6 +153,8 @@ impl ProgressTracker {
         ProgressTracker {
             inner: Arc::new(Mutex::new(ImportProgress::default())),
             seq: Arc::new(Mutex::new(0)),
+            cancel: Arc::new(AtomicBool::new(false)),
+            pause: Arc::new(AtomicBool::new(false)),
             on_event: None,
         }
     }
@@ -153,12 +168,16 @@ impl ProgressTracker {
         ProgressTracker {
             inner: Arc::new(Mutex::new(ImportProgress::default())),
             seq: Arc::new(Mutex::new(0)),
+            cancel: Arc::new(AtomicBool::new(false)),
+            pause: Arc::new(AtomicBool::new(false)),
             on_event: Some(Arc::new(f)),
         }
     }
 
-    /// 开始一次导入：重置计数并置 `running=true`。
+    /// 开始一次导入：重置计数并置 `running=true`，同时清掉上一次的停止/暂停请求。
     pub fn start(&self, source: &str) {
+        self.cancel.store(false, Ordering::Relaxed);
+        self.pause.store(false, Ordering::Relaxed);
         {
             let mut g = self.inner.lock().unwrap();
             *g = ImportProgress {
@@ -169,6 +188,64 @@ impl ProgressTracker {
         }
         *self.seq.lock().unwrap() = 0;
         self.emit();
+    }
+
+    /// 更新任务来源文案：重组等长任务用它切换「扫描 / 移动 / 清理 / 回滚」阶段显示。
+    pub fn set_source(&self, source: &str) {
+        {
+            let mut g = self.inner.lock().unwrap();
+            g.source = source.to_string();
+        }
+        self.emit();
+    }
+
+    /// 请求停止：只置标志，不回滚已入库结果；分桶循环下一轮检查后跳过剩余候选。
+    pub fn request_cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        {
+            let mut g = self.inner.lock().unwrap();
+            g.cancelled = true;
+        }
+        self.emit();
+    }
+
+    /// 是否已请求停止（Relaxed 足够：仅作为协作式取消的提示，无数据依赖）。
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+
+    /// 请求暂停：置标志供快照显示，导入线程在下一个检查点挂起等待恢复。
+    /// 与停止不同，暂停不丢弃任何候选；恢复后从挂起点继续。
+    pub fn request_pause(&self) {
+        self.pause.store(true, Ordering::Relaxed);
+        {
+            let mut g = self.inner.lock().unwrap();
+            g.paused = true;
+        }
+        self.emit();
+    }
+
+    /// 请求继续：清暂停标志并唤醒等待中的导入线程。
+    pub fn request_resume(&self) {
+        self.pause.store(false, Ordering::Relaxed);
+        {
+            let mut g = self.inner.lock().unwrap();
+            g.paused = false;
+        }
+        self.emit();
+    }
+
+    /// 是否已请求暂停。
+    pub fn is_paused(&self) -> bool {
+        self.pause.load(Ordering::Relaxed)
+    }
+
+    /// 协作式暂停检查点：若已请求暂停则阻塞等待，直到恢复或收到停止请求。
+    /// 每 100ms 轮询一次标志；一旦停止请求到达也立即放行，避免暂停卡死停止操作。
+    pub fn wait_if_paused(&self) {
+        while self.is_paused() && !self.is_cancelled() {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
     }
 
     /// 结束导入：`running=false`。
@@ -256,15 +333,26 @@ impl ProgressTracker {
         v
     }
 
-    /// 结算一个源文件的最终归宿：进度 +1 并更新结果计数。
-    pub fn end_file(&self, status: EntryStatus) {
+    /// 推进进度分子：源文件进入处理流水线即 +1（阶段①收集完一个文件就调用）。
+    /// 这样耗时最长的收集/转换阶段也能实时显示 progress，不再卡在 0/N。
+    pub fn advance(&self) {
         {
             let mut g = self.inner.lock().unwrap();
             g.processed += 1;
+        }
+        self.emit();
+    }
+
+    /// 结算一个源文件的最终归宿：只更新结果计数，不再推进进度分子
+    /// （进度分子由 `advance` 在收集阶段统一推进，避免重复计数）。
+    pub fn end_file(&self, status: EntryStatus) {
+        {
+            let mut g = self.inner.lock().unwrap();
             match status {
                 EntryStatus::Imported => g.imported += 1,
                 EntryStatus::Skipped => g.skipped += 1,
                 EntryStatus::Pending => g.pending += 1,
+                EntryStatus::Held => g.held += 1,
                 EntryStatus::Failed => g.failed += 1,
             }
         }
@@ -296,10 +384,11 @@ mod tests {
         // 一次 ncm 源文件会先「转换」再「入库」两条动作日志……
         t.log(ImportAction::Convert, "a.ncm", EntryStatus::Imported, "转换完成");
         t.log(ImportAction::Move, "a.mp3", EntryStatus::Imported, "已入库");
-        // ……但只结算为 1 个源文件。
+        // ……但只结算为 1 个源文件：阶段①收集时推进一次进度，阶段②只记结果。
+        t.advance();
         t.end_file(EntryStatus::Imported);
         let s = t.snapshot();
-        assert_eq!(s.processed, 1, "进度应按源文件计");
+        assert_eq!(s.processed, 1, "进度应按源文件计（由 advance 推进）");
         assert_eq!(s.imported, 1, "结果计数应按源文件计");
         assert_eq!(s.recent.len(), 2, "动作日志保留两条");
         assert_eq!(s.total, 1);
@@ -388,5 +477,56 @@ mod tests {
         t.start("第二次");
         assert_eq!(t.snapshot().latest_seq, 0);
         assert!(t.entries_after(0).is_empty());
+    }
+
+    #[test]
+    fn cancel_flag_is_reset_by_start_and_exposed_in_snapshot() {
+        let t = ProgressTracker::new();
+        t.start("第一次");
+        assert!(!t.is_cancelled());
+        assert!(!t.snapshot().cancelled);
+        t.request_cancel();
+        assert!(t.is_cancelled(), "停止请求应立即可见");
+        assert!(t.snapshot().cancelled, "快照需带 cancelled 供前端显示");
+        // 已入库的计数不受停止影响（不回滚）。
+        t.end_file(EntryStatus::Imported);
+        assert_eq!(t.snapshot().imported, 1);
+        // 新一轮导入必须清掉上一轮停止请求。
+        t.start("第二次");
+        assert!(!t.is_cancelled());
+        assert!(!t.snapshot().cancelled);
+        assert_eq!(t.snapshot().imported, 0);
+    }
+
+    #[test]
+    fn pause_flag_is_reset_by_start_and_exposed_in_snapshot() {
+        let t = ProgressTracker::new();
+        t.start("第一次");
+        assert!(!t.is_paused());
+        assert!(!t.snapshot().paused);
+        t.request_pause();
+        assert!(t.is_paused(), "暂停请求应立即可见");
+        assert!(t.snapshot().paused, "快照需带 paused 供前端显示");
+        t.request_resume();
+        assert!(!t.is_paused());
+        assert!(!t.snapshot().paused);
+        // 新一轮导入必须清掉上一轮暂停请求。
+        t.request_pause();
+        t.start("第二次");
+        assert!(!t.is_paused());
+        assert!(!t.snapshot().paused);
+    }
+
+    #[test]
+    fn advance_only_bumps_progress_end_file_only_bumps_result() {
+        let t = ProgressTracker::new();
+        t.start("测试");
+        t.set_total(2);
+        t.advance();
+        assert_eq!(t.snapshot().processed, 1, "advance 推进进度分子");
+        assert_eq!(t.snapshot().imported, 0, "advance 不动结果计数");
+        t.end_file(EntryStatus::Imported);
+        assert_eq!(t.snapshot().processed, 1, "end_file 不再重复推进进度");
+        assert_eq!(t.snapshot().imported, 1, "end_file 推进结果计数");
     }
 }

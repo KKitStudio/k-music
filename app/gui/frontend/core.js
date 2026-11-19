@@ -83,7 +83,12 @@ const state = {
   updateBarDismissed: false,
   file_scheme: 'artist_album',
   ncm_ready: false,
+  ncm_enabled: true,
   ncm_tool: '',
+  // v0.14.0：添加曲源探测到网易云时的 NCM 引导，会话内只弹一次。
+  ncmGuideShown: false,
+  // 插件页状态（GET /api/plugins）。
+  plugins: [],
   pending_ncm: 0,
   // FR-22：未决重复组数（W15 只统计当前曲库、按组数）与挂起目录 / 独立日志路径。
   pendingDuplicates: 0,
@@ -93,6 +98,10 @@ const state = {
   tracks: [],
   // 全部曲库视图的筛选状态（会话内有效，不持久化；音质 quality / 仅看收藏 favorite）。
   tracksQuery: '',
+  // v0.16.2：曲库列表加载状态（idle/loading/ready/empty/error）与错误信息。
+  // 失败时保留 state.tracks 旧数据，不清空表格；状态条显示在曲库表格上方。
+  trackListState: 'idle',
+  trackListError: '',
   // #33：曲库筛选只保留音质；「已收藏」入口已删除（收藏是第 5 个一级视图）。
   trackFilters: { quality: '' },
   // #31/#32：「喜爱」= 第 5 个一级视图（activeTab==='favorites'），与专辑/歌手同级。
@@ -103,10 +112,11 @@ const state = {
   // 分视图选中态：五个页面各自的「曲级选中」互不干扰。
   // value = { track: 列表中的曲目摘要, trx: /api/track 返回的完整详情 } 或 null。
   // 旧实现只有一个全局 state.current，切页后详情栏会残留上一页的数据。
-  viewSelection: { library: null, playlists: null, albums: null, artists: null, favorites: null },
+  // v0.12.7：第 6 个视图「曲源」加入分视图选中态，避免跨页串详情。
+  viewSelection: { library: null, playlists: null, albums: null, artists: null, favorites: null, sources: null },
   // 每页当前是否有可展示的详情内容（渲染时更新，供可见性仲裁使用）。
   // 无内容 → 该页的详情区（右侧栏 / 内联条）整体隐藏，不渲染占位内容。
-  detailShown: { library: false, playlists: false, albums: false, artists: false, favorites: false },
+  detailShown: { library: false, playlists: false, albums: false, artists: false, favorites: false, sources: false },
   activeTab: 'library',
   // 播放列表（本地曲库内用户自建，local_id 体系）。
   playlists: [],
@@ -122,6 +132,13 @@ const state = {
   artists: [],
   currentArtist: null,
   artistTracks: [],
+  // v0.12.7 曲源页：二级分组（按 source_kind 归属）、当前选中曲源、三级曲目。
+  // 以 source.id 为 key，改名只影响 name，不影响已导入歌曲归属。
+  sourceGroups: [],
+  currentSource: null,
+  sourceTracks: [],
+  // 曲源总览：每行状态（idle / running / done / error）与串行更新汇总，仅会话内有效。
+  sourceStatus: {},
   dlTimer: null,
   // 散落 .ncm 处理
   ncmOrganizePaths: [],
@@ -156,9 +173,39 @@ const state = {
   lyricsLocalId: null,
 };
 
+// 曲名单元格内的「正在播放」音符（SVG 结构，切歌增量同步共用）。
+const PLAY_MARK_SVG = '<svg viewBox="0 0 12 12" aria-hidden="true"><ellipse cx="4.1" cy="8.9" rx="2.7" ry="2.2" transform="rotate(-22 4.1 8.9)"/><rect x="6.1" y="1.4" width="1.35" height="7.7" rx=".6"/></svg>';
+const PLAY_MARK_HTML = `<span class="play-mark" title="正在播放" aria-label="正在播放">${PLAY_MARK_SVG}</span>`;
+// 当前播放曲目 id（queue 为空 / index 越界时为 null）。兼容 number / string。
+function currentPlayingId() {
+  const pb = state.playback;
+  return pb && pb.queue ? (pb.queue[pb.index] ?? null) : null;
+}
+function isPlayingTrack(t) {
+  const id = currentPlayingId();
+  return id != null && String(t.local_id) === String(id);
+}
+// 切歌 / 清空队列后增量更新列表播放标记：不重建表格，保留列宽 / 选中态 / 滚动位置。
+function syncPlayingMark() {
+  document.querySelectorAll('.track-table .name-cell').forEach((cell) => {
+    const mark = cell.querySelector('.play-mark');
+    const should = isPlayingTrack({ local_id: cell.dataset.localId });
+    if (should && !mark) cell.insertAdjacentHTML('afterbegin', PLAY_MARK_HTML);
+    else if (!should && mark) mark.remove();
+  });
+}
+
 // 歌曲列表列定义（key → 表头文案 + 单元格渲染）。顺序即默认显示顺序。
 const COLUMN_DEFS = {
-  name: { label: '曲名', render: (t) => esc(t.name) },
+  name: {
+    label: '曲名',
+    render: (t) =>
+      `<div class="name-cell" data-local-id="${t.local_id}">` +
+      (isPlayingTrack(t) ? PLAY_MARK_HTML : '') +
+      `<span class="name-text">${esc(t.name)}</span>` +
+      (t.has_lyrics ? '<span class="lyric-mark" title="有歌词">词</span>' : '') +
+      `</div>`,
+  },
   artist: { label: '艺人', render: (t) => esc(t.artist) },
   album: { label: '专辑', render: (t) => esc(t.album) },
   quality_tier: { label: '音质', render: (t) => esc(t.quality_tier) },
@@ -208,6 +255,8 @@ const VIEW_BOX = {
   artists: 'ar-content',
   // #32：收藏复用曲库表格，故共用同一个滚动容器（无二级栏）。
   favorites: 'library-scroll',
+  // v0.12.7：曲源页三级歌曲表容器，供选中高亮 / 右键菜单定位。
+  sources: 'sv-content',
 };
 
 // 布局风格的显示文案（1 = 横向：详情在右侧独立栏；2 = 纵向：详情内联到列表上方）。
@@ -225,14 +274,35 @@ const DEFAULT_COL_WIDTHS = {
 };
 
 async function api(path, opts) {
+  // v0.12.7：可选超时（仅轮询类请求传入）。超时只结束前端等待，
+  // 不 abort 后端正在执行的导入；导入请求本身不传 timeoutMs，保持长连接语义。
+  const timeoutMs = opts && opts.timeoutMs ? opts.timeoutMs : 0;
+  const init = Object.assign({}, opts);
+  delete init.timeoutMs;
+  let ctrl = null;
+  let timer = null;
+  if (timeoutMs > 0 && typeof AbortController !== 'undefined') {
+    ctrl = new AbortController();
+    init.signal = ctrl.signal;
+    timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  }
   try {
-    const res = await fetch(path, opts);
+    const res = await fetch(path, init);
     let data = null;
     try { data = await res.json(); } catch (e) { /* 空体 */ }
     return { ok: res.ok, data };
   } catch (e) {
     return { ok: false, data: null };
+  } finally {
+    if (timer) clearTimeout(timer);
   }
+}
+
+// v0.12.7：字典取值的统一入口（旧 dist 缺语言文件时退回 fallback，不外抛）。
+// 集中在此处引用 key，便于 check_i18n.py 校验「字典无未使用条目」。
+function t(key, params) {
+  return (window.KQK && typeof window.KQK.t === 'function')
+    ? window.KQK.t(key, params || {}) : ((params && params._fallback) || '');
 }
 
 function fmtTime(ms) {
@@ -286,9 +356,38 @@ const progressState = {
   visible: false,
   // 空积压单行模式：renderProgress 直接 return，避免残留轮询帧覆盖「无积压」提示。
   emptyMode: false,
-  // 自动消失定时器（空积压场景用）。
+  // 自动消失定时器（空积压 + 正常完成场景共用）。
   autoHideTimer: null,
+  // v0.14.5：任务是否已结算完成（决定完成态收口：标题/按钮/spinner/自动消失）。
+  finished: false,
+  // v0.14.5：用户是否已点「×」彻底关闭（此类不再自动弹面板/胶囊，但后台任务继续）。
+  dismissed: false,
+  // v0.12.18：暂停=POST 后端真实挂起导入线程；停止是协作式取消，不回滚已入库。
+  paused: false,
+  cancelled: false,
+  taskActive: false,
+  // 轮询连续失败次数 + 最近一次快照（面板隐藏时供胶囊读取）。
+  failStreak: 0,
+  lastSnapshot: null,
+  // 胶囊状态：updating / paused / stopped / done / error。
+  pillMode: 'updating',
+  // v0.15.1：任务种类（import=导入 / reorg=曲库重组）与重组计时。
+  kind: 'import',
+  startedAt: 0,
+  pausedAt: 0,
+  pausedMs: 0,
 };
+
+/** 秒 → mm:ss（超过 1 小时显示 hh:mm:ss，用于重组已用 / 预计剩余时间）。 */
+function fmtProgressDuration(sec) {
+  const s = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
+  const mm = String(m).padStart(2, '0');
+  const ss = String(r).padStart(2, '0');
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
 
 // 动作 key → 中文文案（与后端 progress.rs 的 ImportAction 对应）。
 const ACTION_LABELS = {
@@ -302,15 +401,39 @@ const STATUS_LABELS = {
   imported: '已入库',
   skipped: '已跳过',
   pending: '待转换',
+  held: '重复挂起',
   failed: '失败',
 };
 
-function showProgressPanel(title) {
+function showProgressPanel(title, kind) {
   state.progressTitle = title || '正在处理…';
   const panel = $('progress-panel');
   if (!panel) return;
   clearAutoHideProgressPanel();
   progressState.emptyMode = false;
+  // v0.15.1：新一轮任务重置种类与计时；重组据此显示时间行与「结束（回滚）」文案。
+  progressState.kind = kind === 'reorg' ? 'reorg' : 'import';
+  progressState.startedAt = Date.now();
+  progressState.pausedAt = 0;
+  progressState.pausedMs = 0;
+  const stopBtn = $('pp-stop');
+  if (stopBtn) {
+    stopBtn.textContent = progressState.kind === 'reorg' ? '结束' : t('progress.stop', { _fallback: '停止' });
+    stopBtn.title = progressState.kind === 'reorg' ? '结束并回滚到原结构' : '停止导入';
+    stopBtn.setAttribute('aria-label', stopBtn.title);
+  }
+  // v0.14.5：新一轮任务重置完成态 / 关闭态。
+  progressState.finished = false;
+  progressState.dismissed = false;
+  // v0.12.7：新一轮任务重置暂停 / 取消 / 失败计数，收起胶囊。
+  progressState.paused = false;
+  progressState.cancelled = false;
+  progressState.failStreak = 0;
+  progressState.taskActive = true;
+  progressState.lastSnapshot = null;
+  setProgressPillMode('updating');
+  hideProgressPill();
+  syncProgressButtons();
   panel.hidden = false;
   progressState.visible = true;
   progressState.logSeq = 0;
@@ -326,6 +449,8 @@ function showProgressPanel(title) {
   const spin = panel.querySelector('.pp-spinner');
   if (spin) spin.hidden = false;
   $('pp-current').textContent = '';
+  const timeEl = $('pp-time');
+  if (timeEl) timeEl.textContent = '';
   $('pp-summary').textContent = '';
   $('pp-summary').hidden = false;
   const fill = $('pp-bar-fill');
@@ -357,7 +482,7 @@ function scheduleAutoHideProgressPanel(ms) {
   progressState.autoHideTimer = setTimeout(() => {
     progressState.autoHideTimer = null;
     progressState.emptyMode = false;
-    hideProgressPanel();
+    finishProgressPanel();
   }, ms);
 }
 
@@ -371,6 +496,7 @@ function clearAutoHideProgressPanel() {
 // 启动进度轮询（每 400ms 拉一次）。幂等：重复调用不会起多个定时器。
 function startProgressPolling() {
   stopProgressPolling();
+  progressState.taskActive = true;
   progressState.timer = setInterval(pollProgress, 400);
 }
 
@@ -382,21 +508,65 @@ function stopProgressPolling() {
 }
 
 async function pollProgress() {
-  const { data } = await api('/api/import-progress');
-  if (!data) return;
+  // v0.12.7：轮询请求带 3s 超时；连续失败 3 次才降级提示，避免偶发抖动刷屏。
+  const { ok, data } = await api('/api/import-progress', { timeoutMs: 3000 });
+  if (!ok || !data) {
+    progressState.failStreak += 1;
+    if (progressState.failStreak === 3) {
+      setProgressPillMode('error');
+      setHint(t('progress.conn_error', { _fallback: '连接异常，进度刷新暂不可用' }));
+    }
+    return;
+  }
+  progressState.failStreak = 0;
+  if (progressState.pillMode === 'error') setProgressPillMode('updating');
+  progressState.lastSnapshot = data;
+  // 后端已收敛（processed 到达 total）→ 胶囊切「已完成」。
+  // v0.12.18：以快照的 paused 为真值同步前端暂停态（后端才是暂停的唯一事实源）。
+  progressState.paused = !!data.paused;
+  if (data.cancelled) setProgressPillMode('stopped');
+  else if (data.paused) setProgressPillMode('paused');
+  else if (data.total > 0 && data.processed >= data.total && !data.running) setProgressPillMode('done');
+  else if (progressState.pillMode === 'paused') setProgressPillMode('updating');
   renderProgress(data);
+  syncProgressButtons();
 }
 
 function renderProgress(p) {
   const panel = $('progress-panel');
   if (!panel) return;
-  if (!progressState.visible) return;
+  // v0.12.18：暂停时面板保持展开并继续显示真实进度（不再只在胶囊显示）；
+  // 仅「面板收起」时才跳过面板 DOM，仅更新胶囊。
+  if (!progressState.visible) {
+    // v0.14.5：用户点「×」彻底关闭后，后台轮询更新也不再弹胶囊。
+    if (!progressState.dismissed) renderProgressPill(p);
+    return;
+  }
   // 空积压单行模式：残留轮询帧不要覆盖「无积压」提示。
   if (progressState.emptyMode) return;
 
-  // 标题：后端给出本次任务来源（如「本地网易云曲库」）。
+  // 标题：本次任务来源 + 真实状态。
+  // v0.14.5：完成态用「已完成」收口（不再停在「导入中」）；v0.12.18 的暂停/停止态保留。
   const title = $('pp-title');
-  if (title && p.source) title.textContent = p.source + ' · 更新中';
+  if (title && p.source) {
+    if (progressState.kind === 'reorg') {
+      // 重组阶段文案由后端 set_source 下发（扫描 / 移动 / 清理 / 回滚 / 完成），
+      // 不再拼「导入中」；暂停单独标注，完成/取消状态已含在后端文案里。
+      title.textContent = p.source + (p.paused && !p.cancelled && !progressState.finished ? '（已暂停）' : '');
+    } else {
+      // 后端已收敛（running=false 且 processed 达 total）也视为完成，避免异步快照稍慢时
+      // 面板停在「导入中」——这是「看起来已完成却还显示更新中」的直接修复。
+      const backendDone = !p.running && p.total > 0 && p.processed >= p.total;
+      const phase = p.cancelled
+        ? t('progress.stopped', { _fallback: '已停止' })
+        : (progressState.finished || backendDone)
+          ? t('progress.done', { _fallback: '已完成' })
+          : p.paused
+            ? t('progress.paused', { _fallback: '已暂停' })
+            : t('progress.updating', { _fallback: '导入中' });
+      title.textContent = p.source + '：' + phase;
+    }
+  }
 
   // 计数：已处理 / 总数。
   const count = $('pp-count');
@@ -430,6 +600,32 @@ function renderProgress(p) {
     }
   }
 
+  // v0.15.1：重组显示已用 / 预计剩余时间（线性外推；暂停期间不计入已用）。
+  const timeEl = $('pp-time');
+  if (timeEl) {
+    if (progressState.kind === 'reorg' && progressState.startedAt) {
+      const now = Date.now();
+      if (p.paused && !progressState.pausedAt) progressState.pausedAt = now;
+      if (!p.paused && progressState.pausedAt) {
+        progressState.pausedMs += now - progressState.pausedAt;
+        progressState.pausedAt = 0;
+      }
+      const pausedNow = progressState.pausedAt ? now - progressState.pausedAt : 0;
+      const elapsedMs = Math.max(0, now - progressState.startedAt - progressState.pausedMs - pausedNow);
+      const elapsed = Math.floor(elapsedMs / 1000);
+      let txt = (progressState.finished ? '用时 ' : '已用 ') + fmtProgressDuration(elapsed);
+      if (p.paused && !progressState.finished) txt += ' · 预计剩余 —（已暂停）';
+      else if (progressState.finished || p.cancelled) { /* 完成 / 结束不再显示剩余 */ }
+      else if (p.total > 0 && p.processed > 0) {
+        const remain = Math.ceil((p.total - p.processed) * elapsedMs / p.processed / 1000);
+        txt += ' · 预计剩余 ' + fmtProgressDuration(remain);
+      } else txt += ' · 预计剩余 —';
+      timeEl.textContent = txt;
+    } else {
+      timeEl.textContent = '';
+    }
+  }
+
   // 动作日志：后端 recent 为「新的在前」，按 seq 游标取增量（不重不漏）。
   const log = $('pp-log');
   if (log) {
@@ -460,28 +656,208 @@ function renderProgress(p) {
     }
   }
 
-  // 底部汇总计数。
+  // 底部汇总计数；取消后切换为「已停止，保留已入库」。
+  // v0.14.5：补「重复挂起」精确计数，使 imported+skipped+pending+held+failed == processed。
   const sum = $('pp-summary');
-  if (sum) {
+  if (sum && progressState.kind === 'reorg') {
+    sum.textContent = p.cancelled
+      ? '已结束并回滚到原结构'
+      : (progressState.finished || (!p.running && p.total > 0 && p.processed >= p.total))
+        ? `重组完成：已移动 ${p.processed} 首`
+        : `正在重组：已处理 ${p.processed}${p.total ? ' / ' + p.total : ''} 首`;
+    sum.classList.toggle('is-stopped', !!p.cancelled);
+  } else if (sum) {
     const parts = [`入库 ${p.imported}`, `跳过 ${p.skipped}`];
     if (p.pending) parts.push(`待转换 ${p.pending}`);
+    if (p.held) parts.push(`重复挂起 ${p.held}`);
     if (p.failed) parts.push(`失败 ${p.failed}`);
-    sum.textContent = parts.join(' · ');
+    sum.textContent = p.cancelled
+      ? t('progress.stopped_keep', { _fallback: '已停止，保留已入库' }) + '，' + parts.join('，')
+      : parts.join('，');
+    sum.classList.toggle('is-stopped', !!p.cancelled);
   }
 }
 
-function hideProgressPanel() {
+// ---------- v0.12.7 胶囊 / 暂停 / 停止 ----------
+function progressPillLabel(mode) {
+  if (mode === 'paused') return t('progress.paused', { _fallback: '已暂停' });
+  if (mode === 'stopped') return progressState.kind === 'reorg' ? '已结束' : t('progress.stopped', { _fallback: '已停止' });
+  if (mode === 'done') return t('progress.done', { _fallback: '已完成' });
+  if (mode === 'error') return t('progress.conn_error', { _fallback: '连接异常' });
+  return progressState.kind === 'reorg' ? '重组中' : t('progress.updating', { _fallback: '导入中' });
+}
+
+function setProgressPillMode(mode) {
+  progressState.pillMode = mode;
+  const pill = $('progress-pill');
+  if (pill) pill.className = 'progress-pill st-' + mode;
+  const status = $('pill-status');
+  if (status) status.textContent = progressPillLabel(mode);
+  const dot = $('pill-dot');
+  if (dot) dot.className = 'pill-dot';
+}
+
+function renderProgressPill(p) {
+  const count = $('pill-count');
+  if (count) count.textContent = p && p.total > 0 ? `${p.processed} / ${p.total}` : `${(p && p.processed) || 0}`;
+  if (p && p.cancelled) setProgressPillMode('stopped');
+  showProgressPill();
+}
+
+function showProgressPill() {
+  const pill = $('progress-pill');
+  if (pill) pill.hidden = false;
+}
+
+function hideProgressPill() {
+  const pill = $('progress-pill');
+  if (pill) pill.hidden = true;
+}
+
+/** 按当前状态同步「暂停/继续」「停止」「最小化/关闭」按钮文案、可用态。 */
+function syncProgressButtons() {
+  // v0.14.5：完成/取消/未激活后禁用暂停与停止（消除「点了没反应」的误导）。
+  const dead = progressState.finished || progressState.cancelled || !progressState.taskActive;
+  const pause = $('pp-pause');
+  if (pause) {
+    pause.textContent = progressState.paused
+      ? t('progress.resume', { _fallback: '继续' })
+      : t('progress.pause', { _fallback: '暂停' });
+    pause.classList.toggle('is-active', progressState.paused);
+    pause.disabled = dead;
+  }
+  const stop = $('pp-stop');
+  if (stop) stop.disabled = dead || !!progressState.cancelled;
+}
+
+/** 收起：保留轮询（后台继续）、只显示胶囊；任务结束才真正停轮询。 */
+function collapseProgressPanel() {
+  const panel = $('progress-panel');
+  if (panel) panel.hidden = true;
+  progressState.visible = false;
+  renderProgressPill(progressState.lastSnapshot);
+}
+
+/** 「×」彻底关闭：隐藏面板与胶囊且不再弹出；后台导入继续，不碰轮询/taskActive。 */
+function dismissProgressPanel() {
+  const panel = $('progress-panel');
+  if (panel) panel.hidden = true;
+  progressState.visible = false;
+  progressState.dismissed = true;
+  clearAutoHideProgressPanel();
+  hideProgressPill();
+}
+
+/** 完成态收口（v0.14.5）：渲染最终帧、标题「已完成」、按钮禁用、停 spinner、胶囊 done，
+ *  并安排约 2.5s 后自动消失。幂等：重复调用不再叠加定时器。 */
+function settleProgressDone() {
+  if (progressState.finished) return;
+  progressState.finished = true;
+  progressState.paused = false;
+  const final = progressState.lastSnapshot;
+  // 面板可见且非空积压：用最终快照刷新（标题走「已完成」、计数补上重复挂起）。
+  if (final && progressState.visible && !progressState.emptyMode) renderProgress(final);
+  setProgressPillMode(progressState.cancelled ? 'stopped' : 'done');
+  if (!progressState.visible && !progressState.dismissed) showProgressPill();
+  syncProgressButtons();
+  const panel = $('progress-panel');
+  const spin = panel && panel.querySelector('.pp-spinner');
+  if (spin) spin.hidden = true;
+  // 完成 / 停止后自动消失；空积压场景由 showProgressEmpty 的 schedule 覆盖为 3s。
+  if (!progressState.dismissed) scheduleAutoHideProgressPanel(2500);
+}
+
+/** 任务结束：停轮询、隐藏面板与胶囊（自动消失定时器用）。 */
+function finishProgressPanel() {
   stopProgressPolling();
+  progressState.taskActive = false;
   clearAutoHideProgressPanel();
   progressState.emptyMode = false;
   const panel = $('progress-panel');
   if (panel) panel.hidden = true;
   progressState.visible = false;
+  hideProgressPill();
 }
 
-// 面板关闭按钮：用户查看完明细后手动收起（不影响正在进行的导入）。
+/** 导入请求返回：主动拉一次最终快照（此刻后端 running=false、计数已结算），
+ *  解决「面板停在倒数第二帧（入库 20 vs 主界面 23）」，随后完成态收口 + 自动消失。 */
+function finishProgressTask() {
+  stopProgressPolling();
+  progressState.taskActive = false;
+  progressState.failStreak = 0;
+  api('/api/import-progress', { timeoutMs: 3000 }).then(({ ok, data }) => {
+    if (ok && data) {
+      progressState.lastSnapshot = data;
+      progressState.cancelled = !!data.cancelled;
+    }
+    settleProgressDone();
+  }).catch(() => settleProgressDone());
+}
+
+/** 面板隐藏后重新展开：恢复轮询；暂停态以后端快照为准，不在此擅自清除。 */
+function expandProgressPanel() {
+  const panel = $('progress-panel');
+  if (panel) panel.hidden = false;
+  progressState.visible = true;
+  progressState.dismissed = false;
+  clearAutoHideProgressPanel();
+  setProgressPillMode(progressState.cancelled ? 'stopped'
+    : (progressState.paused ? 'paused'
+      : (progressState.taskActive ? 'updating' : (progressState.pillMode === 'error' ? 'error' : 'done'))));
+  hideProgressPill();
+  syncProgressButtons();
+  if (progressState.taskActive) startProgressPolling();
+  if (progressState.lastSnapshot) renderProgress(progressState.lastSnapshot);
+}
+
+/** 暂停 / 继续：POST 后端真实挂起/恢复导入；暂停时面板保持展开并继续轮询，进度自然停在最新帧。 */
+async function toggleProgressPause() {
+  if (!progressState.taskActive) return;
+  const toPaused = !progressState.paused;
+  const endpoint = toPaused ? '/api/import-pause' : '/api/import-resume';
+  const { ok } = await api(endpoint, { method: 'POST', timeoutMs: 3000 });
+  if (!ok) {
+    setHint(t('progress.conn_error', { _fallback: '连接异常，暂停请求未生效' }));
+    return;
+  }
+  progressState.paused = toPaused;
+  progressState.visible = true;
+  const panel = $('progress-panel');
+  if (panel) panel.hidden = false;
+  hideProgressPill();
+  setProgressPillMode(toPaused ? 'paused' : 'updating');
+  syncProgressButtons();
+  // 暂停后不停止轮询：后端挂起进度自然不动；继续后立即恢复真实刷新。
+  if (!progressState.timer && progressState.taskActive) startProgressPolling();
+  // 用刚请求的暂停态覆盖快照再渲染，让标题/状态即时反映，不等下一次轮询帧。
+  if (progressState.lastSnapshot) {
+    renderProgress(Object.assign({}, progressState.lastSnapshot, { paused: toPaused }));
+  }
+}
+
+/** 停止：POST 取消标志。导入=保留已入库；重组=整体回滚到原结构。 */
+async function stopProgressTask() {
+  if (!progressState.taskActive || progressState.cancelled) return;
+  progressState.cancelled = true;
+  setProgressPillMode('stopped');
+  syncProgressButtons();
+  const { ok } = await api('/api/import-cancel', { method: 'POST', timeoutMs: 3000 });
+  if (!ok) setHint(t('progress.conn_error', { _fallback: '连接异常，进度刷新暂不可用' }));
+  // 保持轮询到后端收敛，胶囊持续显示 N/M 与「已停止」。
+  if (!progressState.timer && progressState.taskActive) startProgressPolling();
+}
+
+// v0.14.5：最小化=收起为胶囊（可点胶囊恢复）；×=彻底关闭（不再弹，后台继续）。
+const ppMinimize = $('pp-minimize');
+if (ppMinimize) ppMinimize.addEventListener('click', collapseProgressPanel);
 const ppClose = $('pp-close');
-if (ppClose) ppClose.addEventListener('click', hideProgressPanel);
+if (ppClose) ppClose.addEventListener('click', dismissProgressPanel);
+const ppPause = $('pp-pause');
+if (ppPause) ppPause.addEventListener('click', toggleProgressPause);
+const ppStop = $('pp-stop');
+if (ppStop) ppStop.addEventListener('click', stopProgressTask);
+const progressPill = $('progress-pill');
+if (progressPill) progressPill.addEventListener('click', expandProgressPanel);
 
 // 文件大小格式化（字节 → 易读单位）。
 function fmtSize(bytes) {
@@ -512,6 +888,7 @@ async function refreshStatus() {
     state.netease_library_dir = data.netease_library_dir || '';
     state.file_scheme = data.file_scheme || 'artist_album';
     state.ncm_ready = !!data.ncm_ready;
+    state.ncm_enabled = data.ncm_enabled !== false;
     state.ncm_tool = data.ncm_tool || '';
     state.pending_ncm = data.pending_ncm || 0;
     state.pendingDuplicates = Number(data.pending_duplicates) || 0;
@@ -526,6 +903,8 @@ async function refreshStatus() {
     state.library_config_compat = data.library_config_compat || '';
     state.library_config_conflict = data.library_config_conflict_reason || '';
     state.app_version = data.app_version || '';
+    // v0.14.13：窗口最大化态由 GUI 壳写入权威值，首屏 / 设置重读时校准图标。
+    if (typeof data.maximized === 'boolean') applyWindowMaximizeState(data.maximized);
     // #34：左侧品牌区第二行显示编译期版本号，与窗口标题 / 设置·关于同源，升级版本自动跟随。
     const brandVer = $('brand-version');
     if (brandVer) brandVer.textContent = state.app_version ? 'v' + state.app_version : '';
@@ -605,14 +984,8 @@ async function refreshStatus() {
 
 function updateChrome() {
   const st = $('status');
-  // 曲库状态 + NCM 工具状态（网易云登录态已移除，不再展示）。
-  if (!state.library_configured) {
-    st.textContent = '未指定曲库';
-  } else if (!state.ncm_ready) {
-    st.textContent = '曲库就绪（未配置 NCM 工具）';
-  } else {
-    st.textContent = '曲库就绪';
-  }
+  // 只显示曲库状态；NCM 工具状态由设置页曲源分区承载，左下角不再重复提示。
+  st.textContent = state.library_configured ? '曲库就绪' : '未指定曲库';
 }
 
 // ---------- 布局风格（横向 / 纵向）----------
@@ -778,6 +1151,16 @@ function viewDetail(view) {
       coverId: (state.playlistTracks[0] || {}).local_id || null,
     };
   }
+  // v0.12.7：曲源页选中分组但未选具体歌曲时，右侧详情栏显示曲源名与歌曲数。
+  if (view === 'sources' && state.currentSource) {
+    return {
+      type: 'group',
+      kind: '曲源',
+      title: state.currentSource.name,
+      count: state.currentSource.track_count,
+      coverId: (state.sourceTracks[0] || {}).local_id || null,
+    };
+  }
   return null;
 }
 
@@ -825,6 +1208,9 @@ function detailModelOf(view) {
 // 把某页面的详情写入该页的「内联详情条」（纵向布局时显示在列表上方）。
 // 渲染完成后立即重算显隐：内容为空 → 该页内联条隐藏（不留占位）。
 function renderViewDetail(view) {
+  // v0.12.7：曲源页没有独立内联详情条，只走共用右侧详情栏；
+  // 不可回退写 lib-detail，否则切回曲库会残留曲源选中态。
+  if (view === 'sources') { syncDetailVisibility(); return; }
   // #32：收藏复用曲库的内联详情条（无独立 DOM），其余页面各自一份。
   const c = LAYOUT_VIEWS[view] || LAYOUT_VIEWS.library;
   if (!c) return;
@@ -853,7 +1239,8 @@ function syncDetailVisibility() {
   const view = state.activeTab;
   // #32：收藏没有自己的内联详情条 / 布局配置，复用曲库的那一份；
   // 详情内容仍取 state.detailShown[view]（收藏自己的选中态），保持分视图隔离。
-  const styleView = view === 'favorites' ? 'library' : view;
+  // v0.12.7：曲源页无独立布局配置，复用曲库（横向右侧详情栏）。
+  const styleView = (view === 'favorites' || view === 'sources') ? 'library' : view;
   const inline = (state.layoutStyles[styleView] || 1) === 2;
   // FR-25：纵向布局时右侧详情栏隐藏，列表内图标按钮需贴列表右缘。
   document.body.classList.toggle('detail-inline', inline);
@@ -957,13 +1344,26 @@ function renderConfigStatus() {
     const el = $(id);
     if (el) el.textContent = text;
   };
-  set('cfg-version', state.config_version ? 'v' + state.config_version : '—');
-  set('cfg-min-version', state.config_min_version ? 'v' + state.config_min_version : '—');
-  set('cfg-app-version', state.app_version ? 'v' + state.app_version : '—');
-  set('cfg-library-version', state.library_config_version ? 'v' + state.library_config_version : '—');
-  const label = COMPAT_LABELS[state.config_compat] || state.config_compat || '—';
-  const libLabel = COMPAT_LABELS[state.library_config_compat];
-  set('cfg-compat', libLabel ? label + ' / 曲库：' + libLabel : label);
+  const appOk = !state.config_compat || state.config_compat === 'compatible';
+  const libOk = !state.library_config_compat || state.library_config_compat === 'compatible';
+  const normal = appOk && libOk;
+  const summary = $('cfg-summary');
+  if (summary) {
+    summary.textContent = normal
+      ? '配置文件状态：正常（app 与曲库配置均兼容）'
+      : '配置文件状态：存在兼容性提示，详见下方版本信息';
+  }
+  const detail = $('cfg-detail');
+  if (detail) detail.hidden = normal;
+  if (!normal) {
+    set('cfg-version', state.config_version ? 'v' + state.config_version : '—');
+    set('cfg-min-version', state.config_min_version ? 'v' + state.config_min_version : '—');
+    set('cfg-app-version', state.app_version ? 'v' + state.app_version : '—');
+    set('cfg-library-version', state.library_config_version ? 'v' + state.library_config_version : '—');
+    const label = COMPAT_LABELS[state.config_compat] || state.config_compat || '—';
+    const libLabel = COMPAT_LABELS[state.library_config_compat];
+    set('cfg-compat', libLabel ? label + ' / 曲库：' + libLabel : label);
+  }
   // 冲突原因：明确展示（app 级与曲库级都列出）。
   const reasons = [];
   if (state.config_conflict) reasons.push('app 配置：' + state.config_conflict);
@@ -981,13 +1381,48 @@ function renderConfigStatus() {
 }
 
 // ---------- 曲库列表 ----------
+// v0.16.2：并发序号守卫（与 plReq / albumReq / artistReq 同构）+ 四态状态条。
+// 防抖只挂在搜索框 input 事件上，不进 loadTracks 本体（筛选 / 切 tab / 重组后刷新即时生效）。
+let tracksReq = 0;
+let searchDebounce = null;
+
+function setTrackListStatus(st, err) {
+  state.trackListState = st;
+  state.trackListError = err || '';
+  const box = $('track-load-status');
+  if (!box) return;
+  // 只在「全部曲库」视图展示；收藏视图复用同一表格，不归曲库加载状态管。
+  if (state.activeTab !== 'library') { box.hidden = true; return; }
+  if (st === 'ready') { box.hidden = true; box.textContent = ''; return; }
+  box.hidden = false;
+  if (st === 'loading') {
+    box.innerHTML = '<span>正在加载曲库…</span>';
+  } else if (st === 'empty') {
+    const filtered = !!(state.tracksQuery || state.trackFilters.quality);
+    box.innerHTML = '<span>' + (filtered ? '没有匹配歌曲' : '曲库暂无歌曲') + '</span>';
+  } else if (st === 'error') {
+    box.innerHTML = '<span>' + esc(state.trackListError) + '</span>' +
+      '<button type="button" class="md-btn sm" id="track-load-retry">重试</button>';
+  }
+}
+
 async function loadTracks(q) {
   state.tracksQuery = q || '';
+  const seq = ++tracksReq;
   const params = new URLSearchParams();
   if (state.tracksQuery) params.set('q', state.tracksQuery);
   if (state.trackFilters.quality) params.set('quality', state.trackFilters.quality);
-  const { data } = await api('/api/tracks?' + params.toString());
-  state.tracks = (data && data.tracks) || [];
+  setTrackListStatus('loading');
+  const { ok, data } = await api('/api/tracks?' + params.toString());
+  if (seq !== tracksReq) return; // 旧响应直接丢弃：不改数据、不渲染
+  if (!ok || !data || !Array.isArray(data.tracks)) {
+    // 失败保留旧列表，不清空 state.tracks / 不 renderTracks；仅状态条提示错误 + 重试。
+    const why = (data && data.error) || '曲库加载失败';
+    setTrackListStatus('error', why + '，已保留上次结果');
+    return;
+  }
+  state.tracks = data.tracks;
+  setTrackListStatus(data.tracks.length ? 'ready' : 'empty');
   renderTracks();
 }
 
@@ -1123,6 +1558,43 @@ function windowControl(action) {
   }).catch(() => {});
 }
 
+// v0.14.13：最大化按钮图标必须跟随窗口真实状态（□=最大化 / ❐=还原）。
+// 后端在 toggle / 启动恢复 / 外部 Resized 后写入权威值，前端首屏与 resize 时
+// 从 /api/status 回读；点击时即时翻转以保证零延迟（后端动作是确定性 toggle），
+// 避免 Tauri maximize() 异步状态导致读回滞后一帧。
+let windowMaximized = false;
+function applyWindowMaximizeState(on) {
+  const btn = $('win-maximize');
+  if (!btn) return;
+  windowMaximized = !!on;
+  const glyph = windowMaximized ? '❐' : '□';
+  const label = windowMaximized ? '还原' : '最大化';
+  if (btn.textContent !== glyph) btn.textContent = glyph;
+  if (btn.title !== label) btn.title = label;
+  if (btn.getAttribute('aria-label') !== label) btn.setAttribute('aria-label', label);
+}
+
+// 外部方式（双击标题栏 / Win+↑ / 贴靠 / 任务栏）最大化不走本按钮点击，
+// 靠 resize 事件回读权威态；150ms 防抖 + 在途去重，避免拖动窗口时刷请求。
+let maxResizeTimer = null;
+let maxSyncInFlight = false;
+async function syncWindowMaximizeFromStatus() {
+  if (maxSyncInFlight) return;
+  maxSyncInFlight = true;
+  try {
+    const { data } = await api('/api/status');
+    if (data && typeof data.maximized === 'boolean') applyWindowMaximizeState(data.maximized);
+  } catch (_) {
+    // 后端尚未就绪 / CLI serve 模式无窗口：保留当前图标，不打扰用户。
+  } finally {
+    maxSyncInFlight = false;
+  }
+}
+window.addEventListener('resize', () => {
+  clearTimeout(maxResizeTimer);
+  maxResizeTimer = setTimeout(syncWindowMaximizeFromStatus, 150);
+});
+
 (function initWindowControls() {
   const map = {
     'win-minimize': 'minimize',
@@ -1131,13 +1603,53 @@ function windowControl(action) {
   };
   Object.keys(map).forEach((id) => {
     const el = $(id);
-    if (el) el.addEventListener('click', () => windowControl(map[id]));
+    if (el) el.addEventListener('click', () => {
+      if (id === 'win-maximize') applyWindowMaximizeState(!windowMaximized);
+      windowControl(map[id]);
+    });
   });
-  // 顶栏空白区拖动窗口；排除全部交互元素，双击的第二下不重复发拖动请求。
+  // v0.12.10：主界面背景空白区也能拖动窗口。判定用 matches 而非 closest —— 只有事件
+  // **直接命中**背景容器才算，否则点内容 / 控件时会因其祖先是背景容器而误拖窗口。
+  // 播放栏（.player 及其子级）按需求不纳入；两套皮肤共用同一份选择器。
+  const BG_DRAG = 'html, body, .layout, .sidebar, .list-pane, .detail-pane, .playlists-pane, .pl-sidebar, .pl-main, .pl-content, .list-scroll, .detail-scroll, .filter-bar, .favorites-bar, .pl-sidebar-head, .pl-main-head, .detail-pane-head';
+  const BG_BLOCK = 'button, input, select, textarea, a, label, [contenteditable], .win-controls, .topbar-search, .topbar-extras, #library-name, tr, td, th, li, img, svg, canvas, video, audio, .track-table, .pl-list, .tab-btn, .pane-resizer, .pane-handle, .col-resizer, .modal-mask, .modal, .now-view, .lyrics-drawer, .queue-drawer, .progress-panel, .progress-pill, .update-bar, .hint-bar, .player, .brand, .status, .actions, .cover, .detail-fields, .lyric-line, .gcard, .group-row, .ctx-menu';
+  // v0.12.13：原生滚动条（::-webkit-scrollbar）是伪元素，拖它时 mousedown 的
+  // e.target 就是滚动容器本身；若该容器也在 BG_DRAG 里，会把「拖滚动条」误判成
+  // 「拖背景」并发 drag，start_dragging() 抢走鼠标后滚动条就拖不动了。
+  // 按几何位置把垂直 / 水平滚动条带排除：带宽 = offset - client（含边框），
+  // 只有确实可滚动且指针落在右 / 下带内才算命中；事件目标链与 elementFromPoint
+  // 命中链都查，兼容 WebView2 把目标给到祖先或子元素的情况。
+  const dragOnScrollbar = (x, y, target) => {
+    const seen = new Set();
+    const roots = [target, document.elementFromPoint(x, y)];
+    for (const root of roots) {
+      let node = root instanceof Element ? root : null;
+      while (node && !seen.has(node)) {
+        seen.add(node);
+        const v = node.offsetWidth - node.clientWidth;
+        const h = node.offsetHeight - node.clientHeight;
+        if (v > 0 || h > 0) {
+          const r = node.getBoundingClientRect();
+          if ((v > 0 && node.scrollHeight > node.clientHeight + 1 && x >= r.right - v) ||
+              (h > 0 && node.scrollWidth > node.clientWidth + 1 && y >= r.bottom - h)) return true;
+        }
+        node = node.parentElement;
+      }
+    }
+    return false;
+  };
+  // 顶栏空白区（#32 原逻辑，含交互元素排除）与背景空白区共用一条委托；
+  // 双击的第二下不重复发拖动请求。
   document.addEventListener('mousedown', (e) => {
     if (e.button !== 0 || e.detail > 1) return;
-    if (!e.target.closest('.topbar, .toolbar')) return;
-    if (e.target.closest('button, input, select, textarea, a, label, [contenteditable], .win-controls, #library-name, .topbar-search, .topbar-extras')) return;
+    if (e.target.closest('.topbar, .toolbar')) {
+      if (e.target.closest('button, input, select, textarea, a, label, [contenteditable], .win-controls, #library-name, .topbar-search, .topbar-extras')) return;
+      windowControl('drag');
+      return;
+    }
+    if (!(e.target instanceof Element) || !e.target.matches(BG_DRAG)) return;
+    if (e.target.closest(BG_BLOCK)) return;
+    if (dragOnScrollbar(e.clientX, e.clientY, e.target)) return;
     windowControl('drag');
   });
 })();
@@ -1145,6 +1657,9 @@ function windowControl(action) {
 function renderTracks() {
   const head = $('track-head');
   const body = $('track-body');
+  // 状态条只与曲库视图绑定：收藏视图复用同一表格，此时状态条必须隐藏。
+  const statusBox = $('track-load-status');
+  if (statusBox && state.activeTab !== 'library') statusBox.hidden = true;
   // 表头：最左侧固定 # 序号列 + 可见业务列（按 state.columns 顺序）。
   // 业务列带 data-col-key，供列宽拖拽与占比分配使用。
   const cols = visibleTrackCols();
@@ -1268,6 +1783,13 @@ function startColResize(e, table, cols, idx) {
   const startA = cols[idx].getBoundingClientRect().width;
   const startB = next.getBoundingClientRect().width;
   const totalPx = Math.round(startA + startB); // 两列宽度之和保持不变
+  // 自适应像素下限：显示「导入时间」时可见列变多，窄列（音质/时长/文件大小）会被
+  // 归一化压到 48px 以下，此时若两列都硬钳到 MIN_COL_PX=48，两列总额 < 96px 会让
+  // 下面两条 clamp 互相覆盖、无论往哪拖都被钉死成固定值。下限取「不超过列对总宽
+  // 一半再留 12px 余量」，保证这对列有可拖动空间；24px 是单元格左右内边距之和
+  // （border-box 下不可再压缩），低于它浏览器会强制撑宽、把表格顶破，故以此为硬底。
+  // 列对足够宽时下限仍等于 48px，原行为不变（见 demo B 组「艺人列 ≥48px」断言）。
+  const pairMin = Math.min(MIN_COL_PX, Math.max(24, Math.floor(totalPx / 2) - 12));
   const startX = e.clientX;
   const handle = e.currentTarget;
   handle.classList.add('active');
@@ -1279,9 +1801,9 @@ function startColResize(e, table, cols, idx) {
     if (!cols[idx].isConnected) return;
     let aPx = Math.round(startA + (ev.clientX - startX));
     let bPx = totalPx - aPx;
-    // 任一列不得窄于像素下限（受单元格内边距限制）；差额回推给对方。
-    if (bPx < MIN_COL_PX) { bPx = MIN_COL_PX; aPx = totalPx - bPx; }
-    if (aPx < MIN_COL_PX) { aPx = MIN_COL_PX; bPx = totalPx - aPx; }
+    // 任一列不得窄于自适应下限（受单元格内边距限制）；差额回推给对方。
+    if (bPx < pairMin) { bPx = pairMin; aPx = totalPx - bPx; }
+    if (aPx < pairMin) { aPx = pairMin; bPx = totalPx - aPx; }
     cols[idx].style.width = aPx + 'px';
     next.style.width = bPx + 'px';
   };
@@ -1458,6 +1980,8 @@ function sourceTracks(view) {
   if (view === 'playlists') return state.playlistTracks || [];
   if (view === 'albums') return state.albumTracks || [];
   if (view === 'artists') return state.artistTracks || [];
+  // v0.12.7：曲源页三级曲目（按 source_kind 归属查询所得），供队列 / 双击播放使用。
+  if (view === 'sources') return state.sourceTracks || [];
   return [];
 }
 
@@ -1519,19 +2043,24 @@ function buildQueue(view, clickedId, named) {
 
 function queueTitle(view, named) {
   // #32：收藏是第 5 个一级视图，队列标题与曲库区分。
-  if (view === 'favorites') return '智能播放列表 · 喜爱';
-  // FR-23：智能三视图（全部曲库 / 专辑 / 歌手）统一「智能播放列表 · …」前缀；
+  if (view === 'favorites') return '喜爱';
+  // FR-23：智能三视图（全部曲库 / 专辑 / 歌手）标题直接用维度名；
   // 有名播放列表仍属手工维护列表，标题不变。
   if (view === 'playlists' && state.currentPlaylist) {
-    return '播放列表 · ' + state.currentPlaylist.name;
+    return '播放列表：' + state.currentPlaylist.name;
   }
   if (view === 'albums') {
-    return '智能播放列表 · 专辑：' + (state.currentAlbum ? state.currentAlbum.name : '未知专辑');
+    return '专辑：' + (state.currentAlbum ? state.currentAlbum.name : '未知专辑');
   }
   if (view === 'artists') {
-    return '智能播放列表 · 艺人：' + (state.currentArtist ? state.currentArtist.name : '未知艺人');
+    return '艺人：' + (state.currentArtist ? state.currentArtist.name : '未知艺人');
   }
-  return named ? '播放列表' : '智能播放列表 · 全部曲库';
+  // v0.12.7：曲源页按归属形成的分组，队列标题带上曲源名。
+  if (view === 'sources') {
+    return '曲源：' + (state.currentSource ? state.currentSource.name
+      : t('sources.local_library', { _fallback: '本地曲库' }));
+  }
+  return named ? '播放列表' : '全部曲库';
 }
 
 // 洗牌一次并固定顺序（S2）：整个队列 Fisher-Yates，随后把当前曲重新定位。
@@ -1598,26 +2127,40 @@ function playTrack(t, view) {
   startPlayback(t, view || state.activeTab);
 }
 
+// v0.14.10：播放栏左列统一渲染——第一行曲名（播放时含艺人），第二行当前歌词行。
+// 抽成函数供 playCurrent / clearQueue / restorePlaystate 复用，避免各处 textContent 覆盖
+// 把第二行歌词节点一起抹掉；第二行文本由 syncLyrics() 随进度维护。
+function setNowPlayingTitle(text) {
+  const np = $('now-playing');
+  np.textContent = '';
+  np.appendChild(document.createTextNode(text || '未在播放'));
+  const sub = document.createElement('span');
+  sub.className = 'np-lyric';
+  sub.textContent = '';
+  np.appendChild(sub);
+}
+
 function playCurrent() {
   const pb = state.playback;
   const id = pb.queue[pb.index];
-  if (!id) { setHint('队列已空'); return; }
+  if (!id) { setHint('播放列表已空'); return; }
   const m = pb.meta[id] || {};
   audio.src = '/api/audio/' + id;
   audio.play().catch(() => {});
-  $('now-playing').textContent = (m.name || ('#' + id)) + (m.artist ? ' — ' + m.artist : '');
+  setNowPlayingTitle((m.name || ('#' + id)) + (m.artist ? ' — ' + m.artist : ''));
   $('btn-play').textContent = '⏸';
   loadLyrics(id);
   // #29：全屏层打开时切曲，左栏标题/封面/副信息同步更新（零新增请求）。
   if (state.nowViewOpen) syncNowViewMeta();
   renderQueueUI();
+  syncPlayingMark();
   savePlaystate();
 }
 
 // 上一首 / 下一首 / 自动推进。auto=true 表示由 audio.ended 触发。
 function stepQueue(delta, auto) {
   const pb = state.playback;
-  if (!pb.queue.length) { setHint('当前没有播放队列'); return; }
+  if (!pb.queue.length) { setHint('当前没有播放列表'); return; }
   let next = pb.index + delta;
   if (next < 0 || next >= pb.queue.length) {
     if (!pb.repeat) {
@@ -1625,7 +2168,7 @@ function stepQueue(delta, auto) {
         $('btn-play').textContent = '▶';
         setHint('播放结束');
       } else {
-        setHint(delta > 0 ? '已是队列最后一首' : '已是队列第一首');
+        setHint(delta > 0 ? '已是播放列表最后一首' : '已是播放列表第一首');
       }
       return;
     }
@@ -1718,23 +2261,23 @@ function clearQueue() {
   state.playback = freshPlayback();
   state.playback.shuffle = shuffle;
   state.playback.repeat = repeat;
-  $('now-playing').textContent = '未在播放';
+  setNowPlayingTitle('未在播放');
   $('btn-play').textContent = '▶';
   renderQueueUI();
+  syncPlayingMark();
   api('/api/playstate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ clear: true }),
   });
-  setHint('播放队列已清空');
+  setHint('播放列表已清空');
 }
 
 // 队列面板：超过窗口阈值时只渲染当前位置附近的一段，避免上千行 DOM 卡顿。
 function renderQueueUI() {
   const pb = state.playback;
   const total = pb.queue.length;
-  $('queue-title').textContent = total ? (pb.title + ' · ' + total + ' 首') : '';
-  $('queue-drawer-title').textContent = pb.title || '播放队列';
+  $('queue-drawer-title').textContent = pb.title || '播放列表';
   $('queue-count').textContent = total ? ((pb.index + 1) + '/' + total) : '';
   $('btn-shuffle').classList.toggle('is-active', pb.shuffle);
   $('btn-repeat').classList.toggle('is-active', pb.repeat);
@@ -1802,7 +2345,7 @@ async function restorePlaystate() {
   pb.meta = s.meta && typeof s.meta === 'object' ? s.meta : {};
   pb.index = Math.max(0, Math.min(Number(s.index) || 0, pb.queue.length - 1));
   pb.source = s.source || '';
-  pb.title = s.title || '播放队列';
+  pb.title = s.title || '播放列表';
   pb.named = !!s.named;
   pb.n = s.n == null ? null : Number(s.n);
   pb.shuffle = !!s.shuffle;
@@ -1810,15 +2353,22 @@ async function restorePlaystate() {
   state.playback = pb;
   const id = pb.queue[pb.index];
   const m = pb.meta[id] || {};
-  $('now-playing').textContent = (m.name || ('#' + id)) + '（已暂停 · 点播放继续）';
+  // v0.14.10：恢复态第二行由「已暂停提示」改为当前歌词行（标题用统一渲染，保留歌词节点）。
+  // 用 textContent / createTextNode 写入，不拼 HTML，曲目名含特殊字符也不会被解析。
+  setNowPlayingTitle(m.name || ('#' + id));
+  // v0.14.10(a)：恢复队列即拉一次歌词，无需等用户点播放 / 打开歌词抽屉。
+  if (id) loadLyrics(id);
   renderQueueUI();
+  syncPlayingMark();
 }
 
 // ---------- 播放列表通用对话框（替代 prompt / confirm，避免原生对话框抢焦点）----------
 let dialogResolve = null;
+let dialogCancelValue = null;
 function showDialog(opts) {
   return new Promise((resolve) => {
     dialogResolve = resolve;
+    dialogCancelValue = Object.prototype.hasOwnProperty.call(opts, 'cancelValue') ? opts.cancelValue : null;
     $('pl-dialog-title').textContent = opts.title || '';
     $('pl-dialog-text').textContent = opts.text || '';
     const inp = $('pl-dialog-input');
@@ -1829,6 +2379,7 @@ function showDialog(opts) {
     rep.hidden = !report.length;
     rep.innerHTML = report.map((x) => `<li>${esc(x)}</li>`).join('');
     $('pl-dialog-ok').textContent = opts.okText || '确定';
+    $('pl-dialog-cancel').textContent = opts.cancelText || '取消';
     $('pl-dialog-cancel').hidden = !!report.length && !opts.input;
     $('pl-dialog-modal').hidden = false;
     if (opts.input) setTimeout(() => { inp.focus(); inp.select(); }, 0);
@@ -1843,10 +2394,10 @@ function closeDialog(val) {
 $('pl-dialog-ok').addEventListener('click', () => {
   closeDialog($('pl-dialog-input').hidden ? true : $('pl-dialog-input').value);
 });
-$('pl-dialog-cancel').addEventListener('click', () => closeDialog(null));
+$('pl-dialog-cancel').addEventListener('click', () => closeDialog(dialogCancelValue));
 $('pl-dialog-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') closeDialog(e.target.value);
-  if (e.key === 'Escape') closeDialog(null);
+  if (e.key === 'Escape') closeDialog(dialogCancelValue);
 });
 
 // ==========================================================================
@@ -1975,7 +2526,7 @@ async function runTrackContextAction(act, btn) {
   }
 
   if (act === 'copy') {
-    const text = (t.name || '未命名') + (t.artist ? ' — ' + t.artist : '') + (t.album ? ' · ' + t.album : '');
+    const text = (t.name || '未命名') + (t.artist ? ' — ' + t.artist : '') + (t.album ? '，' + t.album : '');
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         await navigator.clipboard.writeText(text);
@@ -2005,8 +2556,8 @@ async function confirmDeleteTrack(id, t, view) {
     title: '删除歌曲',
     text: `「${t.name || '未命名'}」将从曲库中删除。\n` +
       (path ? `文件：${path}\n` : '') +
-      '\n音频文件会移入曲库回收站 .mt/trash/（可手动取回），' +
-      '索引以及所有播放列表中的引用会一并清除。此操作不会放入系统回收站。',
+      '\n文件移入曲库回收站 .mt/trash/（可手动取回），' +
+      '索引与播放列表引用一并清除，不进入系统回收站。',
     okText: '移入回收站',
   });
   if (!ok) return;
@@ -2048,10 +2599,10 @@ function dropFromPlaybackQueue(id) {
 
 // 删除后刷新当前视图与分组计数，并清掉四页内存里残留的该曲，避免详情/队列显示脏数据。
 async function refreshAfterTrackDelete(id, view) {
-  ['tracks', 'playlistTracks', 'albumTracks', 'artistTracks', 'favoriteTracks'].forEach((k) => {
+  ['tracks', 'playlistTracks', 'albumTracks', 'artistTracks', 'favoriteTracks', 'sourceTracks'].forEach((k) => {
     state[k] = (state[k] || []).filter((x) => Number(x.local_id) !== id);
   });
-  ['library', 'playlists', 'albums', 'artists', 'favorites'].forEach((v) => {
+  ['library', 'playlists', 'albums', 'artists', 'favorites', 'sources'].forEach((v) => {
     const sel = state.viewSelection[v];
     if (sel && sel.track && Number(sel.track.local_id) === id) state.viewSelection[v] = null;
   });
@@ -2061,9 +2612,12 @@ async function refreshAfterTrackDelete(id, view) {
   else if (view === 'playlists' && state.currentPlaylist) await loadPlaylistTracks(state.currentPlaylist.id);
   else if (view === 'albums' && state.currentAlbum) await loadAlbumTracks(state.currentAlbum.name);
   else if (view === 'artists' && state.currentArtist) await loadArtistTracks(state.currentArtist.name);
+  else if (view === 'sources' && state.currentSource) await loadSourceTracks(state.currentSource.id);
   await loadPlaylists();
   if (state.activeTab === 'albums') await loadAlbums();
   if (state.activeTab === 'artists') await loadArtists();
+  // v0.12.7：替换归属修正后，曲源分组计数与曲目列表即时重算（从原列表移除、在新列表出现）。
+  if (state.activeTab === 'sources') await loadSourceGroups();
   renderActiveDetail();
   renderViewDetail(state.activeTab);
 }
@@ -2128,6 +2682,9 @@ async function loadLyrics(localId) {
   state.lyricsIndex = -1;
   state.lyricsSource = '';
   state.lyricsLocalId = localId || null;
+  // v0.14.10：切曲即清空播放栏第二行（新曲歌词到达前不残留上一首的歌词）。
+  const npSub0 = $('now-playing') && $('now-playing').querySelector('.np-lyric');
+  if (npSub0) npSub0.textContent = '';
   const srcEl = $('lyrics-source');
   const nvSrc = $('nv-src');
   if (srcEl) srcEl.textContent = '';
@@ -2183,7 +2740,12 @@ document.addEventListener('click', (e) => {
 // 按播放进度同步高亮行并居中滚动（抽屉 + 全屏层同步）。
 function syncLyrics() {
   const L = state.lyrics;
-  if (!L || !L.timed || !L.lines.length) return;
+  // v0.14.10：无歌词 / 纯文本歌词时，播放栏第二行清空（面板保持原有占位逻辑）。
+  const npSub = $('now-playing') && $('now-playing').querySelector('.np-lyric');
+  if (!L || !L.timed || !L.lines.length) {
+    if (npSub) npSub.textContent = '';
+    return;
+  }
   const now = audio.currentTime;
   let idx = -1;
   for (let i = 0; i < L.lines.length; i++) {
@@ -2192,6 +2754,8 @@ function syncLyrics() {
   }
   if (idx === state.lyricsIndex) return;
   state.lyricsIndex = idx;
+  // v0.14.10：当前这句歌词同步到播放栏第二行（textContent 写入，歌词文本不做 HTML 解析）。
+  if (npSub) npSub.textContent = idx < 0 ? '' : (L.lines[idx].text || '');
   LYRICS_BODIES.forEach((id) => {
     const body = $(id);
     if (!body) return;
@@ -2207,10 +2771,11 @@ function syncLyrics() {
   });
 }
 
-// 歌词面板开关。
+// 歌词面板开关（按钮激活态与抽屉显示态同步）。
 $('btn-lyrics').addEventListener('click', () => {
   const drawer = $('lyrics-drawer');
   drawer.hidden = !drawer.hidden;
+  $('btn-lyrics').classList.toggle('is-active', !drawer.hidden);
   if (!drawer.hidden) {
     const cur = state.current;
     if (cur) {
@@ -2221,6 +2786,7 @@ $('btn-lyrics').addEventListener('click', () => {
 });
 $('lyrics-close').addEventListener('click', () => {
   $('lyrics-drawer').hidden = true;
+  $('btn-lyrics').classList.remove('is-active');
 });
 
 // ---------- #29 正在播放 / 全屏歌词 ----------
@@ -2251,7 +2817,7 @@ function syncNowViewMeta() {
   }
   const t = nowViewTrack(id);
   titleEl.textContent = m.name || ('#' + id);
-  if (metaEl) metaEl.textContent = [m.artist, t && t.album, t && t.format].filter(Boolean).join(' · ');
+  if (metaEl) metaEl.textContent = [m.artist, t && t.album, t && t.format].filter(Boolean).join('，');
   // fallback 常驻、被 img 盖住；/api/cover 返回 204/404 时只隐藏 img、不删节点（同 #27）。
   coverEl.innerHTML = `<img src="/api/cover/${Number(id)}" alt="" />` +
     '<span class="nv-fallback" aria-hidden="true">♫</span>';
@@ -2307,6 +2873,8 @@ $('btn-play').addEventListener('click', () => {
 audio.addEventListener('timeupdate', () => {
   if (audio.duration) {
     $('seek').value = Math.floor((audio.currentTime / audio.duration) * 1000);
+    // v0.12.15：顺带把进度百分比写成 CSS 变量，供渐变轨道着色（不改播放逻辑）。
+    $('seek').style.setProperty('--p', ((audio.currentTime / audio.duration) * 100).toFixed(2) + '%');
     $('cur-time').textContent = fmtTime(audio.currentTime * 1000);
   }
   syncLyrics();
@@ -2327,7 +2895,7 @@ audio.addEventListener('error', () => {
   if (!audio.src || !pb.queue.length) return;
   errorSkips += 1;
   if (errorSkips > pb.queue.length) {
-    setHint('队列中多首歌曲已失效，播放停止');
+    setHint('播放列表中多首歌曲已失效，播放停止');
     errorSkips = 0;
     return;
   }
@@ -2413,7 +2981,7 @@ $('btn-shuffle').addEventListener('click', () => {
   if (pb.shuffle) applyShuffle(); else restoreOriginalOrder();
   renderQueueUI();
   savePlaystate();
-  setHint(pb.shuffle ? '随机播放：已打乱当前队列并固定顺序' : '顺序播放：已恢复界面顺序');
+  setHint(pb.shuffle ? '随机播放：已打乱当前播放列表并固定顺序' : '顺序播放：已恢复界面顺序');
 });
 $('btn-repeat').addEventListener('click', () => {
   const pb = state.playback;
@@ -2482,8 +3050,8 @@ function updateDupBadge(n) {
   const btn = $('btn-sources');
   if (btn) {
     const label = (window.KQK && typeof window.KQK.t === 'function')
-      ? window.KQK.t('sources.btn', { _fallback: '来源管理' })
-      : '来源管理';
+      ? window.KQK.t('sources.btn', { _fallback: '曲源' })
+      : '曲源';
     btn.setAttribute('aria-label', label);
     btn.title = count
       ? `${count} 组待处理重复文件，点开「${label}」处理`
@@ -2510,11 +3078,13 @@ function dupAttrsHtml(m) {
     ['位深', m.bit_depth ? m.bit_depth + ' bit' : ''],
     ['码率', m.bitrate ? Math.round(Number(m.bitrate) / 1000) + ' kbps' : ''],
     ['大小', (m.file_size || m.size) ? fmtSize(m.file_size || m.size) : ''],
+    // v0.14.0：不同质量版本需展示「位置 + 名称 + 大小」供用户选留哪个。
+    ['位置', m.file_path || m.source || ''],
     ['来源', m.origin ? (DUP_ORIGIN_LABELS[m.origin] || m.origin) : ''],
   ].filter(([, v]) => v !== '' && v != null);
   if (!rows.length) return '';
   return '<div class="dup-option-attrs">' +
-    rows.map(([k, v]) => `<span>${k}</span><b>${esc(v)}</b>`).join('') + '</div>';
+    rows.map(([k, v]) => `<span>${k}</span><b title="${esc(v)}">${esc(v)}</b>`).join('') + '</div>';
 }
 
 function dupOptionHtml(g, choice, name, meta, previewUrl, checked) {
@@ -2553,7 +3123,7 @@ function renderDuplicateGroups(list, box = $('dup-groups')) {
     (g.candidates || []).forEach((c, ci) => {
       const label = (c.source || '').split(/[\\/]/).pop() || `新文件 ${ci + 1}`;
       options.push(dupOptionHtml(
-        g, c.id, `新文件 ${ci + 1} · ${label}`, c,
+        g, c.id, `新文件 ${ci + 1}：${label}`, c,
         `/api/duplicates/preview/${encodeURIComponent(c.id)}`, selected === c.id
       ));
     });
@@ -2561,8 +3131,8 @@ function renderDuplicateGroups(list, box = $('dup-groups')) {
     div.className = 'dup-group';
     div.innerHTML =
       `<div class="dup-group-title">${gi + 1}. ${esc(g.title || '未知曲目')}</div>` +
-      `<div class="dup-group-meta">${esc(g.artist || '')} · ${esc((g.format || '').toUpperCase())} · ${options.length} 个版本 · ${esc(DUP_ORIGIN_LABELS[g.origin] || g.origin || '')}</div>` +
-      (g.last_choice ? `<div class="dup-last">${esc(g.last_choice)}（已为你预选，可改）</div>` : '') +
+      `<div class="dup-group-meta">${esc(g.artist || '')}，${esc((g.format || '').toUpperCase())}，${options.length} 个版本，${esc(DUP_ORIGIN_LABELS[g.origin] || g.origin || '')}</div>` +
+      (g.last_choice ? `<div class="dup-last">${esc(g.last_choice)}（已预选，可调整）</div>` : '') +
       (!g.existing ? '<div class="dup-last">该组均为新文件，默认选中第一份</div>' : '') +
       `<div class="dup-options">${options.join('')}</div>`;
     box.appendChild(div);
@@ -2614,7 +3184,7 @@ async function openDuplicatesDialog() {
   }
   $('dup-count').textContent = `共 ${list.length} 组待处理（全部未决组一次展示）`;
   $('dup-path').textContent = state.duplicatesDir
-    ? `挂起文件：${state.duplicatesDir}（稍后处理不会移动文件；换曲库时随曲库保留）` : '';
+    ? `挂起文件：${state.duplicatesDir}（暂不处理不会移动文件；换曲库时随曲库保留）` : '';
   renderDuplicateGroups(list);
   $('duplicates-modal').hidden = false;
 }
@@ -2650,6 +3220,8 @@ async function submitDuplicateDecisions(prefix = 'dup') {
   if (failed.length) setHint(`部分决策未生效：${failed.join('；')}`);
   else setHint(`已处理 ${data.applied} 组重复文件`);
   updateDupBadge(data.pending_duplicates);
+  // v0.12.7：替换决策可能修正归属，曲源分组即时重算（只 UPDATE 同一行，local_id 不变）。
+  if (state.activeTab === 'sources') await loadSourceGroups();
   if ((Number(data.pending_duplicates) || 0) > 0) {
     // 仍有未决组（决策失败 / 别的批次）：保留当前界面并重新拉取。
     if (inSources) await loadSourcesDuplicates();
@@ -2664,19 +3236,20 @@ async function submitDuplicateDecisions(prefix = 'dup') {
   loadTracks($('search').value);
 }
 
-// v0.12.0：原工具栏「待处理重复」按钮移除，入口统一到顶栏「来源管理」；
-// 有未决组时打开弹窗并直接定位到左侧「待处理重复」项。
-$('btn-sources').addEventListener('click', () => openSourcesModal(
-  (state.pendingDuplicates || 0) > 0 ? 'duplicates' : 'source'
-));
+// v0.12.11：顶栏「曲源总览」入口改为打开设置并落到「曲源总览」子页（不弹独立窗口）。
+$('btn-sources').addEventListener('click', openSourcesPage);
 $('dup-later').addEventListener('click', () => {
   // W4：稍后处理不提交决策，挂起文件保持留在 .mt/pending-duplicates/。
   closeDuplicatesDialog();
   setHint(state.pendingDuplicates
-    ? `已保留 ${state.pendingDuplicates} 组待处理重复文件，可随时点顶栏「来源管理」继续` : '已关闭对比窗口');
+    ? `已保留 ${state.pendingDuplicates} 组待处理重复文件，可随时点顶栏「曲源」继续` : '已关闭对比窗口');
 });
 $('dup-apply').addEventListener('click', () => submitDuplicateDecisions('dup'));
-$('src-dup-later').addEventListener('click', () => closeSourcesModal());
+$('src-dup-later').addEventListener('click', () => {
+  // v0.12.11：待处理重复是设置子页的一块，「稍后处理」不提交决策，只关闭设置面板。
+  stopDuplicatePreview();
+  $('settings-modal').hidden = true;
+});
 $('src-dup-apply').addEventListener('click', () => submitDuplicateDecisions('src-dup'));
 
 /** change / click 事件委托：两个重复容器共用（选中态高亮 + 试听）。 */
@@ -2705,20 +3278,42 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (!$('duplicates-modal').hidden) { closeDuplicatesDialog(); return; }
   if (!$('init-wizard').hidden) return;              // 向导不可 Esc 关闭
-  if (!$('sources-modal').hidden) { closeSourcesModal(); return; }
+  if (!$('sources-modal').hidden) { closeSourceAddModal(); return; }
   if (!$('import-modal').hidden) { $('import-modal').hidden = true; return; }
   if (!$('settings-modal').hidden) $('settings-modal').hidden = true;
 });
 $('set-dup-clear-history').addEventListener('click', async () => {
   const yes = await showDialog({
-    title: '清除同步/导入历史',
-    text: '将清空本曲库 .mt/sync-import.jsonl 的同步与导入流水，重复对比窗口不再给出「上次你选择了…」预选。挂起中的重复组不受影响。',
+    title: '清除历史',
+    text: '清空同步与导入流水，重复对比不再提供上次选择的预选；挂起的重复组不受影响。',
     okText: '清除',
   });
   if (!yes) return;
   const { data } = await api('/api/duplicates/history/clear', { method: 'POST' });
   setHint(data && data.ok ? '同步/导入历史已清除' : ((data && data.error) || '清除历史失败'));
+  if (data && data.ok) {
+    state.dupHistoryCleared = true;
+    updateHistorySummary();
+  }
 });
+
+/** v0.14.11：同步/导入历史摘要（默认折叠）。无后端条数 API，按清除状态给出诚实文案。 */
+function updateHistorySummary() {
+  const el = $('src-history-summary-text');
+  if (!el) return;
+  el.textContent = state.dupHistoryCleared
+    ? '暂无历史记录（上次选择已清除）'
+    : '重复对比的上次选择记录（本地 .mt/sync-import.jsonl）';
+}
+$('src-history-toggle').addEventListener('click', () => {
+  const btn = $('src-history-toggle');
+  const body = $('src-history-body');
+  const open = btn.getAttribute('aria-expanded') !== 'true';
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  body.hidden = !open;
+  syncSrcBlockLayout();
+});
+updateHistorySummary();
 
 // ---------- 散落 .ncm 处理（扫描发现 → 询问 → 移入 download 按下载逻辑处理）----------
 function maybeShowNcmOrganize(paths, force) {
@@ -2757,7 +3352,7 @@ $('ncm-organize-go').addEventListener('click', async () => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ paths: state.ncmOrganizePaths }),
   });
-  stopProgressPolling();
+  finishProgressTask();
   btn.disabled = false;
   if (!data || !data.ok) {
     setHint((data && data.error) || '处理散落 .ncm 失败');
@@ -2772,8 +3367,19 @@ $('ncm-organize-go').addEventListener('click', async () => {
   await refreshStatus();
   loadTracks($('search').value);
 });
-$('btn-refresh').addEventListener('click', () => loadTracks($('search').value));
-$('search').addEventListener('input', (e) => loadTracks(e.target.value));
+// v0.16.2：搜索 180ms 防抖，只在此处（不进 loadTracks 本体），重试 / 切页等即时调用不受影响。
+$('search').addEventListener('input', (e) => {
+  const q = e.target.value;
+  if (searchDebounce) clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(() => { searchDebounce = null; loadTracks(q); }, 180);
+});
+// 失败态重试：直接重发当前 query 与筛选，不清空旧列表。
+document.addEventListener('click', (e) => {
+  const btn = e.target && e.target.closest ? e.target.closest('#track-load-retry') : null;
+  if (!btn) return;
+  e.stopPropagation();
+  loadTracks(state.tracksQuery);
+});
 
 // ---------- 左侧 tab 选择栏（全部曲库 / 播放列表 / 专辑 / 歌手 / 喜爱）----------
 // #32：收藏与专辑/歌手同级，只是没有二级栏：直接复用 #library-pane 的单张歌曲表格。
@@ -2787,18 +3393,19 @@ function switchTab(tab) {
   if (toolbar) {
     toolbar.dataset.title = ({
       library: '全部曲库', playlists: '播放列表', albums: '专辑', artists: '歌手',
-      favorites: '喜爱'
+      favorites: '喜爱', sources: '曲源'
     })[tab] || '全部曲库';
   }
-  ['library', 'playlists', 'albums', 'artists', 'favorites'].forEach((v) => {
+  ['library', 'playlists', 'albums', 'artists', 'favorites', 'sources'].forEach((v) => {
     const btn = $(v === 'favorites' ? 'btn-favorites' : 'tab-' + v);
     if (btn) btn.classList.toggle('active', tab === v);
   });
-  // 收藏与曲库共用同一张表格 DOM；其余三页各自独立 pane。
+  // 收藏与曲库共用同一张表格 DOM；其余页面各自独立 pane。
   $('library-pane').hidden = !(tab === 'library' || tab === 'favorites');
   $('playlists-pane').hidden = (tab !== 'playlists');
   $('albums-pane').hidden = (tab !== 'albums');
   $('artists-pane').hidden = (tab !== 'artists');
+  $('sources-view-pane').hidden = (tab !== 'sources');
   const fb = $('track-filter-bar');
   if (fb) fb.hidden = (tab === 'favorites');
   const bar = $('favorites-bar');
@@ -2816,6 +3423,8 @@ function switchTab(tab) {
   }
   if (tab === 'albums') loadAlbums();
   if (tab === 'artists') loadArtists();
+  // v0.12.7：曲源页复用「二级分组 + 三级曲目」骨架，进入时按归属重新分组。
+  if (tab === 'sources') loadSourceGroups();
   // #33：进入收藏视图先同步按当前缓存重绘，再异步取权威集合。不能只等 loadFavorites()，
   // 否则后端稍慢 / 不可用时表格会残留「全部曲库」的行（用户报告「点进去是全部音乐」）。
   if (tab === 'favorites') {
@@ -2824,6 +3433,9 @@ function switchTab(tab) {
   }
   // #32：从收藏切回曲库必须重绘表格，否则会停留在收藏集合（空收藏时表现为空白）。
   if (tab === 'library' && prevTab === 'favorites') renderTracks();
+  // 删除「刷新」按钮后，切回曲库即重载列表（与切 playlists/albums 等异步 load 同构），
+  // 保证列表数据始终为权威；先 renderTracks 防空表闪烁，再 loadTracks 拉取最新。
+  if (tab === 'library') loadTracks($('search').value);
 }
 $('tab-library').addEventListener('click', () => switchTab('library'));
 $('tab-playlists').addEventListener('click', () => switchTab('playlists'));
@@ -2831,6 +3443,9 @@ $('tab-albums').addEventListener('click', () => switchTab('albums'));
 $('tab-artists').addEventListener('click', () => switchTab('artists'));
 $('btn-favorites').addEventListener('click', () => switchTab('favorites'));
 $('btn-favorites').addEventListener('dblclick', () => { playAllFavorites(); });
+// v0.12.8：第 6 个一级 Tab「曲源」的点击绑定。v0.12.7 只加了 DOM 与
+// switchTab('sources') 分支却漏了这一行，真机点击无反应；AA32 用真实点击守护。
+$('tab-sources').addEventListener('click', () => switchTab('sources'));
 
 // #30：boot 不调用 switchTab，首屏若已是 modern 皮肤也要有 stage 标题。
 (function initStageTitle() {
@@ -2892,7 +3507,7 @@ function groupTagLine(g) {
   if (genre) parts.push(genre);
   const yr = groupYearLabel(g);
   if (yr) parts.push(yr);
-  return parts.length ? parts.join(' · ') : null;
+  return parts.length ? parts.join('，') : null;
 }
 
 // #28：歌手页二级列表 —— 在既有「名字 + 曲目数」行上追加「流派 · 年份范围」副信息。
@@ -2905,7 +3520,7 @@ function renderArtistList() {
   const items = state.artists || [];
   ul.innerHTML = '';
   if (!items.length) {
-    ul.innerHTML = '<li class="pl-empty">暂无智能播放列表 · 歌手</li>';
+    ul.innerHTML = '<li class="pl-empty">暂无歌手</li>';
     return;
   }
   const selected = state.currentArtist ? state.currentArtist.name : null;
@@ -2956,7 +3571,7 @@ function renderGroupCards(listId, items, emptyText, selectedKey) {
     li.innerHTML =
       `<div class="gcard-art">${cover}<span class="gcard-fallback" aria-hidden="true">♫</span></div>` +
       (name !== null ? `<span class="gcard-name">${esc(name)}</span>` : '') +
-      (metaParts.length ? `<span class="gcard-count">${esc(metaParts.join(' · '))}</span>` : '');
+      (metaParts.length ? `<span class="gcard-count">${esc(metaParts.join('，'))}</span>` : '');
     if (selectedKey !== null && selectedKey !== undefined && it.name === selectedKey) {
       li.classList.add('selected');
     }
@@ -3013,6 +3628,7 @@ async function selectPlaylist(id) {
   if (li) li.classList.add('selected');
   $('pl-title').textContent = pl ? pl.name : '播放列表内容';
   $('pl-add-current').hidden = !pl;
+  $('pl-add-hint').hidden = !pl;
   $('pl-rename').hidden = !pl;
   $('pl-export').hidden = !pl;
   $('pl-delete').hidden = !pl;
@@ -3037,12 +3653,12 @@ function renderPlaylistTracks() {
   const box = $('pl-content');
   if (!state.currentPlaylist) {
     box.innerHTML =
-      '<div class="placeholder">选择一个播放列表以查看内容，或点击「新建」创建播放列表。</div>';
+      '<div class="placeholder">选择播放列表查看内容，或点击「新建」创建。</div>';
     return;
   }
   if (!state.playlistTracks.length) {
     box.innerHTML =
-      '<div class="placeholder">该播放列表暂无歌曲。在「全部曲库」选中一首歌，再点上方「＋ 加入选中歌曲」。</div>';
+      '<div class="placeholder">该播放列表暂无歌曲。在「全部曲库」选中歌曲后点上方「＋ 加入选中歌曲」，或右键歌曲直接加入。</div>';
     return;
   }
   const cols = visibleTrackCols();
@@ -3215,6 +3831,7 @@ $('pl-delete').addEventListener('click', async () => {
   state.viewSelection.playlists = null;
   $('pl-title').textContent = '播放列表内容';
   $('pl-add-current').hidden = true;
+  $('pl-add-hint').hidden = true;
   $('pl-rename').hidden = true;
   $('pl-export').hidden = true;
   $('pl-delete').hidden = true;
@@ -3222,7 +3839,7 @@ $('pl-delete').addEventListener('click', async () => {
   renderViewDetail('playlists');
   if (state.activeTab === 'playlists') renderActiveDetail();
   $('pl-content').innerHTML =
-    '<div class="placeholder">选择一个播放列表以查看内容，或点击「新建」创建播放列表。</div>';
+    '<div class="placeholder">选择播放列表查看内容，或点击「新建」创建。</div>';
   setHint('已删除播放列表');
 });
 
@@ -3246,8 +3863,9 @@ async function removeFromPlaylist(local_id) {
 // 通用：把曲目渲染为与播放列表内一致的表格（只读浏览，不含「移除」等编辑操作）。
 function renderBrowseTracks(boxId, tracks, emptyMsg) {
   const box = $(boxId);
-  // 右键菜单要知道触发来源：al-content = 专辑页，ar-content = 歌手页。
-  const ctxView = boxId === 'al-content' ? 'albums' : 'artists';
+  // 右键菜单要知道触发来源：al-content = 专辑页，ar-content = 歌手页，sv-content = 曲源页。
+  const ctxView = boxId === 'al-content' ? 'albums'
+    : (boxId === 'sv-content' ? 'sources' : 'artists');
   if (!tracks.length) {
     box.innerHTML = '<div class="placeholder">' + esc(emptyMsg) + '</div>';
     return;
@@ -3290,11 +3908,11 @@ function renderAlbums() {
   const selected = state.currentAlbum ? state.currentAlbum.name : null;
   if (state.albumView === 'grid') {
     if (list) list.classList.add('grid-view');
-    renderGroupCards('al-list', state.albums, '暂无智能播放列表 · 专辑', selected);
+    renderGroupCards('al-list', state.albums, '暂无专辑', selected);
   } else {
     // 默认「列表视图」= 原有行为，renderGroupList 一字不改，保证既有回归断言全绿。
     if (list) list.classList.remove('grid-view');
-    renderGroupList('al-list', state.albums, '暂无智能播放列表 · 专辑', 'name', selected);
+    renderGroupList('al-list', state.albums, '暂无专辑', 'name', selected);
   }
 }
 
@@ -3397,7 +4015,7 @@ async function loadAlbumTracks(name) {
   const { data } = await api('/api/albums/tracks?name=' + encodeURIComponent(name));
   if (seq !== albumReq) return;
   state.albumTracks = (data && data.tracks) || [];
-  renderBrowseTracks('al-content', state.albumTracks, '该智能播放列表暂无歌曲。');
+  renderBrowseTracks('al-content', state.albumTracks, '暂无歌曲。');
 }
 
 // ---------- 歌手 ----------
@@ -3441,7 +4059,7 @@ async function loadArtistTracks(name) {
   const { data } = await api('/api/artists/tracks?name=' + encodeURIComponent(name));
   if (seq !== artistReq) return;
   state.artistTracks = (data && data.tracks) || [];
-  renderBrowseTracks('ar-content', state.artistTracks, '该智能播放列表暂无歌曲。');
+  renderBrowseTracks('ar-content', state.artistTracks, '暂无歌曲。');
 }
 
 $('btn-settings').addEventListener('click', openSettings);
@@ -3473,52 +4091,13 @@ $('set-name-apply').addEventListener('click', async () => {
   updateLibraryName();
   await refreshStatus();
 });
-// 本地网易云曲库目录：浏览 / 保存 / 一键更新
-$('set-netease-browse').addEventListener('click', async () => {
-  const { data } = await api('/api/pick-folder', { method: 'POST' });
-  if (data && data.ok && !data.canceled && data.path) {
-    $('set-netease-input').value = data.path;
-    $('set-netease-status').textContent = '已选择：' + data.path;
-  } else if (!data || !data.ok) {
-    setHint((data && data.error) || '打开文件夹选择失败');
-  }
-});
-// 保存「本地网易云音乐曲库目录」（app 级配置 → kqk-app.toml）。成功返回 true。
-async function saveNeteaseDir(path) {
-  const p = (path || '').trim();
-  if (!p) { setHint('请先选择或输入本地网易云曲库目录'); return false; }
-  const { data } = await api('/api/netease/library-dir', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: p }),
-  });
-  if (!data || !data.ok) { setHint((data && data.error) || '保存失败'); return false; }
-  state.netease_library_dir = data.library_dir || p;
-  return true;
-}
-$('set-netease-apply').addEventListener('click', async () => {
-  setHint('保存目录中…');
-  if (await saveNeteaseDir($('set-netease-input').value.trim())) {
-    setHint('本地网易云曲库目录已保存');
-    await refreshStatus();
-  }
-});
-// 设置面板的「更新」：输入框已填路径则先保存，再执行更新；否则走「未设置 → 弹选择框」流程。
-$('set-netease-update').addEventListener('click', async () => {
-  const typed = $('set-netease-input').value.trim();
-  if (typed && typed !== state.netease_library_dir) {
-    if (!await saveNeteaseDir(typed)) return;
-  }
-  await runImportNetease();
-});
-$('set-ncm-pick').addEventListener('click', pickNcmTool.bind(null, 'set-ncm-input'));
-$('set-ncm-apply').addEventListener('click', applyNcmTool.bind(null, 'set-ncm-input', 'set-ncm-copy'));
 $('set-apply-scheme').addEventListener('click', applyScheme);
 
 // ---------- 设置面板：左侧标签导航 ↔ 右侧分栏内容 ----------
 // 纯前端 class 切换，不改动任何设置项的控件与业务逻辑。
 function activateSettingsTab(key) {
-  const tabs = document.querySelectorAll('#settings-modal .settings-tab');
-  const panes = document.querySelectorAll('#settings-modal .settings-pane');
+  const tabs = document.querySelectorAll('#settings-modal .settings-nav > .settings-tab');
+  const panes = document.querySelectorAll('#settings-modal .settings-content > .settings-pane');
   const valid = Array.from(tabs).some((t) => t.dataset.tab === key);
   const target = valid ? key : 'appearance';
   tabs.forEach((t) => {
@@ -3532,9 +4111,14 @@ function activateSettingsTab(key) {
 }
 const settingsNav = document.querySelector('#settings-modal .settings-nav');
 if (settingsNav) settingsNav.setAttribute('role', 'tablist');
-document.querySelectorAll('#settings-modal .settings-tab').forEach((tab) => {
+document.querySelectorAll('#settings-modal .settings-nav > .settings-tab').forEach((tab) => {
   tab.setAttribute('role', 'tab');
-  tab.addEventListener('click', () => activateSettingsTab(tab.dataset.tab));
+  tab.addEventListener('click', () => {
+    // v0.12.11：设置里「曲源总览」是普通子页面，不弹独立窗口；切进去时刷新四块常显内容。
+    if (tab.dataset.tab === 'import') { activateSettingsTab('import'); refreshSourcesPage(); return; }
+    if (tab.dataset.tab === 'plugins') { activateSettingsTab('plugins'); refreshPluginsPage(); return; }
+    activateSettingsTab(tab.dataset.tab);
+  });
 });
 document.querySelectorAll('#settings-modal .settings-pane').forEach((pane) => {
   pane.setAttribute('role', 'tabpanel');
@@ -3561,11 +4145,6 @@ function openSettings() {
     r.checked = (r.value === state.file_scheme);
   });
   syncSchemeOptionState();
-  $('set-ncm-status').textContent = state.ncm_ready
-    ? ('已启用：' + state.ncm_tool)
-    : '未配置（无 NCM 工具时，.ncm 文件会进入 download/pendingNcm 暂存）';
-  $('set-netease-dir').textContent = state.netease_library_dir || '（未设置）';
-  $('set-netease-input').value = state.netease_library_dir || '';
   renderColConfig();
   renderLayoutStyleUI();
   renderColWidthUI();
@@ -3797,53 +4376,6 @@ async function saveLibraryDirectory() {
   await refreshStatus();
 }
 
-// v0.12.0：工具栏「导入」「从本地网易云曲库更新」按钮已移除。
-// 手动导入由来源管理左侧「手动导入文件夹」项触发；网易云更新由来源的「立即更新」触发。
-// runImportNetease() 保留供设置里隐藏的旧控件调用（旧端点行为不变）。
-function openImportModal() {
-  $('import-input').value = '';
-  $('import-modal').hidden = false;
-}
-$('set-open-sources').addEventListener('click', () => {
-  $('settings-modal').hidden = true;
-  openSourcesModal('source');
-});
-
-// 从本地网易云曲库目录增量合并（本地操作，不联网/不登录，单方向只加不删）。
-// 未设置「本地网易云音乐曲库目录」时：先弹出目录选择框，指定成功后立即执行更新。
-async function runImportNetease() {
-  if (!state.netease_library_dir) {
-    setHint('尚未设置「本地网易云音乐曲库目录」，请选择该目录…');
-    const picked = await api('/api/pick-folder', { method: 'POST' });
-    const pd = picked && picked.data;
-    if (!pd || !pd.ok) { setHint((pd && pd.error) || '打开文件夹选择失败'); return; }
-    if (pd.canceled || !pd.path) { setHint('已取消指定本地网易云音乐曲库目录，未执行更新'); return; }
-    if (!await saveNeteaseDir(pd.path)) return;
-    setHint('已指定本地网易云音乐曲库目录，正在更新（只加不删）…');
-  } else {
-    setHint('从本地网易云曲库更新中（只加不删）…');
-  }
-  // 打开进度面板并开始轮询，让用户看到逐首的处理明细。
-  showProgressPanel('本地网易云曲库');
-  startProgressPolling();
-  const { data } = await api('/api/import-netease', { method: 'POST' });
-  stopProgressPolling();
-  if (data && data.ok) {
-    const parts = [`入库 ${data.imported}`];
-    if (data.skipped) parts.push(`跳过 ${data.skipped}`);
-    if (data.pending) parts.push(`待转换 ${data.pending}`);
-    if (data.failed) parts.push(`失败 ${data.failed}`);
-    if (data.held) parts.push(`重复挂起 ${data.held}`);
-    setHint(`从本地网易云曲库更新完成：${parts.join('，')}`);
-    await refreshDuplicateBadge();
-    if (data.held) await openDuplicatesDialog();
-    loadTracks($('search').value);
-  } else {
-    setHint((data && data.error) || '从本地网易云曲库更新失败');
-  }
-  // 面板保留在屏上供用户查看明细，由「×」手动关闭。
-}
-
 // ---------- 导入文件夹（通用：复制/移动到曲库）----------
 // 卡片式单选选中态：:has() 为主，.is-checked 兼容旧版 WebView（切换时同步）。
 function syncImportOptionState() {
@@ -3881,9 +4413,9 @@ $('import-run').addEventListener('click', async () => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path, mode }),
   });
-  stopProgressPolling();
+  finishProgressTask();
   setHint(data && data.ok
-    ? `导入完成：新增 ${data.imported}，跳过 ${data.skipped}${data.pending ? `，待转换 ${data.pending}` : ''}${data.held ? `，重复挂起 ${data.held}` : ''}，失败 ${data.failed}`
+    ? `导入完成：新增 ${data.imported}，跳过 ${data.skipped}${data.ncm_skipped ? `（含 ${data.ncm_skipped} 个加密文件，未配置工具）` : ''}${data.held ? `，重复挂起 ${data.held}` : ''}，失败 ${data.failed}`
     : (data && data.error) || '导入失败');
   // FR-22 P4：批量结束后一起弹对比选择窗（全部未决组一次展示）。
   await refreshDuplicateBadge();
@@ -3892,26 +4424,78 @@ $('import-run').addEventListener('click', async () => {
 });
 
 // ==========================================================================
-// v0.12.0 曲库来源管理（歌曲更新源）
-// 独立弹窗：左侧来源列表 + 右侧信息与设置；事实源 = app 级 [[sources]]（/api/sources）。
-// 「是否网易云曲库」由只读探测自动得出，允许手动覆盖；命中后沿用只加不删逻辑并强制复制。
-// 旧端点 /api/import-netease、/api/netease/library-dir、/api/import 与 CLI 全部保留不变。
+// v0.12.11 曲源总览：设置子页（四块单栏：按钮 / 列表+详情 / 待处理重复 / NCM 工具）
+// + 「添加曲源」独立窗口（另建一套 add-src-* 表单，与右侧 src-* 详情互不干扰）。
+// 事实源 = app 级 [[sources]]（/api/sources）；旧端点 /api/import-netease、/api/netease/library-dir、
+// /api/import 与 CLI 全部保留不变。v0.12.11 起「检查 / 一键导入 / 持续监听」只读检查链下线（后端端点保留）。
 // ==========================================================================
 state.sources = [];
 state.sourcesCurrentId = '';
-state.sourcesPane = 'source';
-state.sourcesAdding = false;
-state.sourcesProbe = null;
-const SOURCES_FIXED_PANES = ['manual', 'duplicates', 'ncm'];
+// v0.12.12：内置特殊曲源「本地曲库」的 id，与后端 db::UNSPECIFIED_SOURCE / groups 的
+// unspecified_id 一致。它只存在于前端列表（绝不写 [[sources]] 配置），因此天然不参与
+// 曲源 CRUD 与「更新全部曲源」；曲库文件夹内由扫描登记的歌曲归到这个分组。
+const LOCAL_LIBRARY_ID = 'local_scan';
 
-async function openSourcesModal(pane = 'source') {
-  $('sources-modal').hidden = false;
-  await loadSources();
-  activateSourcesPane(pane);
+/** 打开设置并落到「曲源总览」子页；四块常显内容一次性刷新，无新增定时器。 */
+async function openSourcesPage() {
+  openSettings();
+  activateSettingsTab('import');
+  await refreshSourcesPage();
 }
 
-function closeSourcesModal() {
-  stopDuplicatePreview();
+/** 刷新子页四块数据：来源列表 + 待处理重复；NCM 状态随 loadSources 一并回填。 */
+async function refreshSourcesPage() {
+  await loadSources();
+  await loadSourcesDuplicates();
+  const tip = $('ov-tip');
+  if (tip) tip.dataset.tip = sourceLabels().tipReadonly;
+  const nameTip = $('src-name-tip');
+  if (nameTip) nameTip.dataset.tip = sourceLabels().tipRename;
+  syncSrcBlockLayout();
+}
+
+/** v0.14.9：四块左右分栏仲裁。按钮始终在右栏（网格两栏固定），右栏内默认横排；
+ *  仅当左栏自然高 >= 按钮竖排高时加 .side-actions 改竖排。收起态（右栏隐藏）跳过。resize 防抖重测。 */
+let srcLayoutTimer = null;
+function syncSrcBlockLayout() {
+  const pane = document.querySelector('#settings-modal .src-pane[data-pane="import"]');
+  if (!pane || !pane.classList.contains('active') || pane.hidden) return;
+  pane.querySelectorAll('.src-pane-block').forEach((block) => {
+    const main = block.querySelector('.src-block-main');
+    const actions = block.querySelector('.src-block-actions');
+    if (!main || !actions) return;
+    // v0.14.12：曲源信息块（列表+详情）空间恒定足够，按钮列固定竖排，不参与动态仲裁。
+    if (block.id === 'src-info-block') { block.classList.add('side-actions'); return; }
+    if (block.classList.contains('no-selection')) { block.classList.remove('side-actions'); return; }
+    // 其余块：横排态读左栏自然高度，再临时竖排读按钮列占用高度，左栏 >= 按钮列才保持竖排。
+    block.classList.remove('side-actions');
+    const mainH = main.getBoundingClientRect().height;
+    block.classList.add('side-actions');
+    const actionsH = actions.getBoundingClientRect().height;
+    block.classList.toggle('side-actions', mainH >= actionsH);
+  });
+}
+window.addEventListener('resize', () => {
+  if (srcLayoutTimer) clearTimeout(srcLayoutTimer);
+  srcLayoutTimer = setTimeout(syncSrcBlockLayout, 120);
+});
+
+/** 添加曲源独立窗口：重置表单后显示，焦点落在名称输入。 */
+function openSourceAddModal() {
+  $('add-src-name').value = '';
+  $('add-src-path').value = '';
+  $('add-src-netease').checked = false;
+  $('add-src-enabled').checked = true;
+  $('add-src-probe').textContent = '';
+  document.querySelectorAll('input[name="add-src-mode"]').forEach((r) => {
+    r.checked = r.value === 'copy';
+  });
+  syncSourceModeUI('add-src');
+  $('sources-modal').hidden = false;
+  $('add-src-name').focus();
+}
+
+function closeSourceAddModal() {
   $('sources-modal').hidden = true;
 }
 
@@ -3919,251 +4503,463 @@ function closeSourcesModal() {
 async function loadSources() {
   const { data } = await api('/api/sources');
   if (!data || !data.ok) {
-    setHint((data && data.error) || '读取曲库来源失败');
+    setHint((data && data.error) || '读取曲源失败');
     return;
   }
   state.sources = data.sources || [];
   if (typeof data.pending_duplicates === 'number') updateDupBadge(data.pending_duplicates);
   if (typeof data.ncm_ready === 'boolean') state.ncm_ready = data.ncm_ready;
+  // 内置「本地曲库」不在 /api/sources 返回的真实列表里，选中态不能被这段清理掉。
+  if (state.sourcesCurrentId && state.sourcesCurrentId !== LOCAL_LIBRARY_ID
+      && !state.sources.some((s) => s.id === state.sourcesCurrentId)) {
+    state.sourcesCurrentId = '';
+  }
   renderSourcesList();
   renderSourceForm();
-  renderSourcesNcm();
 }
 
-/** 统一维护左侧选中态（来源项 / 新增态 / 固定项）。 */
-function syncSourcesActive() {
-  document.querySelectorAll('#sources-modal .settings-tab').forEach((t) => {
-    let on;
-    if (t.dataset.new === '1') {
-      on = state.sourcesPane === 'source' && state.sourcesAdding;
-    } else if (t.dataset.sourceId) {
-      on = state.sourcesPane === 'source' && !state.sourcesAdding
-        && t.dataset.sourceId === state.sourcesCurrentId;
-    } else {
-      on = t.dataset.pane === state.sourcesPane;
-    }
-    t.classList.toggle('active', on);
-  });
-}
-
-function activateSourcesPane(pane) {
-  const target = SOURCES_FIXED_PANES.includes(pane) ? pane : 'source';
-  state.sourcesPane = target;
-  document.querySelectorAll('#sources-modal .settings-pane').forEach((p) => {
-    p.classList.toggle('active', p.dataset.pane === target);
-  });
-  syncSourcesActive();
-  const content = document.querySelector('#sources-modal .settings-content');
-  if (content) content.scrollTop = 0;
-  if (target === 'duplicates') loadSourcesDuplicates();
-  if (target === 'ncm') renderSourcesNcm();
-}
-
-/** 左侧列表：来源项（停用灰显）+ 新增态占位。固定项在 HTML 里已声明。 */
+/** 曲源信息列表（v0.12.14 A1）：与歌曲表同口径的简约紧凑单行 —— 名称 + 状态圆点。
+ *  路径 / 类型 / 导入方式 / 启用 / 状态文案不再常显，统一放进 title 悬停提示；
+ *  右侧详情表单仍是完整信息源。class / data-source-id / .src-state / .is-off / .is-builtin 保持不变。 */
 function renderSourcesList() {
   const box = $('sources-list');
   if (!box) return;
+  const L = sourceLabels();
   box.innerHTML = '';
-  if (!state.sources.length && !state.sourcesAdding) {
+  if (!state.sources.length) {
     const empty = document.createElement('div');
     empty.className = 'sources-empty';
-    empty.style.padding = '12px';
-    empty.textContent = '暂无来源';
+    empty.textContent = '暂无外部曲源';
     box.appendChild(empty);
   }
   state.sources.forEach((s) => {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'settings-tab' + (s.enabled ? '' : ' is-off');
-    btn.dataset.pane = 'source';
+    btn.className = 'settings-tab src-item' + (s.enabled ? '' : ' is-off')
+      + (s.id === state.sourcesCurrentId ? ' active' : '');
     btn.dataset.sourceId = s.id;
-    btn.innerHTML = `<span><strong>${esc(s.name || s.path || '未命名来源')}</strong>` +
-      `<small>${esc(s.path || '未设置目录')}${s.is_netease ? ' · 网易云' : ''}</small></span>`;
+    const name = s.name || s.path || '未命名曲源';
+    const path = s.path || '未设置目录';
+    const st = state.sourceStatus[s.id] || 'idle';
+    const stLabel = { idle: L.stIdle, running: L.stRunning, done: L.stDone, error: L.stError }[st] || L.stIdle;
+    btn.title = `${name}\n${path}\n${s.is_netease ? L.typeNetease : L.typeLocal}，`
+      + `${s.mode === 'move' ? L.modeMove : L.modeCopy}，${s.enabled ? L.enabled : L.disabled}，${stLabel}`;
+    btn.innerHTML = `<span class="src-row"><strong>${esc(name)}</strong>` +
+      `<span class="src-state st-${esc(st)}" title="${esc(stLabel)}"></span></span>`;
     btn.addEventListener('click', () => {
-      state.sourcesAdding = false;
-      state.sourcesCurrentId = s.id;
-      state.sourcesProbe = null;
+      // v0.14.9：点已展开的曲源再点一次 = 收起（chevron ▾→▸）；点别的 = 展开该项。
+      state.sourcesCurrentId = state.sourcesCurrentId === s.id ? '' : s.id;
       renderSourcesList();
       renderSourceForm();
-      activateSourcesPane('source');
     });
     box.appendChild(btn);
   });
-  if (state.sourcesAdding) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'settings-tab';
-    btn.dataset.new = '1';
-    btn.innerHTML = '<span><strong>＋ 新来源</strong><small>选择一个本地目录</small></span>';
-    box.appendChild(btn);
-  }
-  syncSourcesActive();
+  // v0.12.12：内置特殊曲源，永远排在最后（与后端 groups 的 chain(once(...)) 顺序一致）。
+  // 不写配置、不占 id、不参与更新；点它只展示只读详情，删除 / 改名 / 导入入口全部不可用。
+  const builtin = document.createElement('button');
+  builtin.type = 'button';
+  builtin.className = 'settings-tab src-item is-builtin'
+    + (state.sourcesCurrentId === LOCAL_LIBRARY_ID ? ' active' : '');
+  builtin.dataset.sourceId = LOCAL_LIBRARY_ID;
+  builtin.dataset.builtin = '1';
+  builtin.title = `${L.localLibrary}\n${state.library_dir || '（未设置曲库目录）'}\n`
+    + `${L.typeLibrary}，${L.builtinMeta}`;
+  builtin.innerHTML = `<span class="src-row"><strong>${esc(L.localLibrary)}</strong>` +
+    `<span class="src-state st-builtin" title="${esc(L.typeLibrary)}，${esc(L.builtinMeta)}"></span></span>`;
+  builtin.addEventListener('click', () => {
+    state.sourcesCurrentId = state.sourcesCurrentId === LOCAL_LIBRARY_ID ? '' : LOCAL_LIBRARY_ID;
+    renderSourcesList();
+    renderSourceForm();
+  });
+  box.appendChild(builtin);
 }
 
-function renderSourcesNcm() {
-  const el = $('src-ncm-status');
+// ==========================================================================
+// v0.12.11 曲源列表概要 / 串行更新汇总
+// 所有动态文案集中在此处以字面量 key 调用翻译函数，供 check_i18n.py 校验无未使用条目。
+// ==========================================================================
+state.sourceUpdatingAll = false;
+state.sourceSummary = { done: 0, total: 0, imported: 0, skipped: 0 };
+state.unspecifiedSourceId = LOCAL_LIBRARY_ID;
+
+function sourceLabels() {
+  return {
+    importOnce: t('sources.import_once', { _fallback: '导入此曲源' }),
+    del: t('sources.delete', { _fallback: '删除' }),
+    enabled: t('sources.enabled', { _fallback: '启用' }),
+    disabled: t('sources.disabled', { _fallback: '停用' }),
+    stIdle: t('sources.status_idle', { _fallback: '待导入' }),
+    stRunning: t('sources.status_running', { _fallback: '导入中' }),
+    stDone: t('sources.status_done', { _fallback: '已完成' }),
+    stError: t('sources.status_error', { _fallback: '导入失败' }),
+    modeCopy: t('sources.mode_copy', { _fallback: '复制' }),
+    modeMove: t('sources.mode_move', { _fallback: '移动' }),
+    typeNetease: t('sources.type_netease', { _fallback: '网易云曲源' }),
+    typeLocal: t('sources.type_local', { _fallback: '本地曲源' }),
+    localLibrary: t('sources.local_library', { _fallback: '本地曲库' }),
+    typeLibrary: t('sources.type_library', { _fallback: '内置曲源' }),
+    builtinMeta: t('sources.builtin_meta', { _fallback: '内置，不可删除' }),
+    builtinTip: t('sources.builtin_tip', {
+      _fallback: '曲库文件夹内由扫描登记的歌曲自动归入此曲源。它是内置项，不能改名、不能删除，也不参与「导入全部曲源」。' }),
+    tipReadonly: t('sources.tip_readonly', {
+      _fallback: '曲库是本地管理的曲库文件夹，曲源是外部上游目录；这里的重命名与删除不会改动曲库，也不会改动原始文件夹。' }),
+    tipRename: t('sources.tip_rename', {
+      _fallback: '仅改显示名称，不影响实际目录，也不改变已导入歌曲的归属。' }),
+  };
+}
+
+function sourceGroupName(g) {
+  if (!g) return '';
+  return g.id === state.unspecifiedSourceId
+    ? t('sources.local_library', { _fallback: '本地曲库' })
+    : (g.name || g.id);
+}
+
+let sourceSummaryHideTimer = null;
+
+// v0.16.2：汇总行仅作更新/导入后的操作反馈；空闲态隐藏。
+// settle=true 表示本次操作已收尾，2.5s 后自动收起（与进度面板完成态节奏一致）。
+function renderSourceSummary(settle) {
+  const s = state.sourceSummary;
+  const el = $('ov-summary');
   if (!el) return;
-  el.textContent = state.ncm_ready
-    ? ('已启用：' + (state.ncm_tool || ''))
-    : '未配置（无 NCM 工具时，.ncm 文件会进入 download/pendingNcm 暂存）';
-  if ($('src-ncm-input') && !$('src-ncm-input').value) $('src-ncm-input').value = state.ncm_tool || '';
-}
-
-/** 右侧表单：编辑态 / 新增态 / 空态。 */
-function renderSourceForm() {
-  const s = state.sources.find((x) => x.id === state.sourcesCurrentId);
-  const adding = state.sourcesAdding || !s;
-  const show = !!s || state.sourcesAdding;
-  $('src-form').hidden = !show;
-  $('src-empty').hidden = show;
-  if (!show) {
-    $('src-detail-title').textContent = '来源详情';
-    $('src-detail-sub').textContent = '选择左侧来源查看与编辑；新增来源请点左下按钮。';
-    return;
+  el.textContent = t('sources.summary', {
+    done: s.done, total: s.total, imported: s.imported, skipped: s.skipped,
+    _fallback: `已完成 ${s.done}/${s.total}，入库 ${s.imported}，跳过 ${s.skipped}`,
+  });
+  el.hidden = false;
+  if (sourceSummaryHideTimer) { clearTimeout(sourceSummaryHideTimer); sourceSummaryHideTimer = null; }
+  if (settle) {
+    sourceSummaryHideTimer = setTimeout(() => {
+      el.hidden = true;
+      sourceSummaryHideTimer = null;
+    }, 2500);
   }
-  $('src-detail-title').textContent = adding ? '新增来源' : (s.name || '来源详情');
-  $('src-detail-sub').textContent = adding
-    ? '选择一个本地歌曲目录，系统会自动检测它是否是网易云曲库。'
-    : '可修改名称、目录、导入方式，或立即按此来源更新曲库。';
-  $('src-name').value = adding ? '' : (s.name || '');
-  $('src-path').value = adding ? '' : (s.path || '');
-  $('src-netease').checked = adding ? false : !!s.is_netease;
-  $('src-enabled').checked = adding ? true : !!s.enabled;
-  const mode = adding ? 'copy' : (s.mode || 'copy');
-  document.querySelectorAll('input[name="src-mode"]').forEach((r) => { r.checked = r.value === mode; });
-  $('src-delete').hidden = adding;
-  $('src-import').hidden = adding;
-  $('src-save').textContent = adding ? '添加来源' : '保存设置';
-  $('src-probe').textContent = adding ? '选择目录后自动检测来源类型' : '';
-  syncSourceModeUI();
 }
 
-/** 复制 / 移动卡片状态：网易云来源强制复制并禁用「移动」。 */
-function syncSourceModeUI() {
-  const forced = $('src-netease').checked;
+/** 更新全部曲源：严格按列表顺序串行 await（全局只有一份 import_progress，并发会互相覆盖）。 */
+async function updateAllEnabledSources() {
+  if (state.sourceUpdatingAll) return;
+  const enabled = (state.sources || []).filter((s) => s.enabled);
+  state.sourceUpdatingAll = true;
+  state.sourceSummary = { done: 0, total: enabled.length, imported: 0, skipped: 0 };
+  renderSourceSummary();
+  const btn = $('ov-update-all');
+  if (btn) btn.disabled = true;
+  try {
+    for (const s of enabled) {
+      const r = await importSource(s.id, { silent: true });
+      state.sourceSummary.done += 1;
+      if (r && r.ok) {
+        state.sourceSummary.imported += r.imported || 0;
+        state.sourceSummary.skipped += r.skipped || 0;
+      }
+      renderSourceSummary();
+    }
+  } finally {
+    state.sourceUpdatingAll = false;
+    if (btn) btn.disabled = false;
+    renderSourceSummary(true);
+    if (state.activeTab === 'sources') await loadSourceGroups();
+  }
+}
+
+// ==========================================================================
+// v0.12.7 rail 曲源页：二级按 source.id 分组，三级复用 renderBrowseTracks()
+// ==========================================================================
+async function loadSourceGroups() {
+  const { data } = await api('/api/sources/groups');
+  if (!data || !data.ok) return;
+  state.sourceGroups = data.groups || [];
+  state.unspecifiedSourceId = data.unspecified_id || 'local_scan';
+  const cur = state.currentSource && state.currentSource.id;
+  if (cur && !state.sourceGroups.some((g) => g.id === cur)) state.currentSource = null;
+  renderSourceGroups();
+  if (state.currentSource) await loadSourceTracks(state.currentSource.id);
+}
+
+function renderSourceGroups() {
+  const items = (state.sourceGroups || []).map((g) => ({
+    id: g.id, name: sourceGroupName(g), track_count: g.count || 0,
+  }));
+  renderGroupList('sv-list', items, '暂无曲源', 'id', state.currentSource && state.currentSource.id);
+}
+
+async function loadSourceTracks(id) {
+  const { data } = await api('/api/sources/tracks?id=' + encodeURIComponent(id));
+  state.currentSource = (state.sourceGroups || []).find((g) => g.id === id)
+    || { id: id, name: id, count: 0 };
+  state.sourceTracks = (data && data.tracks) || [];
+  const title = $('sv-title');
+  if (title) title.textContent = sourceGroupName(state.currentSource);
+  const cnt = $('sv-count');
+  if (cnt) cnt.textContent = state.sourceTracks.length + ' 首';
+  renderSourceGroups();
+  renderBrowseTracks('sv-content', state.sourceTracks, '该曲源暂无歌曲');
+  state.viewSelection.sources = null;
+  renderActiveDetail();
+}
+
+
+/** 内置「本地曲库」只读态：禁用字段 + 禁用按钮（CSS 按 .is-builtin 另把右栏动作整体隐藏）。 */
+function setSourceFormReadonly(ro) {
+  $('src-form').classList.toggle('is-builtin', ro);
+  const block = $('src-info-block');
+  if (block) block.classList.toggle('is-builtin', ro);
+  ['src-name', 'src-path', 'src-netease', 'src-enabled', 'src-browse',
+    'src-save', 'src-import', 'src-delete'].forEach((id) => {
+    const el = $(id);
+    if (el) el.disabled = ro;
+  });
+  document.querySelectorAll('input[name="src-mode"]').forEach((r) => { r.disabled = ro; });
+}
+
+/** 右侧详情：真实曲源可编辑；内置「本地曲库」只展示只读信息，不提供任何写操作。 */
+function renderSourceForm() {
+  const builtin = state.sourcesCurrentId === LOCAL_LIBRARY_ID;
+  const s = builtin ? null : state.sources.find((x) => x.id === state.sourcesCurrentId);
+  const L = sourceLabels();
+  $('src-form').hidden = !s && !builtin;
+  $('src-empty').hidden = !!s || builtin;
+  // v0.14.9：收起（未选中任何曲源）时右栏动作一并隐藏，避免留下无目标的按钮。
+  const infoBlock = $('src-info-block');
+  if (infoBlock) infoBlock.classList.toggle('no-selection', !s && !builtin);
+  // 每次都先复位，保证从内置项切回真实曲源时表单完全恢复可编辑。
+  setSourceFormReadonly(false);
+  if (!s && !builtin) { syncSrcBlockLayout(); return; }
+  $('src-detail-title').textContent = builtin ? L.localLibrary : (s.name || '曲源详情');
+  $('src-detail-sub').textContent = builtin ? L.builtinTip
+    : '可修改名称、目录、导入方式，或立即按此曲源导入曲库。';
+  $('src-name').value = builtin ? L.localLibrary : (s.name || '');
+  $('src-path').value = builtin ? (state.library_dir || '') : (s.path || '');
+  $('src-netease').checked = builtin ? false : !!s.is_netease;
+  $('src-enabled').checked = builtin ? true : !!s.enabled;
   document.querySelectorAll('input[name="src-mode"]').forEach((r) => {
+    r.checked = builtin ? r.value === 'copy' : r.value === (s.mode || 'copy');
+  });
+  $('src-probe').textContent = '';
+  if (builtin) { setSourceFormReadonly(true); syncSrcBlockLayout(); return; }
+  syncSourceModeUI('src');
+  syncSrcBlockLayout();
+}
+
+/** 复制 / 移动卡片状态：网易云来源强制复制并禁用「移动」。p = 'src'（详情）/ 'add-src'（添加窗口）。 */
+function syncSourceModeUI(p) {
+  const prefix = p || 'src';
+  const forced = $(prefix + '-netease').checked;
+  document.querySelectorAll(`input[name="${prefix}-mode"]`).forEach((r) => {
     r.disabled = forced && r.value === 'move';
     if (r.disabled) r.checked = false;
   });
   if (forced) {
-    const copy = document.querySelector('input[name="src-mode"][value="copy"]');
+    const copy = document.querySelector(`input[name="${prefix}-mode"][value="copy"]`);
     if (copy) copy.checked = true;
   }
-  syncSourceOptionState();
+  syncSourceOptionState(prefix);
 }
-function syncSourceOptionState() {
-  document.querySelectorAll('#src-mode-options .imp-option').forEach((label) => {
+function syncSourceOptionState(p) {
+  const prefix = p || 'src';
+  document.querySelectorAll(`#${prefix}-mode-options .imp-option`).forEach((label) => {
     const input = label.querySelector('input[type="radio"]');
     if (input) label.classList.toggle('is-checked', input.checked);
   });
 }
 
-/** 只读探测：选目录 / 手填路径后自动得出「是否网易云曲库 / 是否有 .ncm」。 */
-async function probeSourceDir(path, quiet) {
+/** 只读探测：选目录 / 手填路径后自动得出「是否网易云曲库 / 是否有 .ncm」。
+ *  guide=true 时，添加曲源场景探测到网易云且无工具会引导配置 NCM 工具。 */
+async function probeSourceDir(path, quiet, p, guide) {
   if (!path) return null;
+  const prefix = p || 'src';
   const { data } = await api('/api/sources/probe', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }),
   });
   if (!data || !data.ok) {
     if (!quiet) setHint((data && data.error) || '检测来源目录失败');
-    state.sourcesProbe = null;
     return null;
   }
-  state.sourcesProbe = Object.assign({ path }, data);
   const bits = [];
   if (!data.exists) bits.push('目录当前不可访问');
   else bits.push(data.is_netease
     ? '检测为网易云曲库：只加不删，强制复制' : '普通本地目录：可选复制或移动');
-  if (data.ncm_found) bits.push('发现 .ncm 文件，可在「NCM 工具」页配置解密工具');
-  $('src-probe').textContent = bits.join('；');
-  return state.sourcesProbe;
+  if (data.ncm_found) bits.push(state.ncm_ready
+    ? t('sources.ncm_found_ready', { _fallback: '发现 .ncm 加密文件，导入时会转换' })
+    : t('sources.ncm_found_pending', { _fallback: '发现 .ncm 加密文件，未安装插件时会跳过并留在源目录' }));
+  const el = $(prefix + '-probe');
+  if (el) el.textContent = bits.join('；');
+  if (guide && prefix === 'add-src') await maybeGuideNcmTool(data);
+  return Object.assign({ path }, data);
 }
 
-async function pickSourceDir() {
+/** 添加曲源探测到网易云且未安装 NCM 插件时引导；会话内只提示一次。 */
+async function maybeGuideNcmTool(data) {
+  if (state.ncm_ready || state.ncmGuideShown) return;
+  if (!data.is_netease || !data.ncm_found) return;
+  state.ncmGuideShown = true;
+  const choice = await showDialog({
+    title: t('sources.ncm_guide_title', { _fallback: '检测到网易云加密歌曲' }),
+    text: t('sources.ncm_guide_text', {
+      _fallback: '该目录包含 .ncm 加密文件。未安装 NCM 插件时会跳过并留在源目录，只导入普通音频；安装插件后导入曲源即可处理。',
+    }),
+    okText: t('sources.ncm_setup_now', { _fallback: '现在安装' }),
+    cancelText: t('sources.ncm_setup_later', { _fallback: '暂不安装' }),
+    cancelValue: 'later',
+  });
+  if (choice === 'later') return;
+  closeSourceAddModal();
+  openSettings();
+  activateSettingsTab('plugins');
+  refreshPluginsPage();
+}
+
+async function pickSourceDir(p) {
+  const prefix = p || 'src';
   const { data } = await api('/api/pick-folder', { method: 'POST' });
   if (data && data.ok && !data.canceled && data.path) {
-    $('src-path').value = data.path;
-    const probe = await probeSourceDir(data.path);
+    $(prefix + '-path').value = data.path;
+    const probe = await probeSourceDir(data.path, false, prefix, true);
     if (probe) {
-      if (!$('src-name').value.trim()) $('src-name').value = probe.suggested_name || '';
-      if (state.sourcesAdding) $('src-netease').checked = !!probe.is_netease;
+      if (!$((prefix + '-name')).value.trim()) $(prefix + '-name').value = probe.suggested_name || '';
+      if (prefix === 'add-src') $(prefix + '-netease').checked = !!probe.is_netease;
     }
-    syncSourceModeUI();
+    syncSourceModeUI(prefix);
   } else if (!data || !data.ok) {
     setHint((data && data.error) || '打开文件夹选择失败');
   }
 }
 
-async function saveSource() {
-  const path = $('src-path').value.trim();
-  if (!path) { setHint('请先选择或输入来源目录'); return; }
-  const probe = await probeSourceDir(path);
-  if (!probe || !probe.exists) { setHint('来源目录不存在或不可访问'); return; }
-  const adding = state.sourcesAdding || !state.sourcesCurrentId;
-  if (adding && probe) { $('src-netease').checked = !!probe.is_netease; syncSourceModeUI(); }
-  const modeInput = document.querySelector('input[name="src-mode"]:checked');
-  const payload = {
-    name: $('src-name').value.trim() || probe.suggested_name || '新来源',
+/** 构造一份曲源 payload（两套表单共用同一组字段与端点）。 */
+async function sourcePayload(prefix) {
+  const path = $(prefix + '-path').value.trim();
+  if (!path) { setHint('请先选择或输入来源目录'); return null; }
+  const probe = await probeSourceDir(path, false, prefix);
+  if (!probe || !probe.exists) { setHint('来源目录不存在或不可访问'); return null; }
+  // 添加窗口以只读探测结果为准（编辑态保留用户手动更正的类型）。
+  if (prefix === 'add-src') {
+    $(prefix + '-netease').checked = !!probe.is_netease;
+    syncSourceModeUI(prefix);
+  }
+  const netease = $(prefix + '-netease').checked;
+  const modeInput = document.querySelector(`input[name="${prefix}-mode"]:checked`);
+  return {
+    name: $(prefix + '-name').value.trim() || probe.suggested_name || '新来源',
     path,
-    is_netease: $('src-netease').checked,
-    mode: $('src-netease').checked ? 'copy' : (modeInput ? modeInput.value : 'copy'),
-    enabled: $('src-enabled').checked,
+    is_netease: netease,
+    mode: netease ? 'copy' : (modeInput ? modeInput.value : 'copy'),
+    enabled: $(prefix + '-enabled').checked,
   };
-  const { data } = await api(
-    adding ? '/api/sources' : `/api/sources/${encodeURIComponent(state.sourcesCurrentId)}`,
-    {
-      method: adding ? 'POST' : 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    }
-  );
+}
+
+/** 右侧详情「保存设置」：只 PUT 当前曲源。 */
+async function saveSource() {
+  // 内置「本地曲库」没有可写的配置记录，禁止走 sourcePayload / PUT。
+  if (!state.sourcesCurrentId || state.sourcesCurrentId === LOCAL_LIBRARY_ID) return;
+  const payload = await sourcePayload('src');
+  if (!payload) return;
+  const { data } = await api(`/api/sources/${encodeURIComponent(state.sourcesCurrentId)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
   if (!data || !data.ok) { setHint((data && data.error) || '保存来源失败'); return; }
   state.sources = data.sources || state.sources;
-  state.sourcesAdding = false;
-  state.sourcesCurrentId = (data.source && data.source.id) || state.sourcesCurrentId;
-  setHint(adding ? '来源已添加' : '来源设置已保存');
+  setHint('来源设置已保存');
   renderSourcesList();
   renderSourceForm();
-  activateSourcesPane('source');
+}
+
+/** 独立窗口「添加曲源」：POST 新曲源，成功后关闭窗口并在子页选中它。 */
+async function saveAddSource() {
+  const payload = await sourcePayload('add-src');
+  if (!payload) return;
+  const { data } = await api('/api/sources', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!data || !data.ok) { setHint((data && data.error) || '添加曲源失败'); return; }
+  state.sources = data.sources || state.sources;
+  state.sourcesCurrentId = (data.source && data.source.id) || '';
+  closeSourceAddModal();
+  setHint('来源已添加');
+  renderSourcesList();
+  renderSourceForm();
+  if (state.activeTab === 'sources') loadSourceGroups();
 }
 
 async function deleteSource() {
+  // 内置「本地曲库」不可删除：按 id 先拦一道，find 不到真实记录再兜底。
+  if (state.sourcesCurrentId === LOCAL_LIBRARY_ID) return;
   const s = state.sources.find((x) => x.id === state.sourcesCurrentId);
   if (!s) return;
+  const L = sourceLabels();
   const yes = await showDialog({
-    title: '删除来源',
-    text: `确定删除「${s.name || s.path}」吗？只移除这条来源记录，不会删除曲库或源目录里的任何文件。`,
-    okText: '删除',
+    title: L.del,
+    text: t('sources.delete_confirm', {
+      name: s.name || s.path,
+      _fallback: `确定删除「${s.name || s.path}」吗？只移除这条曲源记录，不会删除曲库或源目录里的任何文件。`,
+    }),
+    okText: L.del,
   });
   if (!yes) return;
   const { data } = await api(`/api/sources/${encodeURIComponent(s.id)}`, { method: 'DELETE' });
   if (!data || !data.ok) { setHint((data && data.error) || '删除来源失败'); return; }
   state.sources = data.sources || [];
   state.sourcesCurrentId = '';
-  state.sourcesAdding = false;
-  state.sourcesProbe = null;
   setHint('来源已删除');
   renderSourcesList();
   renderSourceForm();
-  activateSourcesPane('source');
+  if (state.activeTab === 'sources') loadSourceGroups();
 }
 
-/** 按来源导入：网易云来源在后端强制复制（只加不删），普通来源按所选方式。 */
-async function importSource() {
-  const s = state.sources.find((x) => x.id === state.sourcesCurrentId);
-  if (!s) return;
-  if (!s.enabled) { setHint('该来源已停用，请先启用并保存'); return; }
-  showProgressPanel(`来源 · ${s.name || s.path}`);
+/** 按来源导入：网易云来源在后端强制复制（只加不删），普通来源按所选方式。
+ *  v0.12.11：可显式传 id（串行更新复用）；opts.silent 表示由汇总条统一反馈。
+ *  返回 { ok, imported, skipped, pending, held, failed } 供串行更新累计。 */
+async function importSource(id, opts) {
+  const sid = id || state.sourcesCurrentId;
+  // 内置「本地曲库」不是上游目录，不能按曲源导入（避免曲库复制到自身）。
+  if (sid === LOCAL_LIBRARY_ID) return { ok: false };
+  const s = state.sources.find((x) => x.id === sid);
+  if (!s) return { ok: false };
+  if (!s.enabled) {
+    if (!opts || !opts.silent) setHint('该曲源已停用，请先启用并保存');
+    return { ok: false };
+  }
+  state.sourceStatus[s.id] = 'running';
+  renderSourcesList();
+  showProgressPanel(`曲源：${s.name || s.path}`);
   startProgressPolling();
   const { data } = await api(`/api/sources/${encodeURIComponent(s.id)}/import`, { method: 'POST' });
-  stopProgressPolling();
-  if (!data || !data.ok) { setHint((data && data.error) || '来源更新失败'); return; }
-  setHint(`来源更新完成：入库 ${data.imported}，跳过 ${data.skipped}` +
-    `${data.pending ? `，待转换 ${data.pending}` : ''}${data.held ? `，重复挂起 ${data.held}` : ''}，失败 ${data.failed}`);
+  finishProgressTask();
+  state.sourceStatus[s.id] = (data && data.ok) ? 'done' : 'error';
+  renderSourcesList();
+  if (!data || !data.ok) {
+    if (!opts || !opts.silent) setHint((data && data.error) || '曲源导入失败');
+    return { ok: false };
+  }
+  if (!opts || !opts.silent) {
+    // v0.16.2：单曲源导入也显示汇总反馈（串行更新由 updateAllEnabledSources 统一累计，不在此覆盖）
+    state.sourceSummary = { done: 1, total: 1, imported: data.imported || 0, skipped: data.skipped || 0 };
+    renderSourceSummary(true);
+    setHint(`曲源导入完成：入库 ${data.imported}，跳过 ${data.skipped}` +
+      `${data.ncm_skipped ? `（含 ${data.ncm_skipped} 个加密文件，未配置工具）` : ''}${data.held ? `，重复挂起 ${data.held}` : ''}，失败 ${data.failed}`);
+  }
   await refreshDuplicateBadge();
-  if (data.held) activateSourcesPane('duplicates');
+  if (data.held && (!opts || !opts.silent)) {
+    // 待处理重复已是曲源总览子页的第 3 块：滚到该块并刷新，不再切分页。
+    await loadSourcesDuplicates();
+    const block = $('src-dup-section');
+    if (block && block.scrollIntoView) block.scrollIntoView({ block: 'start' });
+  }
   loadTracks($('search').value);
+  // 归属可能已修正（替换 / 新入库），曲源页分组按需重算。
+  if (state.activeTab === 'sources') loadSourceGroups();
+  return {
+    ok: true,
+    imported: Number(data.imported) || 0,
+    skipped: Number(data.skipped) || 0,
+    pending: Number(data.pending) || 0,
+    held: Number(data.held) || 0,
+    failed: Number(data.failed) || 0,
+  };
 }
 
 /** 来源管理内的「待处理重复」页：与原对比弹窗共用渲染 / 决策逻辑。 */
@@ -4178,54 +4974,56 @@ async function loadSourcesDuplicates() {
   $('src-dup-count').textContent = list.length
     ? `共 ${list.length} 组待处理（全部未决组一次展示）` : '暂无待处理的重复组';
   $('src-dup-path').textContent = state.duplicatesDir
-    ? `挂起文件：${state.duplicatesDir}（稍后处理不会移动文件）` : '';
+    ? `挂起文件：${state.duplicatesDir}（暂不处理不会移动文件）` : '';
   renderDuplicateGroups(list, $('src-dup-groups'));
 }
 
-$('sources-close').addEventListener('click', closeSourcesModal);
-$('sources-add').addEventListener('click', () => {
-  state.sourcesAdding = true;
-  state.sourcesCurrentId = '';
-  state.sourcesProbe = null;
-  renderSourcesList();
-  renderSourceForm();
-  activateSourcesPane('source');
-  $('src-path').focus();
+// ---------- v0.12.11 曲源总览子页 / 添加曲源独立窗口 / rail 曲源页事件绑定 ----------
+$('sources-close').addEventListener('click', closeSourceAddModal);
+$('add-src-cancel').addEventListener('click', closeSourceAddModal);
+$('sources-add').addEventListener('click', openSourceAddModal);
+$('add-src-browse').addEventListener('click', () => pickSourceDir('add-src'));
+$('add-src-netease').addEventListener('change', () => syncSourceModeUI('add-src'));
+document.querySelectorAll('input[name="add-src-mode"]').forEach((r) =>
+  r.addEventListener('change', () => syncSourceOptionState('add-src')));
+$('add-src-path').addEventListener('blur', async () => {
+  const p = $('add-src-path').value.trim();
+  if (!p) return;
+  const probe = await probeSourceDir(p, true, 'add-src');
+  if (probe) {
+    $('add-src-netease').checked = !!probe.is_netease;
+    if (!$('add-src-name').value.trim()) $('add-src-name').value = probe.suggested_name || '';
+    syncSourceModeUI('add-src');
+  }
 });
-document.querySelectorAll('#sources-modal .sources-fixed').forEach((tab) => {
-  tab.addEventListener('click', () => {
-    // 「手动导入文件夹」沿用原通用导入弹窗，零行为改动。
-    if (tab.dataset.pane === 'manual') { openImportModal(); return; }
-    activateSourcesPane(tab.dataset.pane);
-  });
-});
-$('src-browse').addEventListener('click', pickSourceDir);
-$('src-netease').addEventListener('change', syncSourceModeUI);
+$('add-src-save').addEventListener('click', saveAddSource);
+
+$('src-browse').addEventListener('click', () => pickSourceDir('src'));
+$('src-netease').addEventListener('change', () => syncSourceModeUI('src'));
 document.querySelectorAll('input[name="src-mode"]').forEach((r) =>
-  r.addEventListener('change', syncSourceOptionState));
+  r.addEventListener('change', () => syncSourceOptionState('src')));
 $('src-path').addEventListener('blur', async () => {
   const p = $('src-path').value.trim();
-  if (!p || (state.sourcesProbe && state.sourcesProbe.path === p)) return;
-  const probe = await probeSourceDir(p, true);
-  if (probe && state.sourcesAdding) {
-    $('src-netease').checked = !!probe.is_netease;
-    if (!$('src-name').value.trim()) $('src-name').value = probe.suggested_name || '';
-    syncSourceModeUI();
-  }
+  if (!p) return;
+  await probeSourceDir(p, true, 'src');
 });
 $('src-save').addEventListener('click', saveSource);
 $('src-delete').addEventListener('click', deleteSource);
-$('src-import').addEventListener('click', importSource);
-$('src-ncm-pick').addEventListener('click', () => pickNcmTool('src-ncm-input'));
-$('src-ncm-apply').addEventListener('click', () => applyNcmTool('src-ncm-input', 'src-ncm-copy'));
-$('src-ncm-organize').addEventListener('click', () => {
-  if (!$('src-ncm-input').value.trim()) {
-    setHint('请先指定 NCM 工具文件；应用后会自动回补积压的 .ncm');
-    return;
-  }
-  applyNcmTool('src-ncm-input', 'src-ncm-copy');
+$('src-import').addEventListener('click', () => importSource());
+$('ov-update-all').addEventListener('click', updateAllEnabledSources);
+$('sv-refresh').addEventListener('click', loadSourceGroups);
+$('sv-list').addEventListener('click', async (e) => {
+  const li = e.target.closest('li[data-id]');
+  if (!li || li.classList.contains('pl-empty')) return;
+  await loadSourceTracks(li.dataset.id);
 });
-
+$('sv-list').addEventListener('dblclick', (e) => {
+  const li = e.target.closest('li[data-id]');
+  if (!li || li.classList.contains('pl-empty')) return;
+  const first = (state.sourceTracks || []).find((x) => Number(x.local_id) > 0);
+  if (first) startPlayback(first, 'sources', { fullGroup: true });
+  else setHint('该曲源暂无可播放的歌曲');
+});
 // ---------- 下载管理（队列监控 / 控制）----------
 function openDownloads() {
   $('downloads-panel').hidden = false;
@@ -4333,7 +5131,6 @@ function showInitWizard() {
   } else {
     $('wiz-name-input').value = '';
   }
-  $('wiz-ncm-input').value = '';
   $('wiz-netease-input').value = '';
   $('wiz-netease-status').textContent = '';
   renderWizStep();
@@ -4373,7 +5170,7 @@ async function wizProbeForNcm() {
   wizNeedNcm = hit;
   if (sourcePath && sourceProbe) {
     $('wiz-netease-status').textContent = sourceProbe.is_netease
-      ? '检测为网易云曲库：按只加不删逻辑更新，并强制使用复制方式'
+      ? '检测为网易云曲库：按只加不删逻辑导入，并强制使用复制方式'
       : (sourceProbe.ncm_found ? '发现 .ncm 文件，下一步可指定解密工具' : '普通本地目录：可选复制或移动');
   } else if (sourcePath) {
     $('wiz-netease-status').textContent = '已选择：' + sourcePath;
@@ -4416,7 +5213,6 @@ $('wiz-next').addEventListener('click', async () => {
 });
 $('wiz-prev').addEventListener('click', () => { if (wizStep > 1) { wizStep--; renderWizStep(); } });
 $('wiz-skip').addEventListener('click', finishInit);
-$('wiz-ncm-pick').addEventListener('click', () => pickNcmTool('wiz-ncm-input'));
 $('wiz-finish').addEventListener('click', finishInit);
 
 async function finishInit() {
@@ -4432,9 +5228,7 @@ async function finishInit() {
   if (!r.data || !r.data.ok) { setHint((r.data && r.data.error) || '初始化失败'); return; }
   state.library_dir = r.data.library_dir;
   state.library_name = r.data.library_name || library_name;
-  // 条件步骤：仅当 NCM 引导确实出现过、且用户填了工具路径才应用。
-  const ncmPath = $('wiz-ncm-input').value.trim();
-  if (wizNeedNcm && ncmPath) await applyNcmTool('wiz-ncm-input', 'wiz-ncm-copy');
+  // 插件化后向导不再指定 NCM 工具路径；如需转换请到「设置 → 插件」安装。
   // 来源目录：统一走 /api/sources（后端自动检测网易云 + 强制复制），不再有独立的网易云导入界面。
   const sourcePath = $('wiz-netease-input').value.trim();
   if (sourcePath) {
@@ -4453,7 +5247,7 @@ async function finishInit() {
         if (ne.data && ne.data.ok) state.netease_library_dir = ne.data.library_dir || sourcePath;
       }
     } else {
-      setHint((created.data && created.data.error) || '来源目录写入失败，可稍后在「来源管理」里添加');
+      setHint((created.data && created.data.error) || '来源目录写入失败，可稍后在「曲源」里添加');
     }
   }
   $('init-wizard').hidden = true;
@@ -4467,60 +5261,179 @@ async function finishInit() {
   loadTracks($('search').value);
 }
 
-// ---------- NCM 工具指定 ----------
-async function pickNcmTool(inputId) {
-  const { data } = await api('/api/pick-ncm-tool', { method: 'POST' });
-  if (data && data.ok && !data.canceled && data.path) $(inputId).value = data.path;
-  else if (!data || !data.ok) setHint((data && data.error) || '打开文件选择失败');
+// ---------- 插件管理（L1 伪插件：当前仅 NCM 转换器）----------
+function pluginNcm() {
+  return (state.plugins || []).find((p) => p.id === 'ncm') || null;
 }
-async function applyNcmTool(inputId, copyId) {
-  const path = $(inputId).value.trim();
-  if (!path) { setHint('请先选择 NCM 工具文件'); return; }
-  const copy = $(copyId).checked;
-  setHint('应用 NCM 工具中…');
-  // 指定工具后会自动回补 pendingNcm 积压（可能几十上百首）→ 打开进度面板。
+
+/** 渲染插件页：左栏列表 + 右栏按钮（依安装/启用状态切换文案与显隐）。 */
+function renderPluginsPage() {
+  const list = $('plugin-list');
+  if (!list) return;
+  const p = pluginNcm();
+  const dirEl = $('plugin-dir-text');
+  if (dirEl && p && p.dir) dirEl.textContent = p.dir;
+  if (!p) {
+    list.textContent = '未找到插件信息';
+    list.classList.add('plugin-empty');
+    return;
+  }
+  list.classList.remove('plugin-empty');
+  const statusCls = p.ready ? 'ok' : (p.installed ? 'warn' : 'muted');
+  const statusText = p.ready ? '已启用' : (p.installed ? '已禁用' : '未安装');
+  const version = p.version ? ` · v${p.version}` : '';
+
+  const item = document.createElement('div');
+  item.className = 'plugin-item';
+  item.dataset.id = 'ncm';
+  const head = document.createElement('div');
+  head.className = 'plugin-item-head';
+  const name = document.createElement('span');
+  name.className = 'plugin-name';
+  name.textContent = p.name || 'NCM 转换器';
+  const badge = document.createElement('span');
+  badge.className = 'plugin-badge ' + statusCls;
+  badge.textContent = statusText;
+  head.append(name, badge);
+  const desc = document.createElement('div');
+  desc.className = 'plugin-desc';
+  desc.textContent = p.description || '';
+  const meta = document.createElement('div');
+  meta.className = 'plugin-meta';
+  meta.textContent = '状态：' + statusText + version + (p.installed ? '' : ' · 请安装后使用');
+  item.append(head, desc, meta);
+  list.replaceChildren(item);
+  const toggleBtn = $('plugin-toggle');
+  if (toggleBtn) {
+    toggleBtn.hidden = !p.installed;
+    toggleBtn.textContent = p.enabled ? '关闭插件' : '开启插件';
+  }
+  const removeBtn = $('plugin-remove');
+  if (removeBtn) removeBtn.hidden = !p.installed;
+  const organizeBtn = $('plugin-organize');
+  if (organizeBtn) organizeBtn.hidden = !p.installed;
+}
+
+async function refreshPluginsPage() {
+  const { data } = await api('/api/plugins');
+  if (data && data.ok) {
+    state.plugins = data.plugins || [];
+    renderPluginsPage();
+  }
+}
+
+async function installPlugin() {
+  setHint('安装插件中…');
   showProgressPanel('NCM 积压转换');
   startProgressPolling();
-  const { data } = await api('/api/ncm-tool', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, copy_to_library: copy }),
-  });
-  stopProgressPolling();
-  if (!data || !data.ok) { setHint((data && data.error) || '应用失败'); return; }
-  state.ncm_ready = !!data.tool_ready;
-  state.ncm_tool = data.tool_path || '';
-  if (data.backlog) {
-    const b = data.backlog;
+  const { data } = await api('/api/plugins/install', { method: 'POST' });
+  finishProgressTask();
+  if (!data || !data.ok) { setHint((data && data.error) || '安装失败'); return; }
+  if (data.canceled) { setHint('已取消安装'); return; }
+  const b = data.backlog;
+  if (b) {
     const empty = b.imported === 0 && b.pending === 0 && b.failed === 0
       && b.skipped === 0 && b.held === 0;
     if (empty) {
-      // 空积压：显示单行「无积压 .ncm / 0 首」而非留白进度条，几秒后自动消失。
       showProgressEmpty('无积压 .ncm / 0 首');
-      setHint('NCM 工具已应用：' + data.tool_path + '；无积压 .ncm');
       scheduleAutoHideProgressPanel(3000);
-      return;
+      setHint('NCM 插件已安装：' + data.tool_path + '；无积压 .ncm');
+    } else {
+      setHint(`NCM 插件已安装：${data.tool_path}；积压转换：入库 ${b.imported}，待转换 ${b.pending}，失败 ${b.failed}`);
     }
-    setHint(`NCM 工具已应用：${data.tool_path}；pendingNcm 积压转换：入库 ${b.imported}，待转换 ${b.pending}，失败 ${b.failed}`);
   } else {
-    setHint('NCM 工具已应用：' + data.tool_path);
+    setHint('NCM 插件已安装：' + data.tool_path);
   }
+  await refreshStatus();
+  await refreshPluginsPage();
 }
+
+async function togglePlugin() {
+  const p = pluginNcm();
+  if (!p) return;
+  const { data } = await api('/api/plugins/toggle', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: 'ncm', enabled: !p.enabled }),
+  });
+  if (!data || !data.ok) { setHint((data && data.error) || '操作失败'); return; }
+  setHint(data.enabled ? 'NCM 插件已开启' : 'NCM 插件已关闭（工具文件保留）');
+  await refreshStatus();
+  await refreshPluginsPage();
+}
+
+async function removePlugin() {
+  const confirmed = await showDialog({
+    title: '删除 NCM 插件',
+    text: '将物理删除 plugin 目录下的工具文件，且不可恢复。确定删除？',
+    okText: '删除',
+    cancelText: '取消',
+    cancelValue: 'cancel',
+  });
+  if (confirmed === 'cancel') return;
+  const { data } = await api('/api/plugins/remove', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: 'ncm' }),
+  });
+  if (!data || !data.ok) { setHint((data && data.error) || '删除失败'); return; }
+  setHint('NCM 插件已删除');
+  await refreshStatus();
+  await refreshPluginsPage();
+}
+
+async function organizeNcmBacklog() {
+  showProgressPanel('NCM 积压转换');
+  startProgressPolling();
+  const { data } = await api('/api/ncm/organize', { method: 'POST' });
+  finishProgressTask();
+  if (!data || !data.ok) { setHint((data && data.error) || '转换失败'); return; }
+  setHint(`积压转换完成：入库 ${data.imported || 0}，待转换 ${data.pending || 0}`);
+  await refreshStatus();
+}
+
+async function openPluginDir() {
+  const p = pluginNcm();
+  const dir = (p && p.dir) || 'plugin/';
+  await openExternal(dir);
+}
+
+$('plugin-install').addEventListener('click', installPlugin);
+$('plugin-open-dir').addEventListener('click', openPluginDir);
+$('plugin-refresh').addEventListener('click', () => {
+  refreshPluginsPage();
+  setHint('插件列表已重新检测');
+});
+$('plugin-toggle').addEventListener('click', togglePlugin);
+$('plugin-remove').addEventListener('click', removePlugin);
+$('plugin-organize').addEventListener('click', organizeNcmBacklog);
 
 // ---------- 文件结构方案切换（重排）----------
 async function applyScheme() {
   const sel = document.querySelector('input[name="set-scheme"]:checked');
   if (!sel) return;
   if (sel.value === state.file_scheme) { setHint('文件结构方案未变化'); return; }
-  if (!confirm('切换方案将按新结构整体移动 / 重命名曲库文件，目录结构将大幅变化。确定继续？')) return;
+  if (!confirm('切换方案将按新结构整体移动 / 重命名曲库文件，目录结构将大幅变化。重组中可暂停或结束（结束会整体回滚）。确定继续？')) return;
+
+  // v0.15.1：先弹进度面板并开始轮询，再发阻塞式重组请求；共用导入进度面板与暂停/结束按钮。
+  showProgressPanel('曲库重组', 'reorg');
+  startProgressPolling();
   setHint('正在按新方案重组曲库…');
-  const { data } = await api('/api/reorganize', {
+  const { ok, data } = await api('/api/reorganize', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ scheme: sel.value }),
   });
-  if (!data || !data.ok) { setHint((data && data.error) || '重组失败'); return; }
-  state.file_scheme = sel.value;
-  setHint(`重组完成：已移动 ${data.moved} 个文件`);
-  loadTracks($('search').value);
+  if (!ok || !data || !data.ok) {
+    finishProgressTask();
+    setHint((data && data.error) || '重组失败');
+    return;
+  }
+  if (data.cancelled) {
+    setHint('重组已结束，曲库已回滚到原结构');
+  } else {
+    state.file_scheme = sel.value;
+    setHint(`重组完成：已移动 ${data.moved} 个文件，清理 ${data.pruned || 0} 个空目录`);
+    loadTracks($('search').value);
+  }
+  finishProgressTask();
 }
 
 // ================= 外观 / 主题 / 换肤 =================
@@ -4545,26 +5458,39 @@ function clampSkinBlur(v) {
   return isFinite(n) ? Math.min(SKIN_BLUR_MAX, Math.max(SKIN_BLUR_MIN, Math.round(n))) : SKIN_BLUR_DEFAULT;
 }
 
-// #37：主题色预设（8 色）。名字只描述颜色，不与布局「经典 / 现代」混淆。
-// 品牌蓝改为更亮品牌蓝 #4F7CFF（v0.11.4 起，浅色/深色都醒目），与出厂深海背景皮肤自动强调色一致。
+// Radix 色阶与映射统一来自 radix.js（index.html 首屏脚本与 core.js 共用，禁止各自复制色表）。
+const RADIX = window.Radix || null;
+if (!RADIX) console.error('radix.js 未加载：主题色无法套用 Radix 色阶');
+function mapToRadixScale(hex, theme) { return RADIX ? RADIX.map(hex, theme) : null; }
+function radixAccent(hex, theme) {
+  if (RADIX) return RADIX.accent(hex, theme);
+  return { scale: 'blue', shade: 9, vars: { '--primary': '#0090ff', '--primary-dark': '#0588f0' },
+    primary: '#0090ff', dark: '#0588f0' };
+}
+
+// v0.13.0：主题色预设改用 Radix UI Colors 3.0.0 官方 9 阶（实心色）。
+// 选中任一色系后由 radixAccent() 套用该色系明/暗各 12 阶全套令牌。
+// UI STYLE：hex 不再硬编码复制，统一取自 radix.js 色表 9 阶（单一事实源）。
+// v0.15.5：色板按暖→冷重排为 7 色；去掉纯灰 NEUTRAL，银灰 slate 改名「灰」，暖白 sand 色值不变。
+// 顺序（暖→冷）：暖棕 tomato / 暖白 sand / 绿 green / 青 cyan / 蓝 blue / 紫 violet / 灰 slate。
+// radix.js::map() 对精确 hex 命中色系，低饱和灰预设不会被近似规则误判为 gray。
 const ACCENT_PRESETS = [
-  { name: '品牌蓝', hex: '#4F7CFF' },
-  { name: '青绿', hex: '#00897b' },
-  { name: '靛蓝', hex: '#3949ab' },
-  { name: '紫', hex: '#7e57c2' },
-  { name: '品红', hex: '#e91e63' },
-  { name: '橙', hex: '#fb8c00' },
-  { name: '红', hex: '#e53935' },
-  { name: '青蓝', hex: '#00acc1' },
+  { name: '暖棕', hex: RADIX.SCALES.tomato.light[8], scale: 'tomato' },
+  { name: '暖白', hex: RADIX.SCALES.sand.light[8], scale: 'sand' },
+  { name: '绿', hex: RADIX.SCALES.green.light[8], scale: 'green' },
+  { name: '青', hex: RADIX.SCALES.cyan.light[8], scale: 'cyan' },
+  { name: '蓝', hex: RADIX.SCALES.blue.light[8], scale: 'blue' },
+  { name: '紫', hex: RADIX.SCALES.violet.light[8], scale: 'violet' },
+  { name: '灰', hex: RADIX.SCALES.slate.light[8], scale: 'slate' },
 ];
 
-// 预设皮肤：CSS 渐变（无需图片文件），并预置匹配的主题色（#37 恢复自动取色链路）。
+// 预设皮肤：CSS 渐变（背景素材，非控件色，保留视觉）；预置主题色取自 Radix 色表 9 阶。
 const SKIN_PRESETS = [
-  { id: 'aurora', name: '极光', gradient: 'linear-gradient(135deg,#0f2027,#203a43,#2c5364)', accent: '#38bdf8' },
-  { id: 'sakura', name: '樱粉', gradient: 'linear-gradient(135deg,#ffecd2,#fcb69f)', accent: '#fb8c00' },
-  { id: 'mint', name: '薄荷', gradient: 'linear-gradient(135deg,#a1ffce,#faffd1)', accent: '#00897b' },
-  { id: 'purple', name: '紫霞', gradient: 'linear-gradient(135deg,#667eea,#764ba2)', accent: '#7e57c2' },
-  { id: 'ocean', name: '深海', gradient: 'linear-gradient(135deg,#2193b0,#6dd5ed)', accent: '#4F7CFF' },
+  { id: 'aurora', name: '极光', gradient: 'linear-gradient(135deg,#0f2027,#203a43,#2c5364)', accent: RADIX.SCALES.cyan.light[8] },
+  { id: 'sakura', name: '樱粉', gradient: 'linear-gradient(135deg,#ffecd2,#fcb69f)', accent: RADIX.SCALES.tomato.light[8] },
+  { id: 'mint', name: '薄荷', gradient: 'linear-gradient(135deg,#a1ffce,#faffd1)', accent: RADIX.SCALES.green.light[8] },
+  { id: 'purple', name: '紫霞', gradient: 'linear-gradient(135deg,#667eea,#764ba2)', accent: RADIX.SCALES.violet.light[8] },
+  { id: 'ocean', name: '深海', gradient: 'linear-gradient(135deg,#2193b0,#6dd5ed)', accent: RADIX.SCALES.blue.light[8] },
 ];
 
 // 顶栏主题切换图标（SVG，避免依赖图片资源）。
@@ -4583,11 +5509,10 @@ function resolveTheme(mode) {
 }
 
 function defaultAppearance() {
-  // 默认浅色主题（v0.11.4 起，用户要求首屏浅色）；accent 取更亮品牌蓝 #4F7CFF（浅色/深色都醒目），
-  // 与出厂深海背景皮肤自动强调色一致，未设背景皮肤时作为回退强调色。
+  // 默认不注入行内强调色，由 modern.css 提供 Radix blue 出厂色；用户自选色仍按配置恢复。
   return {
     theme: 'light',
-    accent: '#4F7CFF',
+    accent: '',
     lyricsOpacity: LYRICS_OPACITY_DEFAULT,
     skinBlur: SKIN_BLUR_DEFAULT,
     skin: { enabled: false, type: null, src: null, gradient: null, name: null, accent: null },
@@ -4740,7 +5665,7 @@ function hslToRgb(h, s, l) {
   }
   return [r * 255, g * 255, b * 255];
 }
-/** 从图片取稳定主色：保留色相，规范化饱和度/明度（随明暗主题调亮度）。选图时一次性执行。 */
+/** 从图片取稳定主色：保留色相，规范化饱和度/明度，再近似映射到最近 Radix 色阶（选图时一次性执行）。 */
 function extractDominantColor(img, theme) {
   const c = document.createElement('canvas');
   const w = (c.width = 64), h = (c.height = 64);
@@ -4753,12 +5678,27 @@ function extractDominantColor(img, theme) {
     r += data[i]; g += data[i + 1]; b += data[i + 2]; count++;
   }
   if (!count) return null;
-  let [hue, sat] = rgbToHsl(Math.round(r / count), Math.round(g / count), Math.round(b / count));
-  if (sat < 0.12) return theme === 'dark' ? '#6e92ff' : '#4F7CFF'; // 近灰阶回退
+  const avgR = Math.round(r / count), avgG = Math.round(g / count), avgB = Math.round(b / count);
+  let [hue, sat] = rgbToHsl(avgR, avgG, avgB);
+  if (sat < 0.12) {
+    // UI STYLE：近灰阶按 Radix 规范映射到 gray 对应明度阶（非 blue）；map() 内部已按 sat 判定。
+    const mapped = mapToRadixScale(rgbToHex(avgR, avgG, avgB), theme);
+    if (mapped) return mapped.hex;
+    const steps = RADIX.NEUTRAL[theme === 'dark' ? 'dark' : 'light'];
+    const lig = rgbToHsl(avgR, avgG, avgB)[2];
+    let best = 0, bestD = Infinity;
+    for (let i = 0; i < steps.length; i++) {
+      const d = Math.abs(rgbToHsl.apply(null, RADIX.hexToRgb(steps[i]))[2] - lig);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return steps[best];
+  }
   sat = 0.58;
   const lig = theme === 'dark' ? 0.62 : 0.48;
   const [nr, ng, nb] = hslToRgb(hue, sat, lig);
-  return rgbToHex(nr, ng, nb);
+  const mapped = mapToRadixScale(rgbToHex(nr, ng, nb), theme);
+  // 映射不可用时回退到该主题 Radix blue 9 阶出厂色，不吐自调 hex。
+  return mapped ? mapped.hex : RADIX.SCALES.blue[theme === 'dark' ? 'dark' : 'light'][8];
 }
 /** 只接受 #RRGGBB（与后端 is_hex_color 同口径），避免脏数据写进 CSS 变量。 */
 function isAccentHex(v) { return typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v); }
@@ -4805,20 +5745,29 @@ function applyAppearance() {
   root.setAttribute('data-theme', eff);
   root.setAttribute('data-theme-mode', a.theme); // 保留设置值，便于诊断与后续样式扩展
 
-  // #37：决定强调色 —— 皮肤激活时优先用皮肤提取色，否则用手动主题色；两者都空则
-  // 清掉行内覆盖，让 classic（品牌蓝）/ modern（棕）各自的 CSS 默认色生效。
+  // v0.13.0：强调色经 Radix 映射后成套写入。皮肤激活时优先用皮肤提取色，否则用手动主题色；
+  // 两者都空则清掉行内覆盖，让 modern.css 的 Radix blue 默认色生效。
   const accent = (a.skin && a.skin.enabled && a.skin.accent)
     ? a.skin.accent
     : (a.accent || '');
+  const radixTokens = ['--primary', '--primary-dark', '--primary-text', '--primary-strong-text',
+    '--primary-subtle', '--primary-border', '--primary-glow'];
+  for (let i = 1; i <= 12; i++) radixTokens.push('--radix-' + i);
   if (isAccentHex(accent)) {
-    const [pr, pg, pb] = hexToRgb(accent);
-    const darkMix = eff === 'dark' ? 0.72 : 0.78; // 派生更深的悬停色
-    root.style.setProperty('--primary', accent);
-    root.style.setProperty('--primary-dark', rgbToHex(pr * darkMix, pg * darkMix, pb * darkMix));
+    const radix = radixAccent(accent, eff);
+    Object.keys(radix.vars).forEach((k) => root.style.setProperty(k, radix.vars[k]));
+    root.style.setProperty('--primary', radix.primary);
+    root.style.setProperty('--primary-dark', radix.dark);
+    root.style.setProperty('--primary-text', radix.text);
+    root.style.setProperty('--primary-strong-text', radix.strongText);
+    root.style.setProperty('--primary-subtle', radix.subtle);
+    root.style.setProperty('--primary-border', radix.border);
+    root.style.setProperty('--primary-glow', radix.glow);
+    root.setAttribute('data-radix-scale', radix.scale);
     root.classList.add('has-accent'); // rail / 侧栏染色 + 派生令牌开关（首屏脚本同步预设）
   } else {
-    root.style.removeProperty('--primary');
-    root.style.removeProperty('--primary-dark');
+    radixTokens.forEach((k) => root.style.removeProperty(k));
+    root.removeAttribute('data-radix-scale');
     root.classList.remove('has-accent');
   }
 
@@ -4846,8 +5795,7 @@ function applyAppearance() {
   }
 
   // 标题栏与顶栏同色：读当前计算出的 --primary（含各皮肤默认色），避免写死品牌蓝。
-  const titleColor = getComputedStyle(root).getPropertyValue('--primary').trim()
-    || (eff === 'dark' ? '#6e92ff' : '#4F7CFF');
+  const titleColor = getComputedStyle(root).getPropertyValue('--primary').trim() || '#0090ff';
   syncNativeTitlebar(titleColor, eff);
 }
 
@@ -4909,13 +5857,14 @@ function renderAppearanceUI() {
       sw.appendChild(el);
     });
   }
-  const curAccent = (a.skin && a.skin.enabled && a.skin.accent) ? a.skin.accent : (a.accent || '');
+  const curAccent = (a.skin && a.skin.enabled && a.skin.accent)
+    ? a.skin.accent : (a.accent || RADIX.SCALES.blue.light[8]);
   if (sw) sw.querySelectorAll('.swatch').forEach((el) => {
     el.classList.toggle('active', !(a.skin && a.skin.enabled) &&
       !!curAccent && curAccent.toLowerCase() === el.dataset.hex.toLowerCase());
   });
   const cc = $('ap-accent-custom');
-  if (cc) cc.value = isAccentHex(a.accent) ? a.accent : '#4F7CFF';
+  if (cc) cc.value = isAccentHex(a.accent) ? a.accent : '#0090ff';
 
   // 皮肤缩略图（仅首次构建）
   const sk = $('ap-skins');
@@ -4965,52 +5914,35 @@ function renderAppearanceUI() {
   if (mtt) mtt.checked = !!state.minimizeToTray;
 }
 
-// ---------- 布局切换（classic / modern）----------
-// 共享 core.js 引擎，仅换 CSS：boot 时已按 layout_skin 预设 <link> 与 html.skin-modern 类，
-// 这里提供运行时切换 + 持久化。皮肤是「整体配色 / 视觉」层，与底层背景皮肤（skin_type）正交。
+// ---------- 布局皮肤（v0.15.0 起唯一 modern）----------
+// 首屏已固定加载 modern.css 并给 <html> 加 skin-modern；这里只保留状态对齐与持久化入口。
+// 旧配置 layout_skin=classic 一律归一到 modern，皮肤层与底层背景皮肤（skin_type）正交。
 let layoutSkin = 'modern';
-// #30：modern 会强制专辑进入封面墙；切回 classic 必须还原用户先前的视图，
-// 否则 classic 的专辑页会残留 grid（破坏 classic 1:1）。
-let albumViewBeforeModern = 'list';
-// #32：modern 按重设计稿把「共 N 首 / 刷新」放在列表筛选条右侧；
-// v0.12.3：classic 改挂顶栏的 #topbar-extras（原 .toolbar 整行已隐藏）。
-function syncToolbarExtras(skin) {
+// 「共 N 首」固定在列表筛选条右侧；刷新图标已移除，只挂载计数，勿依赖其存在导致计数错位。
+function syncToolbarExtras() {
   const count = $('track-count');
-  const refresh = $('btn-refresh');
   const bar = $('track-filter-bar');
-  const extras = $('topbar-extras');
-  if (!count || !refresh || !bar || !extras) return;
-  const target = skin === 'modern' ? bar : extras;
-  [count, refresh].forEach((el) => { if (el.parentNode !== target) target.appendChild(el); });
+  if (!count || !bar) return;
+  if (count.parentNode !== bar) bar.appendChild(count);
 }
 
 function applyLayoutSkin(name, persist) {
-  if (name !== 'modern' && name !== 'classic') name = 'classic';
-  const wasModern = document.documentElement.classList.contains('skin-modern');
-  layoutSkin = name;
-  const link = document.getElementById('skin-css');
-  if (link) link.href = 'skins/' + name + '.css';
-  document.documentElement.classList.toggle('skin-modern', name === 'modern');
-  document.body.dataset.skin = name;
-  syncToolbarExtras(name);
-  // #30：modern 默认「整页封面墙」；切回 classic 复位视图与两个 class（1:1 不受影响）。
-  if (name === 'modern') {
-    if (!wasModern) albumViewBeforeModern = state.albumView;
-    setAlbumView('grid');
-  } else if (wasModern) {
-    setAlbumView(albumViewBeforeModern);
-  } else {
-    syncAlbumWall();
-  }
-  syncSegGroup('ap-layout-skin', 'skin', name);
-  // #37：布局切换后立即按新布局重算三栏收起态与详情区显隐（modern 恒展开）。
+  // 单皮肤：忽略传入值，恒为 modern（兼容旧配置里残留的 classic）。
+  // skin-modern 类由 index.html 首屏脚本固定加上，这里不再 add —— 否则会覆盖 demo 预览
+  // 为测基础层收起条交互而临时移除的 class（base.css 保留原规则）。
+  layoutSkin = 'modern';
+  document.body.dataset.skin = 'modern';
+  syncToolbarExtras();
+  // 仅 modern（有 skin-modern 类）强制整页封面墙；demo 预览移除该类时不干预默认视图。
+  if (document.documentElement.classList.contains('skin-modern')) setAlbumView('grid');
+  syncSegGroup('ap-layout-skin', 'skin', 'modern');
   applyPaneLayout();
   if ($('detail-pane')) syncDetailVisibility();
   if (persist) {
     fetch('/api/ui-prefs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ layout_skin: name }),
+      body: JSON.stringify({ layout_skin: 'modern' }),
     }).catch(() => {});
   }
 }
@@ -5101,7 +6033,7 @@ function initAppearanceEvents() {
       const img = new Image();
       img.onload = () => {
         const eff = resolveTheme(loadAppearance().theme);
-        const accent = extractDominantColor(img, eff) || (eff === 'dark' ? '#6e92ff' : '#4F7CFF');
+        const accent = extractDominantColor(img, eff) || '#0090ff';
         setSkin({ type: 'custom', src: dataUrl, accent, name: '自定义' });
         setHint('已应用自定义皮肤，主题色已根据图片自动调整');
       };
@@ -5172,9 +6104,9 @@ function updatePaneHandleArrows() {
   }
 }
 // 统一把内存状态投射到 DOM：宽度用 CSS 变量（body class 决定收起态），按钮常驻可展开。
-// #37：现代布局隐藏了全部伸缩条，若沿用经典下保存的收起态会出现「0 宽且无展开入口」。
-// 这里在渲染层把 modern 视为恒展开；state / 持久化配置完全不动，切回经典原样恢复。
-// 用 <html> 的 skin-modern 类判断，避免依赖后面才声明的 layoutSkin 变量（无 TDZ 风险）。
+// v0.15.0：唯一 modern 布局隐藏全部伸缩条，恒展开（state / 持久化字段保留不动，仅为兼容旧配置）。
+// 按 <html> 的 skin-modern 类判断：产品单皮肤下恒有该类 → 恒展开；demo 预览移除该类可回归
+// 基础样式层的收起条交互（base.css 保留原规则，仅供历史几何断言测试）。
 function paneCollapsed(which) {
   if (document.documentElement.classList.contains('skin-modern')) return false;
   if (which === 'sidebar') return !!state.sidebarCollapsed;
@@ -5461,7 +6393,7 @@ async function checkForUpdate(opts) {
     return { ok: true, tag: tag, cmp: cmp, reason: 'ok' };
   } catch (e) {
     // 自动检测失败一律静默（不弹错、不写日志）；仅「立即检查」在此处反馈原因。
-    if (o.manual) setNetHint('检查未成功：网络不可达或暂时限流，稍后可重试（不影响使用）');
+    if (o.manual) setNetHint('检查未成功：网络不可达或暂时限流，可稍后重试');
     return { ok: false, reason: 'failed' };
   } finally {
     clearTimeout(timer);
@@ -5694,6 +6626,7 @@ window.KQK.boot = function boot() {
   refreshStatus().then(() => {
     restorePlaystate();
     // FR-30：必须等 [ui] 四键读回后才决定是否联网；异步检测不阻塞首屏。
+    // v0.12.11：只读曲源检查链已下线，启动不再发 /api/sources/check。
     startUpdateCheckOnce();
   }).catch(() => {});
   // FR-22 P1①：boot scan 在后台静默登记未决组，启动后补拉角标计数（**只更新角标，绝不自动弹窗**）。

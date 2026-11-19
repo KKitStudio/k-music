@@ -76,7 +76,9 @@ jobs:
             throw "makensis.exe not found after choco install nsis"
           }
           Write-Host "Using makensis: $makensis"
-          & $makensis /DPRODUCT_VERSION="$ver" /DDIST_DIR="dist" .github\scripts\installer.nsi
+          # /NOCD: makensis 默认会把 cwd 切到脚本所在目录(.github/scripts)，
+          # 导致 File /r "dist\*" 与 OutFile 落到错误目录；保留仓库根 cwd 才能找到 dist/。
+          & $makensis /NOCD /DPRODUCT_VERSION="$ver" /DDIST_DIR="dist" .github\scripts\installer.nsi
           if ($LASTEXITCODE -ne 0) { throw "makensis failed with exit code $LASTEXITCODE" }
           $setup = "k-music-setup-$ver-x64.exe"
           echo "SETUP=$setup" | Out-File -FilePath $env:GITHUB_ENV -Append

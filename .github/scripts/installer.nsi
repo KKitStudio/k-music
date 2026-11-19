@@ -2,7 +2,7 @@
 ;  K music installer (NSIS, Unicode)
 ;
 ;  Build (run from repo root):
-;    makensis /DPRODUCT_VERSION=0.12.5 /DDIST_DIR=dist .github/scripts/installer.nsi
+;    makensis /NOCD /DPRODUCT_VERSION=0.12.6 /DDIST_DIR=dist .github/scripts/installer.nsi
 ;  Output:
 ;    k-music-setup-<version>-x64.exe   (in repo root)
 ;
@@ -41,6 +41,8 @@ VIAddVersionKey "ProductName" "${PRODUCT_NAME}"
 VIAddVersionKey "CompanyName" "${PUBLISHER}"
 VIAddVersionKey "FileVersion" "${PRODUCT_VERSION}.0"
 VIAddVersionKey "ProductVersion" "${PRODUCT_VERSION}"
+VIAddVersionKey "FileDescription" "${PRODUCT_NAME} Installer"
+VIAddVersionKey "LegalCopyright" "Copyright (C) ${PUBLISHER}"
 
 !define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_DIRECTORY

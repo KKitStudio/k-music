@@ -35,6 +35,8 @@ pub struct TrackView {
     /// #28：曲级流派 / 发行年份（音频标签）。空串视为无流派，前端按「空字段不渲染」处理。
     pub genre: Option<String>,
     pub year: Option<i64>,
+    /// 歌曲列表「有歌词」标记——与 `lyrics::get_lyrics` 同源：同名 `.lrc` 侧车或音频内嵌歌词命中即为 true。
+    pub has_lyrics: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -101,7 +103,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
             imported_at   INTEGER,                -- 首次入库时刻（UNIX 毫秒）；UPDATE 不覆盖
             created_at    INTEGER,                -- 音频文件创建时间（UNIX 毫秒）；文件系统 birth time
             fail_reason   TEXT,
-            downloaded_at TEXT
+            downloaded_at TEXT,
+            ncm_origin_id TEXT,                  -- v0.14.0：NCM 转换产物的来源曲源 id（转换短路键的一部分）
+            ncm_original_name TEXT               -- v0.14.0：NCM 转换产物的原始 .ncm 文件名（不含路径）
         );
         CREATE TABLE IF NOT EXISTS playlists (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -198,6 +202,28 @@ fn init_schema(conn: &Connection) -> Result<()> {
             ))?;
         }
     }
+    // v0.14.0：NCM 转换来源两列，无破坏迁移。旧记录保持 NULL（非转换产物）。
+    for (col, decl) in [("ncm_origin_id", "TEXT"), ("ncm_original_name", "TEXT")] {
+        let has_col: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('download_records') WHERE name=?1",
+                params![col],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        if !has_col {
+            conn.execute_batch(&format!(
+                "ALTER TABLE download_records ADD COLUMN {col} {decl};"
+            ))?;
+        }
+    }
+    // v0.14.0：索引必须在补列迁移之后创建——旧库在建表批次时尚无这两列，
+    // 提前建索引会报错并跳过整个迁移（由 legacy_schema_migrates_idempotently 守护）。
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_dr_ncm_origin
+             ON download_records(ncm_origin_id, ncm_original_name);",
+    )?;
     Ok(())
 }
 
@@ -206,6 +232,11 @@ fn init_schema(conn: &Connection) -> Result<()> {
 ///
 /// `created_at_ms` = 音频文件的文件系统创建时间（UNIX 毫秒）；`imported_at` 只在**新增**时
 /// 由 SQL 取当前时刻写入，更新元数据时不覆盖 → 始终保留「首次加入曲库」的时间。
+/// 「未指定来源」的持久化标记：历史歌曲 / 扫描 / NCM 回填 / 已删除曲源的孤儿归属。
+/// 复用既有 `source_kind` 列（该列原本就硬编码为此值），避免 `ALTER TABLE` 与
+/// `track_from_row()` 固定列序改动。
+pub const UNSPECIFIED_SOURCE: &str = "local_scan";
+
 pub fn upsert_local_record(
     conn: &Connection,
     file_path: &str,
@@ -222,11 +253,53 @@ pub fn upsert_local_record(
     file_size: i64,
     file_mtime: i64,
     created_at_ms: Option<i64>,
-    // #28：音频标签流派 / 年份。genre 为 None 时落空串（标记「已尝试抽取」），
-    // 使扫描增量门控不再对「文件本身没有流派标签」的记录反复下探。
     genre: Option<&str>,
     year: Option<i64>,
 ) -> Result<bool> {
+    upsert_local_record_with_source(
+        conn, file_path, name, artist, album, duration_ms, format, sample_rate, bit_depth,
+        bitrate, channels, quality_tier, file_size, file_mtime, created_at_ms, genre, year, None,
+        None,
+    )
+}
+
+/// 与 `upsert_local_record` 相同，但可显式写曲源归属。
+///
+/// `source_id` 语义：
+/// - `None` = 不改动已有归属（扫描 / 重扫 / 标签修正不得抹掉曲源信息）；
+/// - `Some(id)` = 明确设为该曲源；替换决策用 `Some(UNSPECIFIED_SOURCE)` 归「未指定来源」。
+///
+/// 仅在 INSERT 时缺省回落 `UNSPECIFIED_SOURCE`。UPDATE 用 `COALESCE(?, source_kind)`
+/// 一条语句同时满足「不改动」与「修正归属」两种语义，保留 `local_id` 及播放列表引用。
+///
+/// `ncm_origin`：v0.14.0 NCM 转换产物的来源信息 `(曲源 id, 原始 .ncm 文件名)`。
+/// - `Some((id, name))` = 明确写入转换来源（转换短路键），INSERT/UPDATE 均写；
+/// - `None` = 普通音频，不改动已有值（UPDATE 用 COALESCE 保留原值）。
+pub fn upsert_local_record_with_source(
+    conn: &Connection,
+    file_path: &str,
+    name: &str,
+    artist: Option<&str>,
+    album: Option<&str>,
+    duration_ms: Option<i64>,
+    format: Option<&str>,
+    sample_rate: Option<i64>,
+    bit_depth: Option<i64>,
+    bitrate: Option<i64>,
+    channels: Option<i64>,
+    quality_tier: Option<&str>,
+    file_size: i64,
+    file_mtime: i64,
+    created_at_ms: Option<i64>,
+    genre: Option<&str>,
+    year: Option<i64>,
+    source_id: Option<&str>,
+    ncm_origin: Option<(&str, &str)>,
+) -> Result<bool> {
+    let (ncm_id, ncm_name) = match ncm_origin {
+        Some((id, name)) => (Some(id), Some(name)),
+        None => (None, None),
+    };
     let existing: Option<i64> = conn
         .query_row(
             "SELECT local_id FROM download_records WHERE file_path=?1 AND status='downloaded'",
@@ -240,11 +313,14 @@ pub fn upsert_local_record(
         conn.execute(
             "UPDATE download_records SET name=?1,artist=?2,album=?3,duration_ms=?4,format=?5,
                 sample_rate=?6,bit_depth=?7,bitrate=?8,channels=?9,quality_tier=?10,
-                file_size=?11,file_mtime=?12,created_at=?13,genre=COALESCE(?14,''),year=?15
-             WHERE local_id=?16",
+                file_size=?11,file_mtime=?12,created_at=?13,genre=COALESCE(?14,''),year=?15,
+                source_kind=COALESCE(?16,source_kind),
+                ncm_origin_id=COALESCE(?18,ncm_origin_id),ncm_original_name=COALESCE(?19,ncm_original_name)
+             WHERE local_id=?17",
             params![
                 name, artist, album, duration_ms, format, sample_rate, bit_depth, bitrate,
-                channels, quality_tier, file_size, file_mtime, created_at_ms, genre, year, rec_id
+                channels, quality_tier, file_size, file_mtime, created_at_ms, genre, year,
+                source_id, rec_id, ncm_id, ncm_name
             ],
         )?;
         Ok(false)
@@ -253,16 +329,38 @@ pub fn upsert_local_record(
         conn.execute(
             "INSERT INTO download_records(song_id,source_kind,status,name,artist,album,duration_ms,
                 file_path,format,sample_rate,bit_depth,bitrate,channels,quality_tier,file_size,
-                file_mtime,imported_at,created_at,downloaded_at,genre,year)
-             VALUES(NULL,'local_scan','downloaded',?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,
-                    CAST(strftime('%s','now') AS INTEGER)*1000,?14,datetime('now'),COALESCE(?15,''),?16)",
+                file_mtime,imported_at,created_at,downloaded_at,genre,year,ncm_origin_id,ncm_original_name)
+             VALUES(NULL,COALESCE(?17,'local_scan'),'downloaded',?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,
+                    CAST(strftime('%s','now') AS INTEGER)*1000,?14,datetime('now'),COALESCE(?15,''),?16,?18,?19)",
             params![
                 name, artist, album, duration_ms, file_path, format, sample_rate, bit_depth,
-                bitrate, channels, quality_tier, file_size, file_mtime, created_at_ms, genre, year
+                bitrate, channels, quality_tier, file_size, file_mtime, created_at_ms, genre, year,
+                source_id, ncm_id, ncm_name
             ],
         )?;
         Ok(true)
     }
+}
+
+/// v0.14.0：NCM 转换前短路查询。判断该 (来源曲源 id, 原始 .ncm 文件名)
+/// 是否已有转换产物入库；命中则跳过外部工具解码。
+/// 查询走 idx_dr_ncm_origin 联合索引；查询失败由调用方降级为「不跳过」（宁可多转不丢歌）。
+pub fn ncm_conversion_exists(
+    conn: &Connection,
+    source_id: &str,
+    original_name: &str,
+) -> Result<bool> {
+    let found = conn
+        .query_row(
+            "SELECT 1 FROM download_records
+             WHERE status='downloaded'
+               AND ncm_origin_id=?1 AND ncm_original_name=?2
+             LIMIT 1",
+            params![source_id, original_name],
+            |_| Ok(true),
+        )
+        .optional()?;
+    Ok(found.is_some())
 }
 
 /// 只在该值与库中不同（或库中为空）时刷新文件创建时间。
@@ -288,7 +386,15 @@ pub fn update_file_path(conn: &Connection, local_id: i64, file_path: &str) -> Re
     Ok(())
 }
 
-/// 行 → TrackView 映射（多个查询复用，保证列序一致，避免各查询各自维护字段顺序）。
+/// 判断曲目是否「有歌词」：复用 `lyrics::get_lyrics`，与详情页 / 全屏歌词完全同源。
+// 同名 `.lrc` 侧车存在即命中（仅目录存在性检查，廉价）；否则读取音频内嵌歌词
+// （ID3v2 USLT / Vorbis Comment），保证内嵌歌词的曲目也能在列表显示标记。
+// 判定结果列表加载时逐曲计算一次，不产生额外网络请求。
+fn track_has_lyrics(file_path: &str) -> bool {
+    crate::lyrics::get_lyrics(std::path::Path::new(file_path)).is_some()
+}
+
+// 行 → TrackView 映射（多个查询复用，保证列序一致，避免各查询各自维护字段顺序）。
 fn track_from_row(row: &rusqlite::Row) -> rusqlite::Result<TrackView> {
     Ok(TrackView {
         local_id: row.get(0)?,
@@ -310,6 +416,7 @@ fn track_from_row(row: &rusqlite::Row) -> rusqlite::Result<TrackView> {
         favorite: row.get::<_, i64>(16)? != 0,
         genre: row.get(17)?,
         year: row.get(18)?,
+        has_lyrics: track_has_lyrics(&row.get::<_, String>(13)?),
     })
 }
 
@@ -554,6 +661,8 @@ pub struct PlaylistItemView {
     /// #28：曲级流派 / 发行年份（与 TrackView 同源）。
     pub genre: Option<String>,
     pub year: Option<i64>,
+    /// 歌曲列表「有歌词」标记——与 `TrackView` 同源判定（`.lrc` 侧车或内嵌歌词）。
+    pub has_lyrics: bool,
 }
 
 /// 播放列表名称上限（按 Unicode 字符计）。
@@ -671,6 +780,7 @@ pub fn get_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<Vec<Pl
             favorite: r.get::<_, i64>(12)? != 0,
             genre: r.get(13)?,
             year: r.get(14)?,
+            has_lyrics: track_has_lyrics(&r.get::<_, String>(9)?),
         })
     })?;
     let mut out = Vec::new();
@@ -855,6 +965,70 @@ pub fn get_tracks_by_artist(conn: &Connection, artist: &str) -> Result<Vec<Track
          ORDER BY dr.name",
     )?;
     let rows = stmt.query_map(params![artist], track_from_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+// ============================================================
+// 曲源归属（复用既有 source_kind 列，不改 track_from_row 固定列序）
+// ============================================================
+
+/// 按 `source_kind` 统计曲目数。返回原始分组 key，由上层映射成曲源名称并把
+/// 未知 key / 未指定来源合并为「未指定来源」组（零写库，删曲源不批量 UPDATE）。
+pub fn source_counts(conn: &Connection) -> Result<Vec<(String, u32)>> {
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(dr.source_kind,'local_scan'), COUNT(*)
+         FROM download_records dr
+         WHERE dr.status='downloaded' AND dr.file_path IS NOT NULL
+         GROUP BY COALESCE(dr.source_kind,'local_scan')
+         ORDER BY 1",
+    )?;
+    let rows = stmt.query_map((), |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// 取某曲源导入的曲目（按名称排序）。
+///
+/// `source_id == UNSPECIFIED_SOURCE` 时取「未指定来源」：历史 `'local_scan'` +
+/// 所有不在 `known_ids`（当前仍存在的曲源）里的孤儿归属。曲源删除后无需批量
+/// UPDATE，歌曲自然归入该组。曲目列与 `track_from_row()` 严格一致。
+pub fn get_tracks_by_source(
+    conn: &Connection,
+    source_id: &str,
+    known_ids: &[String],
+) -> Result<Vec<TrackView>> {
+    let select = "SELECT dr.local_id, dr.song_id, dr.name, dr.artist, dr.album, dr.format, dr.sample_rate,
+                dr.bit_depth, dr.bitrate, dr.channels, dr.duration_ms, dr.quality_tier, dr.file_size, dr.file_path, dr.imported_at, dr.created_at, dr.favorite, dr.genre, dr.year
+         FROM download_records dr
+         WHERE dr.status='downloaded' AND dr.file_path IS NOT NULL AND ";
+    if source_id != UNSPECIFIED_SOURCE {
+        let sql = format!("{select} dr.source_kind=?1 ORDER BY dr.name");
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![source_id], track_from_row)?;
+        return Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+    }
+    // 未指定来源：COALESCE 归一的 'local_scan' 或不属于任何现存曲源的 key。
+    let mut sql = format!(
+        "{select} (COALESCE(dr.source_kind,'local_scan')='{UNSPECIFIED_SOURCE}'"
+    );
+    if !known_ids.is_empty() {
+        let placeholders = (1..=known_ids.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        sql.push_str(&format!(
+            " OR COALESCE(dr.source_kind,'local_scan') NOT IN ({placeholders})"
+        ));
+    }
+    sql.push_str(") ORDER BY dr.name");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = if known_ids.is_empty() {
+        stmt.query_map([], track_from_row)?
+    } else {
+        stmt.query_map(
+            rusqlite::params_from_iter(known_ids.iter().map(|s| s.as_str())),
+            track_from_row,
+        )?
+    };
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
@@ -1124,6 +1298,200 @@ mod group_tests {
         assert!(list_albums(&c).unwrap().is_empty());
         assert!(list_artists(&c).unwrap().is_empty());
         assert!(get_tracks_by_album(&c, "范特西").unwrap().is_empty());
+    }
+
+    /// 简化调用：`source_id` 之外全部给最小可用值。
+    fn upsert(conn: &Connection, path: &str, name: &str, source_id: Option<&str>) -> bool {
+        upsert_local_record_with_source(
+            conn,
+            path,
+            name,
+            Some("艺人"),
+            None,
+            None,
+            Some("flac"),
+            None,
+            None,
+            None,
+            None,
+            Some("lossless"),
+            1000,
+            0,
+            None,
+            None,
+            None,
+            source_id,
+            None,
+        )
+        .unwrap()
+    }
+
+    fn kind_of(conn: &Connection, path: &str) -> String {
+        conn.query_row(
+            "SELECT source_kind FROM download_records WHERE file_path=?1",
+            params![path],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn source_attribution_is_written_and_grouped() {
+        let c = test_conn();
+        assert!(upsert(&c, "/lib/a.flac", "曲一", Some("src-a")));
+        assert!(upsert(&c, "/lib/b.flac", "曲二", Some("src-a")));
+        assert!(upsert(&c, "/lib/c.flac", "曲三", Some("src-b")));
+        // 历史 / 扫描记录：None 落「未指定来源」。
+        assert!(upsert(&c, "/lib/d.flac", "曲四", None));
+
+        let counts = source_counts(&c).unwrap();
+        assert_eq!(
+            counts.iter().find(|(k, _)| k == "src-a").map(|x| x.1),
+            Some(2)
+        );
+        assert_eq!(
+            counts.iter().find(|(k, _)| k == "src-b").map(|x| x.1),
+            Some(1)
+        );
+        assert_eq!(
+            counts
+                .iter()
+                .find(|(k, _)| k == UNSPECIFIED_SOURCE)
+                .map(|x| x.1),
+            Some(1)
+        );
+
+        let known = vec!["src-a".to_string(), "src-b".to_string()];
+        assert_eq!(get_tracks_by_source(&c, "src-a", &known).unwrap().len(), 2);
+        assert_eq!(get_tracks_by_source(&c, "src-b", &known).unwrap().len(), 1);
+        assert_eq!(
+            get_tracks_by_source(&c, UNSPECIFIED_SOURCE, &known)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn rescan_does_not_erase_attribution_but_replacement_fixes_it() {
+        let c = test_conn();
+        assert!(upsert(&c, "/lib/a.flac", "曲一", Some("src-a")));
+        let first_id: i64 = c
+            .query_row(
+                "SELECT local_id FROM download_records WHERE file_path='/lib/a.flac'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        // 启动扫描 / 标签重扫传 None：不得抹掉曲源归属，也不得改写首次导入时间。
+        assert!(!upsert(&c, "/lib/a.flac", "曲一(重扫)", None));
+        assert_eq!(kind_of(&c, "/lib/a.flac"), "src-a");
+
+        // 替换决策明确传新曲源：UPDATE 同一行，local_id 与播放列表引用保留。
+        assert!(!upsert(&c, "/lib/a.flac", "曲一(替换)", Some("src-b")));
+        assert_eq!(kind_of(&c, "/lib/a.flac"), "src-b");
+        let after_id: i64 = c
+            .query_row(
+                "SELECT local_id FROM download_records WHERE file_path='/lib/a.flac'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(first_id, after_id, "替换必须复用同一行，不能 DELETE+INSERT");
+
+        // 旧挂起组无来源信息：显式归「未指定来源」。
+        assert!(!upsert(
+            &c,
+            "/lib/a.flac",
+            "曲一(旧组)",
+            Some(UNSPECIFIED_SOURCE)
+        ));
+        assert_eq!(kind_of(&c, "/lib/a.flac"), UNSPECIFIED_SOURCE);
+    }
+
+    #[test]
+    fn deleted_source_orphans_fall_into_unspecified_group() {
+        let c = test_conn();
+        assert!(upsert(&c, "/lib/a.flac", "曲一", Some("src-gone")));
+        assert!(upsert(&c, "/lib/b.flac", "曲二", None));
+        // 曲源已从配置移除，只剩仍存在的曲源列表。
+        let known = vec!["src-live".to_string()];
+        let unknown = get_tracks_by_source(&c, UNSPECIFIED_SOURCE, &known).unwrap();
+        assert_eq!(unknown.len(), 2, "孤儿归属 + 历史歌曲都归入未指定来源");
+        assert!(get_tracks_by_source(&c, "src-gone", &known).unwrap().len() == 1);
+    }
+}
+
+// ============================================================
+// v0.14.0：NCM 转换来源两列 + 短路判重
+// ============================================================
+#[cfg(test)]
+mod ncm_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn columns(conn: &Connection) -> Vec<String> {
+        conn.prepare("PRAGMA table_info(download_records)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .map(|x| x.unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn fresh_schema_has_ncm_origin_columns_and_index() {
+        let c = Connection::open_in_memory().unwrap();
+        init_schema(&c).unwrap();
+        let cols = columns(&c);
+        assert!(cols.iter().any(|x| x == "ncm_origin_id"));
+        assert!(cols.iter().any(|x| x == "ncm_original_name"));
+        let idx: String = c
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_dr_ncm_origin'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, "idx_dr_ncm_origin");
+    }
+
+    #[test]
+    fn legacy_schema_migrates_idempotently() {
+        let c = Connection::open_in_memory().unwrap();
+        // 模拟旧库：无 genre/year 与 NCM 两列，init_schema 应无破坏补列。
+        c.execute_batch(
+            "CREATE TABLE download_records(local_id INTEGER PRIMARY KEY, song_id INTEGER,
+             source_kind TEXT NOT NULL, status TEXT NOT NULL, file_path TEXT, name TEXT,
+             artist TEXT, album TEXT, duration_ms INTEGER, format TEXT, sample_rate INTEGER,
+             bit_depth INTEGER, bitrate INTEGER, channels INTEGER, quality_tier TEXT,
+             file_size INTEGER, file_mtime INTEGER, imported_at INTEGER, created_at INTEGER,
+             fail_reason TEXT, downloaded_at TEXT);",
+        )
+        .unwrap();
+        init_schema(&c).unwrap();
+        init_schema(&c).unwrap(); // 重复初始化必须幂等
+        let cols = columns(&c);
+        assert!(cols.iter().any(|x| x == "genre"));
+        assert!(cols.iter().any(|x| x == "ncm_origin_id"));
+        assert!(cols.iter().any(|x| x == "ncm_original_name"));
+    }
+
+    #[test]
+    fn ncm_conversion_exists_matches_exact_source_and_name() {
+        let c = Connection::open_in_memory().unwrap();
+        init_schema(&c).unwrap();
+        c.execute(
+            "INSERT INTO download_records(local_id,source_kind,status,file_path,name,
+             ncm_origin_id,ncm_original_name)
+             VALUES (1,'src-1','downloaded','/lib/a.flac','A','src-1','song.ncm')",
+            [],
+        )
+        .unwrap();
+        assert!(ncm_conversion_exists(&c, "src-1", "song.ncm").unwrap());
+        assert!(!ncm_conversion_exists(&c, "src-2", "song.ncm").unwrap());
+        assert!(!ncm_conversion_exists(&c, "src-1", "other.ncm").unwrap());
     }
 }
 

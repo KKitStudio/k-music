@@ -1,13 +1,14 @@
 //! 歌曲导入：从指定文件夹复制 / 移动到曲库，自动按 `config.library.file_scheme` 组织并入库。
 //! - 普通音频：抽取标签 → 按 file_scheme 归位 → 登记（song_id=NULL，与扫描一致）。
-//! - ncm 文件（有工具）：转换后按本地文件入库；原始 .ncm 归档 `download/ncm/`。
-//! - ncm 文件（无工具）：暂存 `download/pendingNcm/`，不入库（待配置工具后转换）。
+//! - ncm 文件（有工具）：转换前按 `(曲源 id, 原始 .ncm 文件名)` 短路判重，转换后按本地文件入库。
+//! - ncm 文件（无工具）：v0.14.0 起直接跳过、留在源目录（不复制不暂存），下次更新曲源重扫再处理。
 //!
 //! FR-22：一次导入任务 = 一个**两阶段批次**（W3-A′）。阶段① 只收集候选（不写 DB、不归位、
 //! 不弹窗），阶段② 由 `duplicates::finalize()` 统一判定「入库 / 静默跳过 / 挂起成重复组」。
 //! `origin` 必须沿调用链**显式传递**：网易云同步与手工导入共用同一个 `import_folder_with_progress()`，
 //! 仅靠 ImportMode 或源目录无法区分来源（P2 按来源分流的实施硬约束）。
 use crate::config::Config;
+use crate::db;
 use crate::duplicates::{self, Candidate, Disposition, FileMode, Origin};
 use crate::library::convert_ncm;
 use crate::lyrics;
@@ -17,6 +18,7 @@ use crate::is_playable_audio;
 use anyhow::anyhow;
 use rusqlite::Connection;
 use serde::Serialize;
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,7 +31,9 @@ pub enum ImportMode {
 pub struct ImportResult {
     pub imported: u32,
     pub skipped: u32,
-    /// 导入遇到 .ncm 但本地无 ncm 工具，已暂存到 download/pendingNcm/ 的数量（未入库）。
+    /// v0.14.0：skipped 中因未配置 NCM 工具而跳过的加密文件数（留在源目录，不复制不暂存）。
+    pub ncm_skipped: u32,
+    /// 历史遗留：导入遇到 .ncm 且无工具时暂存到 download/pendingNcm/ 的数量（新链路不再产生）。
     pub pending: u32,
     pub failed: u32,
     /// FR-22：登记为「重复待决策」的文件数（挂起进 `.mt/pending-duplicates*`，等 GUI 批量对比）。
@@ -58,15 +62,18 @@ struct SourceItem {
     kind: SourceKind,
 }
 
+// 只有「没有进入 candidates」的两类源文件需要阶段②单独结算进度；
+// 成功构造成候选的曲目一律由 finalize_with_hook 的钩子逐首结算。
 enum Prepared {
-    Candidate {
-        index: usize,
-        temp: bool,
-        fname: String,
-        action: ImportAction,
-    },
     PendingNcm {
         fname: String,
+    },
+    /// v0.14.0：源文件未进入候选而直接跳过（无 NCM 工具 / 已转换过）。
+    /// 需要在阶段②单独结算 skipped 并 end_file，否则进度分子不收敛（v0.12.18 修复口径）。
+    Skipped {
+        fname: String,
+        action: ImportAction,
+        reason: String,
     },
     Failed {
         fname: String,
@@ -96,7 +103,46 @@ pub fn import_folder_with_progress(
     origin: Origin,
     tracker: &ProgressTracker,
 ) -> Result<ImportResult> {
-    import_batch(cfg, conn, collect_sources(src), mode, origin, tracker)
+    import_batch(cfg, conn, collect_sources(src), mode, origin, None, tracker)
+}
+
+/// 带曲源归属的导入：`source_id` 写入每首候选，最终落到 `download_records.source_kind`。
+/// 手工选择文件夹 / 扫描 / NCM 回补走 `import_folder_with_progress`（传 None）。
+pub fn import_folder_with_progress_from_source(
+    cfg: &Config,
+    conn: &Connection,
+    src: &Path,
+    mode: ImportMode,
+    origin: Origin,
+    source_id: Option<&str>,
+    tracker: &ProgressTracker,
+) -> Result<ImportResult> {
+    import_batch(
+        cfg,
+        conn,
+        collect_sources(src),
+        mode,
+        origin,
+        source_id,
+        tracker,
+    )
+}
+
+/// 「持续监听」只读扫描：统计曲源目录内仍可导入的音频文件数。
+/// 零新增线程、不写库、不复制、不联网；结果仅用于「发现 N 首新歌」提示，
+/// 实际入库仍须用户确认后走既有判重链路。
+/// v0.14.0：`.ncm` 不计入 found（无工具时只提示配置工具，不进入「新增歌曲」口径）。
+pub fn count_source_audio_files(dir: &Path) -> u32 {
+    count_source_audio_and_ncm(dir).0
+}
+
+/// 同一次只读扫描分别返回（可导入音频数, `.ncm` 文件数）。
+/// `.ncm` 单列供前端提示「待配置 NCM 工具」，永不并入音频数、也不计入 check 的 total。
+pub fn count_source_audio_and_ncm(dir: &Path) -> (u32, u32) {
+    let items = collect_sources(dir);
+    let audio = items.iter().filter(|i| matches!(i.kind, SourceKind::Audio)).count() as u32;
+    let ncm = items.iter().filter(|i| matches!(i.kind, SourceKind::Ncm)).count() as u32;
+    (audio, ncm)
 }
 
 /// 递归收集源文件夹里的可播放音频与 .ncm。跳过 `.mt` / trash / 挂起目录（避免把曲库
@@ -247,22 +293,32 @@ pub fn import_source_with_progress(
     source_dir: &Path,
     is_netease: bool,
     mode: ImportMode,
+    source_id: &str,
     tracker: &ProgressTracker,
 ) -> Result<ImportResult> {
     if !source_dir.is_dir() {
         anyhow::bail!("来源目录不存在或不可访问：{}", source_dir.display());
     }
     if is_netease {
-        return import_folder_with_progress(
+        return import_folder_with_progress_from_source(
             cfg,
             conn,
             source_dir,
             ImportMode::Copy,
             Origin::NeteaseSync,
+            Some(source_id),
             tracker,
         );
     }
-    import_folder_with_progress(cfg, conn, source_dir, mode, Origin::Manual, tracker)
+    import_folder_with_progress_from_source(
+        cfg,
+        conn,
+        source_dir,
+        mode,
+        Origin::Manual,
+        Some(source_id),
+        tracker,
+    )
 }
 
 /// 处理 pendingNcm 积压：把此前因「无工具」暂存的 .ncm 逐个按下载逻辑转换入库。
@@ -293,7 +349,15 @@ pub fn process_pending_ncm_with_progress(
         })
         .collect();
     items.sort_by(|a, b| a.path.cmp(&b.path));
-    match import_batch(cfg, conn, items, ImportMode::Move, Origin::NcmBackfill, tracker) {
+    match import_batch(
+        cfg,
+        conn,
+        items,
+        ImportMode::Move,
+        Origin::NcmBackfill,
+        None,
+        tracker,
+    ) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("pendingNcm 回补失败：{e}");
@@ -332,7 +396,7 @@ pub fn import_ncm_with_progress(
         fname: fname_of(src).to_string_lossy().to_string(),
         kind,
     }];
-    let res = import_batch(cfg, conn, items, mode, origin, tracker)?;
+    let res = import_batch(cfg, conn, items, mode, origin, None, tracker)?;
     if res.held > 0 {
         Ok(ImportOutcome::Held)
     } else if res.imported > 0 {
@@ -346,16 +410,88 @@ pub fn import_ncm_with_progress(
     }
 }
 
-/// 两阶段批次的公共实现：收集 → `duplicates::finalize()` → 进度结算。
+/// 与 `candidates` 下标对齐的显示信息，供批次钩子实时上报进度。
+struct CandidateMeta {
+    fname: String,
+    action: ImportAction,
+    temp: bool,
+}
+
+/// 把 `finalize_with_hook` 的逐首回调接到 `ProgressTracker`：
+/// 每首开始归位时刷新「当前文件/动作」，结果落定时立刻写日志并结算计数，
+/// 从而消除「阶段②全部复制完才批量结算」造成的 0/N 假死。
+struct ImportHook<'a> {
+    tracker: &'a ProgressTracker,
+    meta: Vec<CandidateMeta>,
+    res: RefCell<ImportResult>,
+}
+
+impl duplicates::BatchHook for ImportHook<'_> {
+    fn on_begin(&self, index: usize, _c: &Candidate) {
+        // 每首归位前检查暂停：阶段②复制大文件同样可耗时，需能被暂停挂起。
+        self.tracker.wait_if_paused();
+        let Some(m) = self.meta.get(index) else { return };
+        self.tracker.begin_file(&m.fname);
+        self.tracker.set_action(m.action);
+    }
+
+    fn on_settled(&self, index: usize, c: &Candidate, disposition: &Disposition) {
+        let Some(m) = self.meta.get(index) else { return };
+        let mut res = self.res.borrow_mut();
+        let status = match disposition {
+            Disposition::Imported | Disposition::Updated => {
+                res.imported += 1;
+                self.tracker.log(m.action, &m.fname, EntryStatus::Imported, "");
+                EntryStatus::Imported
+            }
+            Disposition::Skipped => {
+                res.skipped += 1;
+                cleanup_temp(c, m.temp);
+                let msg = if self.tracker.is_cancelled() {
+                    "已停止，未处理"
+                } else {
+                    "曲库中已存在"
+                };
+                self.tracker
+                    .log(ImportAction::Skip, &m.fname, EntryStatus::Skipped, msg);
+                EntryStatus::Skipped
+            }
+            Disposition::Held => {
+                res.held += 1;
+                self.tracker.log(
+                    ImportAction::Stage,
+                    &m.fname,
+                    EntryStatus::Held,
+                    "重复文件已挂起，等待对比决策",
+                );
+                EntryStatus::Held
+            }
+            Disposition::Failed(msg) => {
+                res.failed += 1;
+                cleanup_temp(c, m.temp);
+                self.tracker
+                    .log(m.action, &m.fname, EntryStatus::Failed, msg);
+                EntryStatus::Failed
+            }
+        };
+        self.tracker.end_file(status);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.tracker.is_cancelled()
+    }
+}
+
+/// 两阶段批次的公共实现：收集 → `duplicates::finalize_with_hook()`（逐首结算）。
 fn import_batch(
     cfg: &Config,
     conn: &Connection,
     items: Vec<SourceItem>,
     mode: ImportMode,
     origin: Origin,
+    source_id: Option<&str>,
     tracker: &ProgressTracker,
 ) -> Result<ImportResult> {
-    let mut res = ImportResult::default();
     tracker.set_total(items.len() as u32);
     let default_action = match mode {
         ImportMode::Copy => ImportAction::Copy,
@@ -363,22 +499,25 @@ fn import_batch(
     };
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut prepared: Vec<Prepared> = Vec::new();
+    let mut meta: Vec<CandidateMeta> = Vec::new();
 
     // ===== 阶段①：只收集，不写 DB / 不归位 / 不弹窗 =====
+    // 进度分子在本阶段推进（耗时最长：逐个 .ncm 走外部工具转换），
+    // 避免整段收集期 UI 一直显示 0/N；每个源文件恰好 advance 一次。
     for item in &items {
+        tracker.wait_if_paused();
         tracker.begin_file(&item.fname);
         match item.kind {
             SourceKind::Audio => {
                 tracker.set_action(default_action);
                 match duplicates::candidate_from_audio(cfg, &item.path, mode.into(), origin) {
-                    Ok(c) => {
-                        let index = candidates.len();
+                    Ok(mut c) => {
+                        c.source_id = source_id.map(|s| s.to_string());
                         candidates.push(c);
-                        prepared.push(Prepared::Candidate {
-                            index,
-                            temp: false,
+                        meta.push(CandidateMeta {
                             fname: item.fname.clone(),
                             action: default_action,
+                            temp: false,
                         });
                     }
                     Err(e) => prepared.push(Prepared::Failed {
@@ -390,103 +529,93 @@ fn import_batch(
             }
             SourceKind::Ncm => {
                 if !cfg.ncm.tool_ready() {
-                    tracker.set_action(ImportAction::Stage);
-                    match stage_pending_ncm(cfg, &item.path, mode, &item.fname) {
-                        Ok(()) => prepared.push(Prepared::PendingNcm {
-                            fname: item.fname.clone(),
-                        }),
-                        Err(e) => prepared.push(Prepared::Failed {
-                            fname: item.fname.clone(),
-                            message: e.to_string(),
-                            action: ImportAction::Stage,
-                        }),
-                    }
+                    // v0.14.0：无 NCM 工具 → 直接跳过，留在源目录、不复制不暂存；
+                    // 下次更新曲源时重扫源目录会再次看到它，配了工具后正常转换。
+                    tracker.set_action(ImportAction::Skip);
+                    prepared.push(Prepared::Skipped {
+                        fname: item.fname.clone(),
+                        action: ImportAction::Skip,
+                        reason: "未配置 NCM 工具，跳过加密文件（留在源目录）".to_string(),
+                    });
                 } else {
                     tracker.set_action(ImportAction::Convert);
-                    match stage_ncm_audio(cfg, &item.path, mode, tracker, &item.fname) {
-                        Ok(audio_out) => {
-                            let out_name = fname_of(&audio_out).to_string_lossy().to_string();
-                            match duplicates::candidate_from_audio(
-                                cfg,
-                                &audio_out,
-                                FileMode::Move,
-                                origin,
-                            ) {
-                                Ok(mut c) => {
-                                    // 转换产物是临时文件：挂起时必须搬进 pending 目录，
-                                    // 否则它会留在 download/ 被下次扫描重新入库。
-                                    c.is_temp = true;
-                                    let index = candidates.len();
-                                    candidates.push(c);
-                                    prepared.push(Prepared::Candidate {
-                                        index,
-                                        temp: true,
-                                        fname: out_name,
-                                        action: ImportAction::Move,
-                                    });
-                                }
-                                Err(e) => {
-                                    let _ = std::fs::remove_file(&audio_out);
-                                    prepared.push(Prepared::Failed {
-                                        fname: item.fname.clone(),
-                                        message: e.to_string(),
-                                        action: ImportAction::Convert,
-                                    });
-                                }
+                    // v0.14.0：转换前按 (曲源 id, 原始 ncm 文件名) 查库短路；
+                    // 已转换过则跳过解码（省外部工具 + 临时文件 I/O）。
+                    let already = source_id.and_then(|sid| {
+                        match db::ncm_conversion_exists(conn, sid, &item.fname) {
+                            Ok(v) => Some(v),
+                            Err(e) => {
+                                eprintln!("NCM 转换判重查询失败（降级为不跳过）：{e}");
+                                Some(false)
                             }
                         }
-                        Err(e) => prepared.push(Prepared::Failed {
+                    }).unwrap_or(false);
+                    if already {
+                        prepared.push(Prepared::Skipped {
                             fname: item.fname.clone(),
-                            message: e.to_string(),
-                            action: ImportAction::Convert,
-                        }),
+                            action: ImportAction::Skip,
+                            reason: "该 .ncm 已转换入库，跳过".to_string(),
+                        });
+                    } else {
+                        match stage_ncm_audio(cfg, &item.path, mode, tracker, &item.fname) {
+                            Ok(audio_out) => {
+                                let out_name = fname_of(&audio_out).to_string_lossy().to_string();
+                                match duplicates::candidate_from_audio(
+                                    cfg,
+                                    &audio_out,
+                                    FileMode::Move,
+                                    origin,
+                                ) {
+                                    Ok(mut c) => {
+                                        // 转换产物是临时文件：挂起时必须搬进 pending 目录，
+                                        // 否则它会留在 download/ 被下次扫描重新入库。
+                                        c.is_temp = true;
+                                        c.source_id = source_id.map(|s| s.to_string());
+                                        // v0.14.0：记录 NCM 来源，落库后供转换前短路判重。
+                                        c.ncm_origin = source_id.map(|sid| (sid.to_string(), item.fname.clone()));
+                                        candidates.push(c);
+                                        meta.push(CandidateMeta {
+                                            fname: out_name,
+                                            action: ImportAction::Move,
+                                            temp: true,
+                                        });
+                                    }
+                                    Err(e) => {
+                                        let _ = std::fs::remove_file(&audio_out);
+                                        prepared.push(Prepared::Failed {
+                                            fname: item.fname.clone(),
+                                            message: e.to_string(),
+                                            action: ImportAction::Convert,
+                                        });
+                                    }
+                                }
+                            }
+                            Err(e) => prepared.push(Prepared::Failed {
+                                fname: item.fname.clone(),
+                                message: e.to_string(),
+                                action: ImportAction::Convert,
+                            }),
+                        }
                     }
                 }
             }
         }
+        // 一个源文件收集/转换完毕 → 进度分子 +1（与阶段②的 end_file 结果计数分离，不重复）。
+        tracker.advance();
     }
 
-    // ===== 阶段②：批次结束统一判定并落地 =====
-    let outcome = duplicates::finalize(cfg, conn, &candidates)?;
+    // ===== 阶段②：逐首归位并实时结算（不再等整批结束才批量回写） =====
+    // 钩子按候选索引恰好结算一次；`prepared` 里只有「无工具暂存的 .ncm」与
+    // 「抽取失败」两类没有候选，需要在此单独结算，避免重复计数。
+    let hook = ImportHook {
+        tracker,
+        meta,
+        res: RefCell::new(ImportResult::default()),
+    };
+    duplicates::finalize_with_hook(cfg, conn, &candidates, Some(&hook))?;
+    let mut res = hook.res.into_inner();
     for p in prepared {
         match p {
-            Prepared::Candidate {
-                index,
-                temp,
-                fname,
-                action,
-            } => {
-                let status = match &outcome.dispositions[index] {
-                    Disposition::Imported | Disposition::Updated => {
-                        res.imported += 1;
-                        tracker.log(action, &fname, EntryStatus::Imported, "");
-                        EntryStatus::Imported
-                    }
-                    Disposition::Skipped => {
-                        res.skipped += 1;
-                        cleanup_temp(&candidates[index], temp);
-                        tracker.log(ImportAction::Skip, &fname, EntryStatus::Skipped, "曲库中已存在");
-                        EntryStatus::Skipped
-                    }
-                    Disposition::Held => {
-                        res.held += 1;
-                        tracker.log(
-                            ImportAction::Stage,
-                            &fname,
-                            EntryStatus::Pending,
-                            "重复文件已挂起，等待对比决策",
-                        );
-                        EntryStatus::Pending
-                    }
-                    Disposition::Failed(msg) => {
-                        res.failed += 1;
-                        cleanup_temp(&candidates[index], temp);
-                        tracker.log(action, &fname, EntryStatus::Failed, msg);
-                        EntryStatus::Failed
-                    }
-                };
-                tracker.end_file(status);
-            }
             Prepared::PendingNcm { fname } => {
                 res.pending += 1;
                 tracker.log(
@@ -496,6 +625,18 @@ fn import_batch(
                     "无 NCM 工具，暂存待转换",
                 );
                 tracker.end_file(EntryStatus::Pending);
+            }
+            Prepared::Skipped {
+                fname,
+                action,
+                reason,
+            } => {
+                res.skipped += 1;
+                if reason.starts_with("未配置 NCM 工具") {
+                    res.ncm_skipped += 1;
+                }
+                tracker.log(action, &fname, EntryStatus::Skipped, &reason);
+                tracker.end_file(EntryStatus::Skipped);
             }
             Prepared::Failed {
                 fname,
@@ -673,7 +814,7 @@ mod import_ncm_tests {
     }
 
     #[test]
-    fn import_ncm_no_tool_branches_to_pending() {
+    fn import_ncm_no_tool_skips_and_leaves_in_source() {
         let root = std::env::temp_dir().join(format!("mt_imp_{}_a", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
@@ -693,21 +834,23 @@ mod import_ncm_tests {
 
         let res = import_folder(&cfg, &conn, &src, ImportMode::Copy).unwrap();
         assert_eq!(res.imported, 1, "普通音频应入库 1");
-        assert_eq!(res.pending, 1, "ncm 无工具应暂存 1");
+        assert_eq!(res.pending, 0, "无工具不应再暂存 .ncm");
+        assert_eq!(res.skipped, 1, "无工具的 .ncm 应计为跳过");
+        assert_eq!(res.ncm_skipped, 1, "应精确统计跳过的加密文件");
         assert_eq!(res.failed, 0);
         // 曲库正式位置有 1 个音频（普通 wav 已归位）。
         assert_eq!(count_library_audio(&root), 1, "曲库应有 1 个音频");
-        // ncm 应进入 download/pendingNcm/，原文件仍在 src（Copy 模式）。
+        // .ncm 留在源目录，既不暂存到 pendingNcm 也不归档到 download/ncm。
+        assert!(ncm.is_file(), "无工具的 .ncm 应留在源目录");
         let pending = cfg.paths.pending_ncm_dir().join("trackB.ncm");
-        assert!(pending.is_file(), "ncm 应暂存到 pendingNcm");
-        assert!(ncm.is_file(), "Copy 模式原 ncm 应保留");
-        // download/ncm 不应有归档（无工具不转换）。
+        assert!(!pending.is_file(), "无工具不应写入 pendingNcm");
         assert_eq!(
             std::fs::read_dir(cfg.paths.ncm_raw_dir).unwrap().count(),
             0,
             "无工具不应归档 ncm"
         );
 
+        let _ = std::fs::remove_dir_all(&src);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -725,7 +868,8 @@ mod import_ncm_tests {
         // sample 与源文件夹都放在 root 之外，避免被曲库音频计数误计。
         let sample = std::env::temp_dir().join(format!("mt_imp_smp_{}.wav", std::process::id()));
         write_valid_wav(&sample);
-        let tool_path = cfg.paths.tools_dir.join("fake_ncmdump.cmd");
+        let tool_path = root.join("tools").join("fake_ncmdump.cmd");
+        std::fs::create_dir_all(tool_path.parent().unwrap()).unwrap();
         let cmd = format!(
             "@echo off\r\ncopy /Y \"{}\" \"%~dpn1.wav\" >nul\r\n",
             sample.display()
@@ -764,6 +908,70 @@ mod import_ncm_tests {
             .any(|e| e.file_name().to_string_lossy().contains("trackC"));
         assert!(!left_in_dl, "download/ 不应残留 trackC 文件");
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn count_source_audio_excludes_ncm_from_found() {
+        let src = std::env::temp_dir().join(format!("mt_imp_src_{}_count", std::process::id()));
+        let _ = std::fs::remove_dir_all(&src);
+        std::fs::create_dir_all(&src).unwrap();
+        write_valid_wav(&src.join("a.wav"));
+        std::fs::write(src.join("b.ncm"), b"FAKE_NCM_BYTES").unwrap();
+
+        let (found, ncm) = count_source_audio_and_ncm(&src);
+        assert_eq!(found, 1, ".ncm 不得计入可导入音频");
+        assert_eq!(ncm, 1, ".ncm 应单列计数");
+        assert_eq!(count_source_audio_files(&src), 1);
+        let _ = std::fs::remove_dir_all(&src);
+    }
+
+    #[test]
+    fn converted_ncm_is_short_circuited_on_next_source_update() {
+        let root = std::env::temp_dir().join(format!("mt_imp_{}_dedup", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut cfg = config::build_library_config(&root, "artist_album", "");
+        cfg.ensure_dirs().unwrap();
+        let conn = db::open(&cfg).unwrap();
+
+        let sample = std::env::temp_dir().join(format!("mt_imp_smp_{}_dedup.wav", std::process::id()));
+        write_valid_wav(&sample);
+        let tool_path = root.join("tools").join("fake_ncmdump.cmd");
+        std::fs::create_dir_all(tool_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &tool_path,
+            format!("@echo off\r\ncopy /Y \"{}\" \"%~dpn1.wav\" >nul\r\n", sample.display()),
+        )
+        .unwrap();
+        cfg.ncm.tool_path = tool_path;
+        cfg.ncm.command_template = r#"cmd /C "{tool}" "{input}""#.into();
+
+        let src = std::env::temp_dir().join(format!("mt_imp_src_{}_dedup", std::process::id()));
+        let _ = std::fs::remove_dir_all(&src);
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("trackD.ncm"), b"FAKE_NCM_BYTES_D").unwrap();
+
+        // 网易云来源强制 Copy：源 .ncm 保留，转换产物入库并记 ncm_origin。
+        let first = import_source_with_progress(
+            &cfg, &conn, &src, true, ImportMode::Copy, "src-dedup", &ProgressTracker::new(),
+        )
+        .unwrap();
+        assert_eq!(first.imported, 1);
+        assert!(src.join("trackD.ncm").is_file(), "Copy 模式源 ncm 应保留");
+        assert!(db::ncm_conversion_exists(&conn, "src-dedup", "trackD.ncm").unwrap());
+
+        // 第二次更新同一曲源：命中短路，不再调外部工具解码。
+        let second = import_source_with_progress(
+            &cfg, &conn, &src, true, ImportMode::Copy, "src-dedup", &ProgressTracker::new(),
+        )
+        .unwrap();
+        assert_eq!(second.imported, 0, "已转换 ncm 不应重复入库");
+        assert_eq!(second.skipped, 1);
+        assert_eq!(second.ncm_skipped, 0, "已转换短路不是未配置工具跳过");
+
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_file(&sample);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -59,6 +59,10 @@ CODEBUDDY-ref.md
 !tools/package_gui.bat
 !tools/dist_readme.md
 
+# --- 插件目录（合规：只入库 README 说明，插件二进制永不入库/不分发） ---
+/app/plugin/*
+!/app/plugin/README.md
+
 # --- WorkBuddy 会话数据：本地多会话共享用，不发布到远程（含 memory 笔记） ---
 /.workbuddy/
 

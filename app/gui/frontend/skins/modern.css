@@ -1,57 +1,75 @@
 /* ============================================================
-   现代皮肤（modern）
+   现代皮肤（modern）—— v0.15.0 起为唯一布局皮肤
    ------------------------------------------------------------
    - 与底层背景皮肤（skin_type / skin_preset）正交：这里只换「整体配色 + 布局」。
-   - 复用 classic.css 的全部组件样式与 core.js 引擎（DOM 结构不变，仅换 CSS）。
-   - 令牌命名严格遵循 docs/THEME_TOKENS.md，保证与 classic 风格统一、可切换。
-   - #30：所有布局规则一律以 html.skin-modern 为前缀，classic 皮肤 1:1 零影响。
+   - 复用 base.css 的全部组件样式与 core.js 引擎（DOM 结构不变，仅换 CSS）。
+   - 令牌命名严格遵循 docs/THEME_TOKENS.md。
+   - 布局规则统一以 html.skin-modern 为前缀（首屏脚本固定加上）。
    ============================================================ */
-@import url('classic.css');
+@import url('base.css');
 
-/* 浅色主题：棕强调色（出厂默认棕，设置里另给蓝等预设） */
+/* 浅色主题：Radix tomato（暖棕）9 阶实心色，中性色走 gray 阶。
+   出厂默认即 Radix 色，选中其它色系时 core.js 会覆写 --radix-1..12 及语义别名。 */
 :root {
-  --primary: #8E3B2F;
-  --primary-dark: #6f2a20;
-  --primary-soft: rgba(142, 59, 47, 0.14);
-  --primary-glow: rgba(142, 59, 47, 0.35);
-  /* 略暖的底色，呼应重设计稿的温馨感（仍属浅色主题） */
-  --bg: #f4f2ec;
-  --bg-grad: linear-gradient(180deg, #fbf9f7 0%, #efe9e4 100%);
-  --surface: #fffdfa;
-  --surface-2: #f8f6f0;
-  --chip-bg: rgba(142, 59, 47, 0.08);
+  --radix-1: #fffcfc; --radix-2: #fff8f7; --radix-3: #feebe7; --radix-4: #ffdcd3;
+  --radix-5: #ffcdc2; --radix-6: #fdbdaf; --radix-7: #f5a898; --radix-8: #ec8e7b;
+  --radix-9: #e54d2e; --radix-10: #dd4425; --radix-11: #d13415; --radix-12: #5c271f;
+  --primary: #e54d2e;        /* tomato 9 */
+  --primary-dark: #dd4425;   /* tomato 10 */
+  --primary-soft: #feebe7;   /* tomato 3 */
+  --primary-glow: #ec8e7b;   /* tomato 8 */
+  --bg: #fcfcfc;             /* gray 1 */
+  --bg-grad: linear-gradient(180deg, #fcfcfc 0%, #f9f9f9 100%);
+  --surface: #ffffff;
+  --surface-2: #f9f9f9;      /* gray 2 */
+  --text: #202020;           /* gray 12 */
+  --text-soft: #646464;      /* gray 11 */
+  --text-muted: #8d8d8d;     /* gray 9 */
+  --divider: #e0e0e0;        /* gray 5 */
+  --divider-strong: #d9d9d9; /* gray 6 */
+  --chip-bg: #feebe7;        /* tomato 3 */
   /* #30 rail 令牌（重设计稿左侧深色导航）；
      #37：--rail-base 是「无主题色」时的出厂深底，has-accent 时与 --primary 混合染色。 */
-  --rail-base: #191715;
-  --rail: #191715;
-  --rail-text: #ede8de;
-  --rail-muted: #b3aca0;
+  --rail-base: #222222;      /* gray dark 3：rail 为导航组件表面，按 Radix 规范取 step 3 */
+  --rail: #222222;
+  --rail-text: #eeeeee;      /* gray dark 12 */
+  --rail-muted: #b4b4b4;     /* gray dark 11 */
   --rail-line: rgba(255, 255, 255, 0.09);
   --rail-hover: rgba(255, 255, 255, 0.06);
   --serif: "Noto Serif CJK SC", "Songti SC", "Source Han Serif SC", Georgia, serif;
+  /* v0.13.0：品牌区休闲手写体（系统字体，不打包）；缺字体按 Segoe Script → Comic Sans MS → cursive 回退。 */
+  --font-brand: "Segoe Print", "Segoe Script", "Comic Sans MS", cursive;
 }
 
-/* 深色主题：暖棕强调（亮一档，保证深色底上的可读性） */
+/* 深色主题：Radix tomato 暗色阶，中性色走 gray 暗阶。 */
 [data-theme="dark"] {
-  --primary: #D8795F;
-  --primary-dark: #b35f47;
-  --primary-soft: rgba(216, 121, 95, 0.16);
-  --primary-glow: rgba(216, 121, 95, 0.35);
-  --bg: #131211;
-  --bg-grad: linear-gradient(180deg, #1a1614 0%, #0f0c0a 100%);
-  --surface: #1b1a18;
-  --surface-2: #222019;
-  --chip-bg: rgba(216, 121, 95, 0.12);
-  --rail-base: #0c0b0a;
-  --rail: #0c0b0a;
-  --rail-text: #ede8de;
-  --rail-muted: #948e84;
+  --radix-1: #181111; --radix-2: #1f1513; --radix-3: #391714; --radix-4: #4e1511;
+  --radix-5: #5e1c16; --radix-6: #6e2920; --radix-7: #853a2d; --radix-8: #ac4d39;
+  --radix-9: #e54d2e; --radix-10: #ec6142; --radix-11: #ff977d; --radix-12: #fbd3cb;
+  --primary: #e54d2e;        /* tomato dark 9 */
+  --primary-dark: #ec6142;   /* tomato dark 10 */
+  --primary-soft: #391714;   /* tomato dark 3 */
+  --primary-glow: #ac4d39;   /* tomato dark 8 */
+  --bg: #111111;             /* gray dark 1 */
+  --bg-grad: linear-gradient(180deg, #191919 0%, #111111 100%);
+  --surface: #191919;        /* gray dark 2 */
+  --surface-2: #222222;      /* gray dark 3 */
+  --text: #eeeeee;           /* gray dark 12 */
+  --text-soft: #b4b4b4;      /* gray dark 11 */
+  --text-muted: #7b7b7b;     /* gray dark 10 */
+  --divider: #313131;        /* gray dark 5 */
+  --divider-strong: #3a3a3a; /* gray dark 6 */
+  --chip-bg: #391714;        /* tomato dark 3 */
+  --rail-base: #191919;      /* gray dark 2：深色主题比浅色主题暗一阶 */
+  --rail: #191919;
+  --rail-text: #eeeeee;      /* gray dark 12 */
+  --rail-muted: #7b7b7b;     /* gray dark 10 */
 }
 
 /* ---------- 重设计风格基础 ---------- */
 html.skin-modern {
-  --radius: 14px;
-  --radius-lg: 18px;
+  --radius: 12px;
+  --radius-lg: 16px;
   --rail-w: 236px;
   --rail-head-h: 152px;
   /* v0.12.2：曲库卡片右侧三枚维护图标的尺寸 / 间距 / 定位基准。
@@ -63,8 +81,8 @@ html.skin-modern {
   --player-h: 80px;
 }
 
-/* ---------- #37：主题色联动（用户拍板：rail 底色派生 + 侧栏跟随）----------
-   只有 html.has-accent（手动选色或皮肤自动取色）时才改写，出厂默认深棕 rail 1:1 不变。
+/* ---------- #37：主题色联动（rail 底色派生 + 侧栏跟随）----------
+   仅 html.has-accent（手动选色或皮肤自动取色）时改写，无主题色则用上面 Radix gray dark 出厂色。
    rail 连续深底由 html::before 提供，改 --rail 一处即整体生效；激活项 / 品牌 K 方块
    本来就消费 --primary，会同步跟随。 */
 html.skin-modern.has-accent {
@@ -77,6 +95,19 @@ html.skin-modern.has-accent {
 html.skin-modern.has-accent[data-theme="dark"] {
   --primary-soft: color-mix(in srgb, var(--primary) 16%, transparent);
   --chip-bg: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+/* v0.15.5：中性灰两系（slate「灰」/ sand「暖白」）选为主色时，rail 不再用 26% 主色混深底，
+   改用该系自身 6 阶为底、11/12 阶为字：浅色主题得到浅灰白侧栏（解决「侧栏太深」），且 slate↔sand
+   在 6 阶色差 ΔE≈5.2 可辨（3 阶仅 2.1 看不出），深色主题自动切到该系深阶；
+   rail 全部文字/描边/hover 均走令牌，故一处改写整体生效。
+   v0.15.4 的纯灰 NEUTRAL 预设已移除；彩色 5 系不命中本规则，仍走 26% 混深底，出厂观感不变。 */
+html.skin-modern.has-accent[data-radix-scale="slate"],
+html.skin-modern.has-accent[data-radix-scale="sand"] {
+  --rail: var(--radix-6);
+  --rail-text: var(--radix-12);
+  --rail-muted: var(--radix-11);
+  --rail-line: color-mix(in srgb, var(--radix-8) 55%, transparent);
+  --rail-hover: color-mix(in srgb, var(--radix-9) 14%, transparent);
 }
 
 /* ============================================================
@@ -96,7 +127,7 @@ html.skin-modern body.skin-active { background: transparent; }
 html.skin-modern::before {
   content: ""; position: fixed; left: 0; top: 0; bottom: 0;
   width: var(--rail-w); z-index: 29; pointer-events: none;
-  background: var(--rail); border-right: 1px solid var(--rail-line);
+  background: var(--rail); border-right: 0.5px solid var(--rail-line);
 }
 
 /* ---------- rail 上段：品牌 + 当前曲库 + 切换按钮 ---------- */
@@ -108,37 +139,43 @@ html.skin-modern .topbar {
   display: flex; flex-direction: column; align-items: stretch;
   justify-content: flex-start; gap: 6px; padding: 16px 12px 10px;
   color: var(--rail-text); background: var(--rail);
-  border-right: 1px solid var(--rail-line); box-shadow: none;
+  border-right: 0.5px solid var(--rail-line); box-shadow: none;
 }
 html.skin-modern .brand {
-  display: grid; grid-template-columns: 30px minmax(0, 1fr); grid-template-rows: auto auto;
+  display: grid; grid-template-columns: 50px minmax(0, 1fr); grid-template-rows: auto auto;
   column-gap: 10px; align-items: center; flex: none;
-  font-size: 15px; font-weight: 650; letter-spacing: .02em;
-  white-space: nowrap; padding: 2px 8px 14px;
+  font-family: var(--font-brand);
+  font-size: 14px; font-weight: 650; letter-spacing: .02em;
+  white-space: nowrap; padding: 2px 8px 7px;
 }
+/* v0.13.3：K 方块放大为 50×50 圆角 8px 正方形，上沿对齐「K music」文字顶；
+   内嵌 K 随方块放大为 40px 装饰字（不纳入文本四档字号），保留品牌手写体。
+   第一列随宽度同步 30→50px（见 .brand grid-template-columns）；
+   height 需显式覆盖 classic.css 的 .brand::before{height:22px}。 */
 html.skin-modern .brand::before {
   content: "K"; grid-column: 1; grid-row: 1 / 3;
-  width: 30px; height: 30px; border-radius: 8px;
-  background: var(--primary); color: var(--on-primary, #fff);
+  align-self: start; width: 50px; height: 50px; border-radius: 8px;
+  background: var(--primary); color: var(--on-primary, #fcfcfc);
   -webkit-mask: none; mask: none;
-  display: grid; place-items: center; font: 700 15px/1 var(--serif);
+  display: grid; place-items: center; font: 700 40px/1 var(--font-brand);
 }
 /* #34：品牌区第二行改为编译期版本号（core.js 由 /api/status 的 app_version 写入），
    删除原来的英文副标题；经典皮肤下 .brand-version 隐藏。 */
 html.skin-modern .brand-version {
   display: block; /* 覆盖 classic.css 的 .brand-version{display:none}，否则第二行不渲染 */
   grid-column: 2; grid-row: 2; align-self: start;
+  font-family: var(--font-text);
   font-size: 10px; font-weight: 400; letter-spacing: .14em;
   color: var(--rail-muted); white-space: nowrap;
 }
 html.skin-modern .library-name {
-  max-width: 100%; font-size: 12.5px; font-weight: 600; opacity: 1;
-  padding: 7px 10px; border-radius: 10px;
-  background: var(--rail-hover); border: 1px solid var(--rail-line);
+  max-width: 100%; font-size: 12px; font-weight: 600; opacity: 1;
+  padding: 7px 10px; border-radius: 12px;
+  background: var(--rail-hover); border: 0.5px solid var(--rail-line);
 }
 html.skin-modern .library-name::before {
   content: "当前曲库"; display: block; margin-bottom: 2px;
-  font-size: 9.5px; font-weight: 400; letter-spacing: .14em; text-transform: uppercase;
+  font-size: 10px; font-weight: 400; letter-spacing: .14em; text-transform: uppercase;
   color: var(--rail-muted);
 }
 /* v0.12.2：切换曲库与「来源管理 / 重新扫描」两枚图标同排收进曲库卡片右侧。
@@ -156,26 +193,26 @@ html.skin-modern #btn-switch-library:hover { background: var(--rail-hover); opac
 html.skin-modern .status {
   position: fixed; left: 12px; bottom: calc(var(--player-h) - 16px);
   width: calc(var(--rail-w) - 24px); z-index: 31;
-  font-size: 11px; line-height: 1.6; white-space: normal; opacity: 1;
-  padding: 10px; border-radius: 10px;
-  background: var(--rail-hover); border: 1px solid var(--rail-line);
+  font-size: 10px; line-height: 1.6; white-space: normal; opacity: 1;
+  padding: 10px; border-radius: 12px;
+  background: var(--rail-hover); border: 0.5px solid var(--rail-line);
   color: var(--rail-muted);
 }
 html.skin-modern .status::before {
   content: "曲库状态"; display: block; margin-bottom: 4px;
-  font-size: 9.5px; font-weight: 650; letter-spacing: .16em; text-transform: uppercase;
+  font-size: 10px; font-weight: 650; letter-spacing: .16em; text-transform: uppercase;
   color: var(--rail-text); opacity: .5;
 }
 html.skin-modern .actions {
   position: fixed; left: 12px; bottom: 12px;
   width: calc(var(--rail-w) - 24px); z-index: 31;
   display: flex; align-items: center; justify-content: flex-end; gap: 8px;
-  padding-top: 10px; border-top: 1px solid var(--rail-line);
+  padding-top: 10px; border-top: 0.5px solid var(--rail-line);
 }
 /* v0.12.3：左下「K music」与顶部 brand 重复，已移除（不再声明 ::before）。 */
 html.skin-modern .actions .md-btn {
   background: transparent; color: var(--rail-muted); border-color: transparent;
-  font-size: 11.5px;
+  font-size: 10px;
 }
 html.skin-modern .actions .md-btn:hover { background: var(--rail-hover); color: var(--rail-text); }
 
@@ -187,12 +224,12 @@ html.skin-modern .sidebar {
      底部留给曲库状态块 + 版本/设置块，避免 Tab 与它们重叠。 */
   padding: 50px 12px 136px; gap: 2px;
   background: var(--rail); color: var(--rail-text);
-  border: none; border-right: 1px solid var(--rail-line);
+  border: none; border-right: 0.5px solid var(--rail-line);
   border-radius: 0; box-shadow: none;
 }
 html.skin-modern .sidebar::before {
   content: "浏览"; padding: 10px 10px 6px;
-  font-size: 9.5px; font-weight: 650; letter-spacing: .16em; text-transform: uppercase;
+  font-size: 10px; font-weight: 650; letter-spacing: .16em; text-transform: uppercase;
   color: var(--rail-muted); opacity: .55;
 }
 html.skin-modern .tab-btn {
@@ -201,9 +238,9 @@ html.skin-modern .tab-btn {
 }
 html.skin-modern .tab-btn:hover { background: var(--rail-hover); color: var(--rail-text); }
 html.skin-modern .tab-btn.active {
-  background: var(--rail-hover); color: var(--rail-text); font-weight: 600;
-  box-shadow: inset 3px 0 0 var(--primary);
-  border-radius: 8px;
+  background: color-mix(in srgb, var(--primary) 18%, var(--rail));
+  color: var(--rail-text); font-weight: 600;
+  box-shadow: none; border-radius: 8px;
 }
 
 /* ---------- v0.12.3：stage 顶栏整行隐藏，页名由 rail 高亮 Tab 承担 ---------- */
@@ -213,7 +250,7 @@ html.skin-modern .toolbar {
   display: none; position: relative; flex: none;
   height: var(--stage-head-h); padding: 0 132px 0 24px; gap: 10px;
   flex-wrap: nowrap; overflow: hidden;
-  background: var(--bg); border-bottom: 1px solid var(--divider);
+  background: var(--bg); border-bottom: 0.5px solid var(--divider);
   box-shadow: none;
 }
 html.skin-modern .toolbar::before { content: none; }
@@ -229,9 +266,9 @@ html.skin-modern .topbar-search {
 }
 html.skin-modern .topbar-search::before { background: var(--rail-muted); }
 html.skin-modern .topbar-search #search {
-  height: 34px; border-radius: 9px; font-size: 12.5px;
+  height: 34px; border-radius: 8px; font-size: 12px;
   background: var(--surface-2); color: var(--text);
-  border: 1px solid var(--rail-line);
+  border: 0.5px solid var(--rail-line);
 }
 html.skin-modern .topbar-search #search::placeholder { color: var(--rail-muted); }
 /* v0.12.4：与 classic 一致，聚焦只改边框 / 底色，位置与尺寸一字不动。 */
@@ -251,7 +288,7 @@ html.skin-modern .pl-sidebar,
 html.skin-modern .pl-main,
 html.skin-modern .detail-pane,
 html.skin-modern .inline-detail {
-  border-radius: var(--radius-lg); box-shadow: var(--shadow);
+  border-radius: var(--radius-lg); box-shadow: none;
   background: var(--surface);
 }
 html.skin-modern .pane,
@@ -260,17 +297,20 @@ html.skin-modern .settings-modal,
 html.skin-modern .dialog { border-radius: var(--radius-lg); }
 html.skin-modern .md-btn.primary {
   background: linear-gradient(135deg, var(--primary), var(--primary-dark));
-  box-shadow: 0 2px 10px var(--primary-glow);
+  box-shadow: none;
 }
 html.skin-modern .track-row:hover,
 html.skin-modern .group-row:hover { background: var(--primary-soft); }
-html.skin-modern .md-select { border-radius: 10px; }
+html.skin-modern .md-select { border-radius: 12px; }
 
-/* ---------- stage 底栏：80px 播放器 / 覆盖层偏移 ---------- */
+/* ---------- stage 底栏：80px 播放器 / 覆盖层偏移 ----------
+   v0.12.15：三列网格、圆形播放键、渐变进度条均由 classic.css 继承，本段只覆盖
+   height / padding；236px rail 下 1280×720 无横向溢出（T4 / R8 守护）。 */
 html.skin-modern .player {
   height: var(--player-h); padding: 0 24px;
-  background: var(--surface); border-top: 1px solid var(--divider);
+  background: var(--surface); border-top: 0.5px solid var(--divider);
 }
+html.skin-modern .controls { gap: 4px; }
 html.skin-modern .now-view { left: var(--rail-w); bottom: var(--player-h); }
 html.skin-modern .lyrics-drawer { bottom: calc(var(--player-h) + 16px); }
 
@@ -292,9 +332,9 @@ html.skin-modern #albums-pane.album-wall .gcard-art { border-radius: 12px; }
 html.skin-modern #albums-pane.album-wall .gcard-name { font-size: 14px; }
 html.skin-modern #albums-pane.album-wall .pl-main {
   position: absolute; inset: 0; z-index: 2;
-  border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);
+  border-radius: var(--radius-lg); box-shadow: none;
   opacity: 0; pointer-events: none; transform: translateY(10px);
-  transition: opacity .2s ease, transform .2s ease;
+  transition: opacity 250ms ease-out, transform 250ms ease-out;
 }
 html.skin-modern #albums-pane.album-wall.album-picked .pl-main {
   opacity: 1; pointer-events: auto; transform: none;
@@ -332,7 +372,7 @@ html.skin-modern .win-btn {
   color: var(--rail-muted); opacity: 1;
 }
 html.skin-modern .win-btn:hover { background: var(--rail-hover); color: var(--rail-text); }
-html.skin-modern .win-btn.win-close:hover { background: var(--danger, #d33a3a); color: #fff; }
+html.skin-modern .win-btn.win-close:hover { background: var(--danger, #e54d2e); color: #fcfcfc; }
 /* 必须写在基础规则之后，否则同特异性声明会被后面的覆盖（CSS 级联顺序）。
    真机硬下限 1280（CSS 视口约 1250）不命中；这里只守护 demo 的 1080/900 尺寸。 */
 @media (max-width: 1100px) {
@@ -342,19 +382,18 @@ html.skin-modern .win-btn.win-close:hover { background: var(--danger, #d33a3a); 
 /* 原型：「共 N 首」在列表筛选条右端，小字弱化；刷新按钮紧随其后。 */
 html.skin-modern #track-filter-bar .track-count {
   margin-left: auto; background: transparent; padding: 0 4px;
-  font-size: 11.5px; color: var(--text-soft);
+  font-size: 10px; color: var(--text-soft);
 }
-/* #33：音质 chip 与「共 N 首 / 刷新」同处筛选条，尺寸略收以免把计数挤出右侧。 */
+/* #33：音质 chip 与「共 N 首」同处筛选条，尺寸略收以免把计数挤出右侧。 */
 html.skin-modern #track-filter-bar .filter-chips { flex: 0 1 auto; }
-html.skin-modern #track-filter-bar .filter-chip { height: 26px; padding: 0 9px; font-size: 11.5px; }
-html.skin-modern #track-filter-bar #btn-refresh { height: 28px; font-size: 11.5px; }
+html.skin-modern #track-filter-bar .filter-chip { height: 26px; padding: 0 9px; font-size: 10px; }
 
 /* ---------- #32：rail 内第 5 个同级 Tab 与收藏视图条 ---------- */
 html.skin-modern #btn-favorites .fav-entry-count {
   background: var(--rail-hover); color: var(--rail-muted);
 }
 html.skin-modern #btn-favorites.active .fav-entry-count {
-  background: rgba(255, 255, 255, 0.14); color: var(--rail-text);
+  background: color-mix(in srgb, var(--rail-text) 14%, transparent); color: var(--rail-text);
 }
 html.skin-modern .favorites-bar { background: var(--surface-2); border-radius: var(--radius); }
 
@@ -367,8 +406,8 @@ html.skin-modern .favorites-bar { background: var(--surface-2); border-radius: v
    设置按钮实测从 [169,654] 跑到 [169,101]，上移 553px 钻进顶栏。
    modern 的 rail 是不透明卡片化布局，玻璃规则本就不该继承，故整体禁用。
    ============================================================ */
-html.skin-modern body.skin-active { --surface: #fffdfa; --surface-glass: #fffdfa; }
-html.skin-modern[data-theme="dark"] body.skin-active { --surface: #1b1a18; --surface-glass: #1b1a18; }
+html.skin-modern body.skin-active { --surface: #fcfcfc; --surface-glass: #fcfcfc; }
+html.skin-modern[data-theme="dark"] body.skin-active { --surface: #191919; --surface-glass: #191919; }
 /* 与 classic.css 的 .skin-active 玻璃组一一对应，只覆盖 backdrop-filter。 */
 html.skin-modern body.skin-active .topbar,
 html.skin-modern body.skin-active .toolbar,
@@ -399,6 +438,19 @@ html.skin-modern body.skin-active .toolbar { border-color: var(--divider); }
 html.skin-modern .pane-handle,
 html.skin-modern .pane-resizer { display: none; }
 
+/* ---------- v0.12.7：第 6 个 Tab「曲源」的 rail 让位 ----------
+   新增一枚 38px Tab 后，中段导航整体下移；仅扩大底部预留，避免与曲库状态块 / 设置块重叠。
+   不覆盖 classic：全部规则带 html.skin-modern 前缀，且沿用 @import classic.css 的基础样式。 */
+html.skin-modern .sidebar { padding-bottom: 176px; }
+/* 去掉卡片 / Tab 的彩色左边缘条：选中态统一由 .tab-btn.active 的同色系底色承担。 */
+html.skin-modern #tab-sources.active { box-shadow: none; }
+html.skin-modern .progress-pill,
+html.skin-modern .progress-panel { background: var(--surface-2); }
+html.skin-modern .src-tip::after { background: var(--rail); color: var(--rail-text); }
+@media (max-width: 860px) {
+  html.skin-modern .sidebar { padding-bottom: 160px; }
+}
+
 /* ------------------------------------------------------------
    v0.12.2 曲库来源管理图标化：两枚维护图标收进「当前曲库」卡片右侧，
    与 #btn-switch-library 同排，不再单独占一行（原 top:112px 与卡片底边重叠）。
@@ -426,6 +478,113 @@ html.skin-modern .lib-btn:hover {
   background: var(--rail-hover); color: var(--rail-text); opacity: 1; filter: none;
 }
 html.skin-modern .lib-btn svg { width: 17px; height: 17px; display: block; }
-html.skin-modern .sources-modal { border-radius: var(--radius); }
+/* v0.12.11：曲源总览改为设置子页，#sources-modal 只剩「添加曲源」独立窗口。 */
+html.skin-modern .source-add-modal { border-radius: var(--radius); }
 html.skin-modern #sources-modal .settings-head,
-html.skin-modern #sources-modal .settings-nav { background: var(--surface-2); }
+html.skin-modern #sources-modal .source-add-actions { background: var(--surface-2); }
+
+/* ============================================================
+   v0.13.0：交互动效统一为 100 / 150 / 250ms 三档 ease-out。
+   不削减动画数量；spinner 等必要 animation 完全不动。
+   ============================================================ */
+html.skin-modern *,
+html.skin-modern *::before,
+html.skin-modern *::after { transition-timing-function: ease-out; }
+
+/* 150ms：明暗主题 / 皮肤切换时整片区域的颜色过渡（覆盖 classic 继承的 .28s ease）。 */
+html.skin-modern body,
+html.skin-modern .topbar,
+html.skin-modern .toolbar,
+html.skin-modern .sidebar,
+html.skin-modern .detail-pane,
+html.skin-modern .player,
+html.skin-modern .modal,
+html.skin-modern .tab-btn,
+html.skin-modern .track-table th,
+html.skin-modern .md-btn,
+html.skin-modern .pl-list li,
+html.skin-modern .cover,
+html.skin-modern .settings-section { transition-duration: 150ms; }
+
+/* 100ms：按钮 / 色块等即时反馈。 */
+html.skin-modern .md-btn,
+html.skin-modern .seg-btn,
+html.skin-modern .swatch,
+html.skin-modern .lib-btn,
+html.skin-modern .filter-chip,
+html.skin-modern .gcard-art { transition-duration: 100ms; }
+
+/* 250ms：浮层 / 弹窗 / 抽屉进出。 */
+html.skin-modern .dialog,
+html.skin-modern .modal,
+html.skin-modern .pl-main,
+html.skin-modern .lyrics-drawer { transition-duration: 250ms; }
+
+/* ============================================================
+   v0.16.6：视觉减负收敛（纯表现层，仅 modern 皮肤）
+   ------------------------------------------------------------
+   只改本文件、全部规则带 html.skin-modern 前缀；不动 DOM / 文案 /
+   控件尺寸 / 导航宽度 / 面板布局 / 功能入口；颜色只消费现有令牌
+   （--primary* / --divider / --text*），不写死色值、不改默认色板。
+   侧栏「当前曲库 / 曲库状态 / 搜索框 / 当前 Tab」与详情栏标题
+   「歌曲信息」保持现状：前者已足够弱化、后者承担明确标识，均不重复声明。
+   ============================================================ */
+
+/* ---------- 曲目列表：分隔线变细降对比 + 去选中行首列竖条 ---------- */
+html.skin-modern .track-table th {
+  border-bottom: 0.5px solid color-mix(in srgb, var(--divider) 70%, transparent);
+}
+html.skin-modern .track-table td {
+  border-bottom: 0.5px solid color-mix(in srgb, var(--divider) 55%, transparent);
+}
+/* 选中态只留浅主色底（18%，比 hover 的 9% 明确但不刺眼），首列竖条去掉。 */
+html.skin-modern .track-table tbody tr.selected td:first-child { box-shadow: none; }
+
+/* ---------- 筛选 chip：选中态改浅底描边（v0.16.5 统一语法），去投影 ---------- */
+html.skin-modern .filter-chip.active {
+  background: color-mix(in srgb, var(--primary) 12%, var(--surface));
+  color: var(--primary); font-weight: 600;
+  box-shadow: inset 0 0 0 0.5px var(--primary);
+}
+
+/* ---------- 分段模式切换控件：恢复实心主色选中态（用户偏好，与筛选 chip 区分） ---------- */
+html.skin-modern .seg-btn.active {
+  background: var(--primary); color: var(--on-primary, #fff);
+  box-shadow: none; font-weight: 600;
+}
+
+/* ---------- 歌曲详情栏：边框弱于列表卡片，字段层级靠字重/颜色 ---------- */
+html.skin-modern .detail-pane {
+  border: 0.5px solid color-mix(in srgb, var(--divider) 60%, transparent);
+}
+html.skin-modern .detail-fields > div,
+html.skin-modern .inline-fields > div,
+html.skin-modern .ar-detail-fields > div { color: var(--text-soft); }
+html.skin-modern .detail-fields b,
+html.skin-modern .inline-fields b,
+html.skin-modern .ar-detail-fields b { font-weight: 650; color: var(--text); }
+
+/* ---------- 底部播放器：去装饰投影 + 曲名/歌词/时间层级 ---------- */
+html.skin-modern .player { box-shadow: none; }
+html.skin-modern .now-playing { color: var(--text); font-weight: 600; }
+html.skin-modern .now-playing .np-lyric { color: var(--text-soft); opacity: .62; font-weight: 400; }
+html.skin-modern .seek .time { color: var(--text-muted); }
+
+/* ---------- 首次启动向导：收紧留白 / 去步骤竖条 / 浏览与输入框等高 / 底栏同表面 ---------- */
+html.skin-modern .init-wizard > h3 { padding: 16px 24px 2px; }
+html.skin-modern .init-wizard > .modal-hint { padding: 0 24px 10px; line-height: 1.5; }
+html.skin-modern .init-wizard .wizard-body { padding: 2px 24px 14px; }
+html.skin-modern .init-wizard .wizard-step { margin: 4px 0 2px; }
+html.skin-modern .wizard-step h4 { margin: 2px 0 6px; padding-left: 0; }
+html.skin-modern .wizard-step h4::before { content: none; }
+html.skin-modern .init-wizard .directory-picker input { height: var(--btn-h-md); }
+html.skin-modern .init-wizard .modal-actions {
+  background: var(--surface); border-top: 0.5px solid var(--divider);
+}
+
+/* ---------- 设置界面：卡片标题去竖条 + 分区细线（导航当前项 v0.16.5 已达标，不动） ---------- */
+html.skin-modern #settings-modal .settings-section {
+  border-top: 0.5px solid color-mix(in srgb, var(--divider) 60%, transparent);
+}
+html.skin-modern #settings-modal .settings-section h4 { padding-left: 0; }
+html.skin-modern #settings-modal .settings-section h4::before { content: none; }

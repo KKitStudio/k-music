@@ -9,6 +9,7 @@ REM    [1/3] cargo build --release -p mt-gui -p mt-cli
 REM    [2/3] copy target\release\mt-gui.exe -> dist\k_music.exe (GUI entry)
 REM          copy target\release\mt-cli.exe -> dist\ + README
 REM    [3/3] sync app\gui\frontend -> dist\frontend via robocopy (incremental-build fallback)
+REM          create dist\plugin (empty + README); user-placed plugin tools are preserved
 REM
 REM  The frontend static assets are normally copied by app/gui/build.rs at compile
 REM    time, but build.rs only re-runs when frontend SOURCES change (rerun-if-changed).
@@ -21,8 +22,9 @@ REM  *** RUNTIME CONFIG FILES ARE NEVER DELETED OR OVERWRITTEN ***
 REM    Everything under dist\ that is produced at runtime is preserved:
 REM    dist\kqk-app.toml, dist\.guest\, dist\library.db, dist\app.log ...
 REM    These hold the user's test config (current library path, NCM tool path,
-REM    import source, UI preferences). They MUST survive every rebuild so the
-REM    user does not have to re-select the library each time.
+REM    import source, UI preferences). dist\plugin\ (user-placed tool binaries)
+REM    is also preserved. They MUST survive every rebuild so the user does not
+REM    have to re-select the library or reinstall plugins each time.
 REM    This script overwrites k_music.exe / mt-cli.exe / README.md, and removes
 REM    the obsolete dist\mt-gui.exe left by older builds. Runtime config stays.
 REM
@@ -73,6 +75,10 @@ if errorlevel 8 (
   echo [ERR] Frontend sync failed, robocopy exit code %errorlevel%
   exit /b 1
 )
+
+echo [3/3] Preparing dist\plugin (empty dir + README; user tools are never removed) ...
+if not exist dist\plugin mkdir dist\plugin
+if exist app\plugin\README.md copy /Y app\plugin\README.md dist\plugin\README.md >nul
 
 echo Done.
 echo.

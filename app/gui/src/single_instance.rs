@@ -65,19 +65,29 @@ impl InstanceGuard {
             let _ = std::fs::rename(&tmp, &self.port_file);
         }
     }
-}
 
-impl Drop for InstanceGuard {
-    fn drop(&mut self) {
+    /// 幂等清理：删除端口文件 + 关闭互斥体句柄。由 Tauri `RunEvent::Exit` 回调在
+    /// 进程退出前显式调用——`App::run()` 内部直接 `std::process::exit()`，永不返回，
+    /// 因此 `Drop` 在正常退出路径不会执行（历史 bug：端口文件残留）。
+    pub fn cleanup(&mut self) {
         if self.owns_port_file {
             let _ = std::fs::remove_file(&self.port_file);
+            // 置位防重：重复调用（退出回调 + 可能的 Drop）不重复删、不重复关句柄。
+            self.owns_port_file = false;
         }
         #[cfg(windows)]
         if self.handle != 0 {
             unsafe {
                 CloseHandle(self.handle);
             }
+            self.handle = 0;
         }
+    }
+}
+
+impl Drop for InstanceGuard {
+    fn drop(&mut self) {
+        self.cleanup();
     }
 }
 
@@ -244,6 +254,31 @@ mod tests {
         assert_eq!(read_port(&p), Some(61234));
         drop(guard);
         assert_eq!(read_port(&p), None, "Drop 必须清理端口文件");
+    }
+
+    #[test]
+    fn cleanup_is_idempotent() {
+        // 退出回调显式清理 + 可能的 Drop 兜底会调用两次；必须幂等（不重复删文件）。
+        let p = std::env::temp_dir().join(format!(
+            "kqk-si-cleanup-{}-{}.port",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut guard = InstanceGuard {
+            handle: 0,
+            port_file: p.clone(),
+            owns_port_file: true,
+        };
+        guard.publish(55443);
+        assert_eq!(read_port(&p), Some(55443));
+        guard.cleanup();
+        assert_eq!(read_port(&p), None, "cleanup 必须删除端口文件");
+        guard.cleanup(); // 第二次不得 panic / 误删他人文件
+        drop(guard);
+        assert_eq!(read_port(&p), None);
     }
 
     #[test]

@@ -1390,10 +1390,9 @@ body.skin-active .toolbar { border-color: rgba(255, 255, 255, 0.25); }
   margin: 0 0 12px; font-size: 12px; color: var(--text-soft); line-height: 1.65;
 }
 #settings-modal .modal-hint.warn { margin: 12px 0 0; }
+/* 只读值：纯文字展示，不加编辑框式边框/底色；用常规字号与正文色区别于灰色说明文字 */
 #settings-modal .settings-value {
-  margin: 0 0 10px; padding: 9px 11px; border-radius: 8px;
-  border: 1px solid var(--divider); background: var(--surface-2);
-  font-size: 12px; color: var(--text-soft); word-break: break-all;
+  margin: 0 0 10px; font-size: 13px; color: var(--text); word-break: break-all;
 }
 /* 控件统一：按钮成行、输入框高度/圆角一致、单选卡片化 */
 #settings-modal .settings-section > .md-btn { margin: 10px 8px 0 0; }
@@ -1514,11 +1513,10 @@ body.skin-active .init-wizard .scheme-options label { background: var(--surface-
   display: block; margin: 10px 0 6px;
   font-size: 13px; font-weight: 600; color: var(--text-soft);
 }
-/* 状态提示：非空时呈轻卡片，与上方说明文字分层；空状态不占位 */
-.init-wizard .ncm-status:not(:empty) {
-  padding: 8px 11px; margin: 0 0 10px; border-radius: 8px;
-  background: var(--surface-2); border: 1px solid var(--divider);
-}
+/* 向导状态提示：纯说明文字，不套类编辑框卡片；与输入框、勾选项保持呼吸感，空态不占位 */
+.init-wizard .ncm-status:not(:empty) { margin: 8px 0 0; }
+/* 导入方式说明：跟随底部双按钮语义，常驻浅色小字 */
+.init-wizard .wiz-mode-note { margin: 6px 0 0; font-size: 12px; color: var(--text-soft); line-height: 1.6; }
 
 /* 初始化向导：与 ncm / import 弹框同一套「头部 + 可滚动内容 + 固定底栏」结构，
    保证任意窗口尺寸下「上一步 / 下一步 / 完成」始终完整可见。 */

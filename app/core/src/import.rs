@@ -213,7 +213,7 @@ const PROBE_MAX_DEPTH: usize = 3;
 /// 来源目录的只读探测结果（自动判定网易云曲库 + 条件显示 NCM 引导）。
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SourceProbe {
-    /// 是否像网易云官方 APP 维护的本地曲库。
+    /// 是否按网易云曲库处理：仅由 `.ncm` 探测信号得出，界面可手动勾选覆盖。
     pub is_netease: bool,
     /// 目录（含有限深度子目录）里是否存在 `.ncm` 文件。
     pub ncm_found: bool,
@@ -229,9 +229,10 @@ fn probe_skip_dir(name: &str) -> bool {
 
 /// 只读探测来源目录（启发式，不联网、不写盘、不解析音频）。
 ///
-/// 判定依据：目录名 / 一级子目录名含 `cloudmusic`、`netease`、`网易云`、
-/// `vipsongsdownload` 等网易云特征；同时记录是否出现 `.ncm` 文件。
-/// 遍历有上限（约 2000 条目、3 层），命中网易云特征即短路返回。
+/// 判定依据：**仅**目录内出现 `.ncm` 文件才视为网易云强信号；目录名（哪怕含
+/// `cloudmusic` / `netease` / `网易云`）一律不作为判据，杜绝按名字误判。
+/// 用户仍可在界面手动勾选 / 取消 `is_netease` 覆盖探测结果；不联网、不写盘。
+/// 遍历有上限（约 2000 条目、3 层），命中 .ncm 后继续统计，不再按名字短路。
 pub fn probe_source(dir: &Path) -> SourceProbe {
     let mut probe = SourceProbe {
         suggested_name: dir
@@ -242,11 +243,6 @@ pub fn probe_source(dir: &Path) -> SourceProbe {
         ..Default::default()
     };
     if !dir.is_dir() {
-        return probe;
-    }
-    let folder = probe.suggested_name.to_lowercase();
-    if folder.contains("cloudmusic") || folder.contains("netease") || folder.contains("网易云") {
-        probe.is_netease = true;
         return probe;
     }
 
@@ -260,6 +256,7 @@ pub fn probe_source(dir: &Path) -> SourceProbe {
         for entry in rd.flatten() {
             visited += 1;
             if visited >= PROBE_MAX_ENTRIES {
+                probe.is_netease = probe.ncm_found;
                 return probe;
             }
             let name = entry.file_name().to_string_lossy().to_string();
@@ -267,21 +264,13 @@ pub fn probe_source(dir: &Path) -> SourceProbe {
             if lower.ends_with(".ncm") {
                 probe.ncm_found = true;
             }
-            if depth == 0
-                && (lower.contains("cloudmusic")
-                    || lower.contains("netease")
-                    || lower.contains("网易云")
-                    || lower.contains("vipsongsdownload"))
-            {
-                probe.is_netease = true;
-                return probe;
-            }
             let p = entry.path();
             if p.is_dir() && depth < PROBE_MAX_DEPTH && !probe_skip_dir(&lower) {
                 queue.push_back((p, depth + 1));
             }
         }
     }
+    probe.is_netease = probe.ncm_found;
     probe
 }
 
@@ -973,5 +962,28 @@ mod import_ncm_tests {
         let _ = std::fs::remove_dir_all(&src);
         let _ = std::fs::remove_file(&sample);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn probe_source_ignores_folder_name_and_uses_ncm_only() {
+        let base = std::env::temp_dir().join(format!("mt_probe_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+
+        // 目录名带 CloudMusic 但只有普通音频：不得误判为网易云曲库。
+        let plain = base.join("CloudMusic");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(plain.join("song.mp3"), b"FAKE_MP3").unwrap();
+        let p1 = probe_source(&plain);
+        assert!(!p1.is_netease, "目录名带 CloudMusic 但无 .ncm 不应判网易云");
+        assert!(!p1.ncm_found, "无 .ncm 不应报 ncm_found");
+
+        // 目录名普通但含 .ncm：仅凭 .ncm 信号判为网易云强信号。
+        let with_ncm = base.join("MySongs");
+        std::fs::create_dir_all(&with_ncm).unwrap();
+        std::fs::write(with_ncm.join("track.ncm"), b"FAKE_NCM").unwrap();
+        let p2 = probe_source(&with_ncm);
+        assert!(p2.ncm_found && p2.is_netease, "仅 .ncm 应触发网易云判定");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

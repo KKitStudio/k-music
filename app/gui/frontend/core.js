@@ -5133,6 +5133,7 @@ function showInitWizard() {
   }
   $('wiz-netease-input').value = '';
   $('wiz-netease-status').textContent = '';
+  syncWizFinishButtons(false);
   renderWizStep();
 }
 
@@ -5144,12 +5145,21 @@ function renderWizStep() {
   });
   $('wiz-prev').hidden = (wizStep <= 1);
   $('wiz-next').hidden = (wizStep >= max);
-  $('wiz-finish').hidden = (wizStep < max);
+  $('wiz-finish-move').hidden = (wizStep < max);
+  $('wiz-finish-copy').hidden = (wizStep < max);
   // 第 3 步（来源目录）与条件第 4 步（NCM 工具）都可选，可直接完成。
   $('wiz-skip').hidden = (wizStep < 3);
 }
 
-/** 只读探测曲库目录 + 来源目录：任一命中网易云特征或 .ncm 才显示 NCM 引导。
+/** 向导底部双导入按钮：导入方式由用户点的按钮直接决定；网易云来源只加不删，禁用移动。 */
+function syncWizFinishButtons(netease) {
+  const move = $('wiz-finish-move');
+  if (!move) return;
+  move.disabled = !!netease;
+  move.title = netease ? '网易云曲库只加不删，只能复制导入' : '源文件移入曲库，原位置不再保留';
+}
+
+/** 只读探测曲库目录 + 来源目录：仅以 .ncm 为网易云信号，目录名不再作为判据。
  *  探测失败静默降级为「未检测到」，不阻塞向导；只在点击 / 离开输入框时触发，不轮询。 */
 async function wizProbeForNcm() {
   const libraryPath = $('wiz-library-input').value.trim();
@@ -5169,9 +5179,12 @@ async function wizProbeForNcm() {
   if (sourceProbe) state.wizSourceProbe = sourceProbe;
   wizNeedNcm = hit;
   if (sourcePath && sourceProbe) {
-    $('wiz-netease-status').textContent = sourceProbe.is_netease
-      ? '检测为网易云曲库：按只加不删逻辑导入，并强制使用复制方式'
-      : (sourceProbe.ncm_found ? '发现 .ncm 文件，下一步可指定解密工具' : '普通本地目录：可选复制或移动');
+    const netease = !!sourceProbe.ncm_found || !!sourceProbe.is_netease;
+    $('wiz-netease').checked = netease;
+    $('wiz-netease-status').textContent = netease
+      ? '检测到 .ncm 文件：已按网易云曲库预勾选，只加不删、只能复制导入（可手动取消勾选）'
+      : '未检测到 .ncm 文件，可按需选择复制导入或移动导入';
+    syncWizFinishButtons(netease);
   } else if (sourcePath) {
     $('wiz-netease-status').textContent = '已选择：' + sourcePath;
   }
@@ -5213,12 +5226,22 @@ $('wiz-next').addEventListener('click', async () => {
 });
 $('wiz-prev').addEventListener('click', () => { if (wizStep > 1) { wizStep--; renderWizStep(); } });
 $('wiz-skip').addEventListener('click', finishInit);
-$('wiz-finish').addEventListener('click', finishInit);
+$('wiz-finish-copy').addEventListener('click', () => finishInit('copy'));
+$('wiz-finish-move').addEventListener('click', () => finishInit('move'));
+$('wiz-netease').addEventListener('change', () => {
+  const netease = $('wiz-netease').checked;
+  syncWizFinishButtons(netease);
+  $('wiz-netease-status').textContent = netease
+    ? '网易云曲库按只加不删逻辑导入，只能复制导入'
+    : '未检测到 .ncm 文件，可按需选择复制导入或移动导入';
+});
 
-async function finishInit() {
+async function finishInit(requestedMode = 'copy') {
   const path = $('wiz-library-input').value.trim();
   if (!path) { setHint('请先指定曲库目录'); return; }
   const scheme = document.querySelector('input[name="wiz-scheme"]:checked').value;
+  const is_netease = !!$('wiz-netease').checked;
+  const mode = is_netease ? 'copy' : requestedMode;
   const library_name = $('wiz-name-input').value.trim();
   setHint('初始化曲库中…');
   const r = await api('/api/library-directory', {
@@ -5234,7 +5257,7 @@ async function finishInit() {
   if (sourcePath) {
     const created = await api('/api/sources', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: sourcePath, mode: 'copy', enabled: true }),
+      body: JSON.stringify({ path: sourcePath, mode, is_netease, enabled: true }),
     });
     if (created.data && created.data.ok) {
       // 兼容旧端点 / CLI：网易云来源同时回填旧单值 [netease].library_dir（失败不阻塞初始化）。

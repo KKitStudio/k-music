@@ -8,16 +8,17 @@
    ============================================================ */
 @import url('base.css');
 
-/* 浅色主题：Radix tomato（暖棕）9 阶实心色，中性色走 gray 阶。
-   出厂默认即 Radix 色，选中其它色系时 core.js 会覆写 --radix-1..12 及语义别名。 */
+/* 浅色主题：Radix blue 9 阶实心色，中性色走 gray 阶。
+   出厂默认即 Radix blue，选中其它色系时 core.js 会覆写 --radix-1..12 及语义别名。
+   v0.16.7：出厂色由 tomato 改为 Radix blue（#0090ff），与色板蓝预设 / 配置默认值同源。 */
 :root {
-  --radix-1: #fffcfc; --radix-2: #fff8f7; --radix-3: #feebe7; --radix-4: #ffdcd3;
-  --radix-5: #ffcdc2; --radix-6: #fdbdaf; --radix-7: #f5a898; --radix-8: #ec8e7b;
-  --radix-9: #e54d2e; --radix-10: #dd4425; --radix-11: #d13415; --radix-12: #5c271f;
-  --primary: #e54d2e;        /* tomato 9 */
-  --primary-dark: #dd4425;   /* tomato 10 */
-  --primary-soft: #feebe7;   /* tomato 3 */
-  --primary-glow: #ec8e7b;   /* tomato 8 */
+  --radix-1: #fbfdff; --radix-2: #f4faff; --radix-3: #e6f4fe; --radix-4: #d5efff;
+  --radix-5: #c2e5ff; --radix-6: #acd8fc; --radix-7: #8ec8f6; --radix-8: #5eb1ef;
+  --radix-9: #0090ff; --radix-10: #0588f0; --radix-11: #0d74ce; --radix-12: #113264;
+  --primary: #0090ff;        /* blue 9 */
+  --primary-dark: #0588f0;   /* blue 10 */
+  --primary-soft: #e6f4fe;   /* blue 3 */
+  --primary-glow: #5eb1ef;   /* blue 8 */
   --bg: #fcfcfc;             /* gray 1 */
   --bg-grad: linear-gradient(180deg, #fcfcfc 0%, #f9f9f9 100%);
   --surface: #ffffff;
@@ -27,7 +28,7 @@
   --text-muted: #8d8d8d;     /* gray 9 */
   --divider: #e0e0e0;        /* gray 5 */
   --divider-strong: #d9d9d9; /* gray 6 */
-  --chip-bg: #feebe7;        /* tomato 3 */
+  --chip-bg: #e6f4fe;        /* blue 3 */
   /* #30 rail 令牌（重设计稿左侧深色导航）；
      #37：--rail-base 是「无主题色」时的出厂深底，has-accent 时与 --primary 混合染色。 */
   --rail-base: #222222;      /* gray dark 3：rail 为导航组件表面，按 Radix 规范取 step 3 */
@@ -41,15 +42,15 @@
   --font-brand: "Segoe Print", "Segoe Script", "Comic Sans MS", cursive;
 }
 
-/* 深色主题：Radix tomato 暗色阶，中性色走 gray 暗阶。 */
+/* 深色主题：Radix blue 暗色阶，中性色走 gray 暗阶。 */
 [data-theme="dark"] {
-  --radix-1: #181111; --radix-2: #1f1513; --radix-3: #391714; --radix-4: #4e1511;
-  --radix-5: #5e1c16; --radix-6: #6e2920; --radix-7: #853a2d; --radix-8: #ac4d39;
-  --radix-9: #e54d2e; --radix-10: #ec6142; --radix-11: #ff977d; --radix-12: #fbd3cb;
-  --primary: #e54d2e;        /* tomato dark 9 */
-  --primary-dark: #ec6142;   /* tomato dark 10 */
-  --primary-soft: #391714;   /* tomato dark 3 */
-  --primary-glow: #ac4d39;   /* tomato dark 8 */
+  --radix-1: #0d1520; --radix-2: #111927; --radix-3: #0d2847; --radix-4: #003362;
+  --radix-5: #004074; --radix-6: #104d87; --radix-7: #205d9e; --radix-8: #2870bd;
+  --radix-9: #0090ff; --radix-10: #3b9eff; --radix-11: #70b8ff; --radix-12: #c2e6ff;
+  --primary: #0090ff;        /* blue dark 9 */
+  --primary-dark: #3b9eff;   /* blue dark 10 */
+  --primary-soft: #0d2847;   /* blue dark 3 */
+  --primary-glow: #2870bd;   /* blue dark 8 */
   --bg: #111111;             /* gray dark 1 */
   --bg-grad: linear-gradient(180deg, #191919 0%, #111111 100%);
   --surface: #191919;        /* gray dark 2 */
@@ -59,7 +60,7 @@
   --text-muted: #7b7b7b;     /* gray dark 10 */
   --divider: #313131;        /* gray dark 5 */
   --divider-strong: #3a3a3a; /* gray dark 6 */
-  --chip-bg: #391714;        /* tomato dark 3 */
+  --chip-bg: #0d2847;        /* blue dark 3 */
   --rail-base: #191919;      /* gray dark 2：深色主题比浅色主题暗一阶 */
   --rail: #191919;
   --rail-text: #eeeeee;      /* gray dark 12 */
@@ -87,7 +88,7 @@ html.skin-modern {
    本来就消费 --primary，会同步跟随。 */
 html.skin-modern.has-accent {
   --rail: color-mix(in srgb, var(--primary) 26%, var(--rail-base));
-  /* :root 里三个派生令牌是硬编码棕 rgba，自定义主题色后会残留棕色，统一改为从 --primary 派生。 */
+  /* :root 里三个派生令牌写死具体色，自定义主题色后会残留旧色，统一改为从 --primary 派生。 */
   --primary-soft: color-mix(in srgb, var(--primary) 14%, transparent);
   --primary-glow: color-mix(in srgb, var(--primary) 35%, transparent);
   --chip-bg: color-mix(in srgb, var(--primary) 8%, transparent);

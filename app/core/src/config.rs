@@ -520,7 +520,7 @@ pub struct UiConfig {
     pub theme: String,
     /// 手动主题色（#RRGGBB，空串表示用各布局皮肤的出厂默认色）。
     /// #37 起恢复消费：前端写 `--primary` / `--primary-dark`，并同步原生标题栏颜色。
-    /// 默认 #4F7CFF（更亮品牌蓝，浅色/深色都醒目），作为清除背景皮肤后的回退强调色。
+    /// 默认 Radix blue 9 #0090ff（与 modern.css 出厂色一致），作为清除背景皮肤后的回退强调色。
     #[serde(default = "default_accent")]
     pub accent: String,
     /// 皮肤类型：""(无皮肤) / preset(预设渐变) / custom(自定义图片)。默认 preset（深海蓝背景）。
@@ -531,7 +531,7 @@ pub struct UiConfig {
     pub skin_preset: String,
     /// 皮肤背景自动提取的强调色（#RRGGBB）。#37 起恢复消费：选图片时 64×64 canvas 取色，
     /// 落盘后首屏脚本可提前预设，重启无需重新解码图片；无皮肤时应为空串。
-    /// 默认 #4F7CFF（更亮品牌蓝，与出厂强调色一致，深海背景的自动强调色）。
+    /// 默认 Radix blue 9 #0090ff（与出厂强调色一致，深海背景的自动强调色）。
     #[serde(default = "default_skin_accent")]
     pub skin_accent: String,
     /// 布局皮肤：v0.15.0 起唯一 modern；字段保留兼容旧配置，读时归一。
@@ -868,10 +868,10 @@ pub const THEME_MODES: [&str; 3] = ["light", "system", "dark"];
 fn default_theme() -> String {
     "light".to_string()
 }
-/// 手动主题色出厂默认：更亮品牌蓝 #4F7CFF（浅色/深色都醒目，替代 0.11.3 的深海军蓝）。
+/// 手动主题色出厂默认：Radix blue 9 #0090ff（与 modern.css 出厂色、色板蓝预设同源）。
 /// 作为清除背景皮肤后的回退强调色（空串会退回到各布局皮肤 CSS 出厂色，故此处显式给出）。
 fn default_accent() -> String {
-    "#4F7CFF".to_string()
+    "#0090ff".to_string()
 }
 /// 背景皮肤类型出厂默认：preset（深海蓝渐变背景）。
 fn default_skin_type() -> String {
@@ -881,9 +881,9 @@ fn default_skin_type() -> String {
 fn default_skin_preset() -> String {
     "ocean".to_string()
 }
-/// 背景皮肤自动强调色出厂默认：更亮品牌蓝 #4F7CFF（与出厂强调色一致）。
+/// 背景皮肤自动强调色出厂默认：Radix blue 9 #0090ff（与出厂强调色一致）。
 fn default_skin_accent() -> String {
-    "#4F7CFF".to_string()
+    "#0090ff".to_string()
 }
 /// 出厂即携带完整外观方案（modern + 深海蓝 + 图标蓝），首跑须保留默认而非清空。
 fn default_appearance_saved() -> bool {

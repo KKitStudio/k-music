@@ -485,12 +485,14 @@
       <!-- 通用来源目录（可选）：不再是专门「导入网易云曲库」的界面，选完由后端自动检测类型 -->
       <div class="wizard-step" data-step="3" hidden>
         <h4>来源目录（可选）</h4>
-        <p class="modal-hint">可指定一个本地歌曲目录作为导入源；选定后自动检测它是否为网易云曲库、是否含 .ncm 文件（没有会跳过）。</p>
+        <p class="modal-hint">可指定一个本地歌曲目录作为导入源；选定后会自动检测是否含 .ncm 文件。不填则只初始化曲库，不导入来源。</p>
         <div class="directory-picker">
           <input id="wiz-netease-input" type="text" autocomplete="off" placeholder="来源目录（可选）" />
           <button id="wiz-netease-browse" class="md-btn" type="button">浏览…</button>
         </div>
-        <div id="wiz-netease-status" class="ncm-status"></div>
+        <div id="wiz-netease-status" class="ncm-status" aria-live="polite"></div>
+        <label class="copy-opt" id="wiz-netease-row"><input type="checkbox" id="wiz-netease" /> 这是网易云曲库（按探测结果预填，可手动更正）</label>
+        <p class="wiz-mode-note">导入方式在底部选择：复制导入保留源文件，只把副本加入曲库；移动导入会把源文件移入曲库，原位置不再保留。网易云曲库只加不删，只能复制导入。</p>
       </div>
 
       <!-- 条件步骤：仅当探测命中网易云曲库或 .ncm 文件时才出现。插件化后不再填路径，统一到 设置→插件 安装。 -->
@@ -506,7 +508,8 @@
         <button id="wiz-prev" class="md-btn" type="button" hidden>上一步</button>
         <button id="wiz-next" class="md-btn primary" type="button">下一步</button>
         <button id="wiz-skip" class="md-btn" type="button" hidden>跳过此步</button>
-        <button id="wiz-finish" class="md-btn primary" type="button" hidden>完成</button>
+        <button id="wiz-finish-move" class="md-btn" type="button" hidden title="源文件移入曲库，原位置不再保留">移动导入</button>
+        <button id="wiz-finish-copy" class="md-btn primary" type="button" hidden title="保留源文件，只把副本加入曲库">复制导入</button>
       </div>
     </div>
   </div>

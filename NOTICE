@@ -1,0 +1,27 @@
+第三方许可声明（Third-Party Licenses）
+
+本项目以 “KKitStudio 非商业许可” 发布，但其依赖的第三方开源组件遵循各自的许可证，
+主要包括 MIT、Apache-2.0、BSD、Zlib、ISC、Unicode-3.0、CC0-1.0、Unlicense 等宽松许可证，
+以及以下文件级弱 Copyleft 许可证：
+
+- cssparser (MPL-2.0)
+- cssparser-macros (MPL-2.0)
+- selectors (MPL-2.0)
+- dtoa-short (MPL-2.0)
+- option-ext (MPL-2.0)
+
+上述 MPL-2.0 组件仅以未修改的上游形式被依赖，未对其源码做任何改动，故不对本项目施加额外义务。
+如需完整、机器可生成的依赖许可证清单，可在具备网络的环境中运行：
+    cargo install cargo-license && cargo license
+查看。
+
+## 合规与使用声明
+
+本项目以 “KKitStudio 非商业许可” 发布，遵循以下合规原则：
+
+- 不内置任何盗版资源；
+- 不存储第三方平台音频；
+- 仅做本地播放与接口调用示例；
+- 商用需自行替换音源授权。
+
+如需商用，请通过项目主页（https://github.com/KKitStudio/k-music）的 Issues 申请书面授权。

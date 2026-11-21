@@ -1,0 +1,6 @@
+# 禁用 Git 行尾自动转换，保证工作区文件字节级一致。
+# 原因：
+#  1) app/gui/frontend 与 dist/frontend 需保持 md5 一致（build.rs 编译期同步）；
+#  2) tools/package_gui.bat 必须是 CRLF，cmd.exe 才能正确解析（见 VERSION.md v0.3.0）。
+# 仅设 core.autocrlf=false 不够——它不会随 clone 传播，故在仓库内固定。
+* -text
